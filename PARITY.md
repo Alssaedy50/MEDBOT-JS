@@ -53,6 +53,12 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 26 | Owner transfer / stale-owner demotion | ✅ | `admin.test.js` |
 | 27 | Folder/topic/resource administration | ✅ | `admin.test.js`, `database.test.js` |
 | 28 | Platform settings | ✅ | `admin.test.js` |
+| 28a | Role reference screen (every role explained, owner not assignable) | ✅ | `admin.test.js` |
+| 28b | Permissions/scope guide screen | ✅ | `admin.test.js` |
+| 28c | Read-only admin interface preview (+ `admin_preview` audit) | ✅ | `admin.test.js` |
+| 28d | Audit viewer filterable by action | ✅ | `admin.test.js`, `notify.test.js` |
+| 28e | Upload resource: capture → suggested title → confirm/custom/cancel | ✅ | `folders.test.js` |
+| 28f | Upload preview enforces scope on the held file (stale/forged session) | ✅ | `folders.test.js` |
 
 ## News
 
