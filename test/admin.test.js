@@ -21,6 +21,7 @@ import {
   lastButtons,
   lastEdit,
   lastMarkup,
+  messageCtx,
 } from './helpers/harness.js';
 
 let dbPath;
@@ -290,5 +291,137 @@ describe('scoped RBAC — the single hierarchical scope picker', () => {
       callbackCtx(bot, plainAdmin, `scope_add:${plainAdmin}`),
     );
     assert.match(lastEdit(bot), /غير مصرح/);
+  });
+});
+
+describe('platform settings', () => {
+  let settings;
+  let owner;
+  let bot;
+
+  before(async () => {
+    settings = await import('../src/ui/adminSettings.js');
+    owner = 4030;
+    db.registerUser(owner, 'setowner', 'Set Owner');
+    db.addSubAdmin(owner, 'setowner');
+    db.setAdminRole(owner, 'owner');
+    db.updateAdminPermissions(owner, db.defaultPermissions());
+    bot = new FakeBot();
+  });
+
+  it('shows every platform setting to an authorized admin', async () => {
+    await settings.showSettings(callbackCtx(bot, owner, 'admin_settings'));
+    const text = lastEdit(bot);
+    for (const key of db.PLATFORM_SETTING_KEYS) {
+      assert.ok(db.PLATFORM_SETTING_LABELS[key]);
+      assert.match(text, new RegExp(db.PLATFORM_SETTING_LABELS[key].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+  });
+
+  it('refuses the settings screen to an admin without can_settings', async () => {
+    const limited = 4031;
+    db.addSubAdmin(limited, 'limited');
+    db.applyRolePreset(limited, 'reviewer');
+    assert.equal(db.userHasPermission(limited, 'can_settings'), false);
+
+    await settings.showSettings(callbackCtx(bot, limited, 'admin_settings'));
+    assert.match(lastEdit(bot), /غير مصرح/);
+  });
+
+  it('edits a setting end to end and persists it', async () => {
+    const userData = {};
+    await settings.armSettingEdit(
+      callbackCtx(bot, owner, 'settings_edit:platform_name', userData),
+      'platform_name',
+    );
+    assert.equal(userData.settings_edit_key, 'platform_name');
+
+    const handled = await settings.handleSettingText(
+      messageCtx(bot, owner, 'MEDBOT Academy', userData),
+    );
+    assert.equal(handled, true, 'the typed value was consumed');
+    assert.equal(db.getPlatformSetting('platform_name'), 'MEDBOT Academy');
+    assert.equal(userData.settings_edit_key, undefined, 'the armed key was cleared');
+  });
+
+  it('rejects an over-long setting value and keeps the old one', async () => {
+    db.setPlatformSetting('platform_name', 'Kept');
+    const userData = {};
+    await settings.armSettingEdit(
+      callbackCtx(bot, owner, 'settings_edit:platform_name', userData),
+      'platform_name',
+    );
+
+    const tooLong = 'x'.repeat(db.SETTINGS_MAX_LENGTH + 1);
+    await settings.handleSettingText(messageCtx(bot, owner, tooLong, userData));
+    assert.equal(db.getPlatformSetting('platform_name'), 'Kept', 'the invalid value was refused');
+  });
+
+  it('rejects editing an unknown setting key', async () => {
+    await settings.armSettingEdit(
+      callbackCtx(bot, owner, 'settings_edit:not_a_key', {}),
+      'not_a_key',
+    );
+    assert.match(lastEdit(bot), /إعداد غير معروف/);
+  });
+});
+
+describe('admin notification broadcast', () => {
+  let settings;
+  let owner;
+  let bot;
+
+  before(async () => {
+    settings = await import('../src/ui/adminSettings.js');
+    owner = 4040;
+    db.registerUser(owner, 'notifowner', 'Notif Owner');
+    db.addSubAdmin(owner, 'notifowner');
+    db.setAdminRole(owner, 'owner');
+    db.updateAdminPermissions(owner, db.defaultPermissions());
+    bot = new FakeBot();
+  });
+
+  it('refuses the notification screen without can_notifications', async () => {
+    const limited = 4041;
+    db.addSubAdmin(limited, 'notiflimited');
+    db.applyRolePreset(limited, 'reviewer');
+    assert.equal(db.userHasPermission(limited, 'can_notifications'), false);
+
+    await settings.showNotifications(callbackCtx(bot, limited, 'admin_notifications'));
+    assert.match(lastEdit(bot), /غير مصرح/);
+  });
+
+  it('broadcasts a typed notification to every registered user and logs it', async () => {
+    const recipients = [];
+    for (let i = 0; i < 2; i += 1) {
+      const id = 4042 + i;
+      db.registerUser(id, `notifstudent${i}`, `Notif Student ${i}`);
+      recipients.push(id);
+    }
+
+    const before = db.getNotificationsCount();
+    const userData = {};
+    await settings.armNotification(callbackCtx(bot, owner, 'notify_new', userData));
+    assert.equal(userData.notifications_body, true, 'the broadcast is armed');
+
+    const handled = await settings.handleNotificationText(
+      messageCtx(bot, owner, 'Platform maintenance tonight', userData),
+    );
+    assert.equal(handled, true, 'the broadcast body was consumed');
+
+    const reached = bot.calls
+      .filter((c) => c.method === 'sendMessage')
+      .map((c) => c.args.chatId);
+    for (const id of recipients) assert.ok(reached.includes(id), `${id} was notified`);
+    assert.equal(db.getNotificationsCount(), before + 1, 'the broadcast was logged');
+  });
+
+  it('cancelling the broadcast sends nothing', async () => {
+    const before = db.getNotificationsCount();
+    const userData = {};
+    await settings.armNotification(callbackCtx(bot, owner, 'notify_new', userData));
+    await settings.handleNotificationText(messageCtx(bot, owner, '/cancel', userData));
+    assert.equal(userData.notifications_body, undefined, 'the armed flag was cleared');
+    assert.equal(db.getNotificationsCount(), before, 'nothing was sent');
   });
 });

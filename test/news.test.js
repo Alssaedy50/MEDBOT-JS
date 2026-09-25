@@ -11,16 +11,34 @@ import assert from 'node:assert/strict';
 
 import * as db from '../src/db/index.js';
 import * as newsDelivery from '../src/newsDelivery.js';
-import { cleanupDb, FakeBot, freshDb } from './helpers/harness.js';
+import {
+  callbackCtx,
+  cleanupDb,
+  FakeBot,
+  freshDb,
+  lastEdit,
+  lastMarkup,
+  messageCtx,
+} from './helpers/harness.js';
 
 let dbPath;
+let news;
+let publisher;
+let publishSection;
 
-before(() => {
+before(async () => {
   dbPath = freshDb('news');
   newsDelivery.setSleep(async () => {});
   for (let i = 0; i < 8; i += 1) {
     db.registerUser(9000 + i, `news${i}`, `News ${i}`);
   }
+
+  news = await import('../src/ui/news.js');
+  publisher = 9100;
+  db.registerUser(publisher, 'publisher', 'Publisher');
+  db.ensureConfiguredAdmin(publisher, 'publisher');
+
+  publishSection = db.addFolder(0, 'Publish Section', 'general');
 });
 
 after(() => {
@@ -435,5 +453,99 @@ describe('news delivery engine', () => {
     for (const row of rows) {
       assert.ok(['notify', 'section'].includes(row[0]), `unexpected news kind: ${row[0]}`);
     }
+  });
+});
+
+describe('admin News UX and the publish wizard', () => {
+  /** All button labels in the last rendered keyboard. */
+  function lastButtonLabels(bot) {
+    const rows = lastMarkup(bot)?.inline_keyboard ?? [];
+    return rows.flat().map((button) => button.text).join(' ');
+  }
+
+  it('shows the News Center with publish, published and archive entry points', async () => {
+    const bot = new FakeBot();
+    await news.showAdminNews(callbackCtx(bot, publisher, 'admin_news'), 'menu');
+    const labels = lastButtonLabels(bot);
+    assert.match(labels, /نشر خبر/, 'publish entry point exists');
+    assert.match(labels, /المنشورة/, 'published list exists');
+    assert.match(labels, /الأرشيف|أرشيف/, 'archive exists');
+  });
+
+  it('offers exactly the two kinds when publishing', async () => {
+    const bot = new FakeBot();
+    await news.startCreateNews(callbackCtx(bot, publisher, 'news_new'));
+    const labels = lastButtonLabels(bot);
+    assert.match(labels, /هام \/ عاجل/, 'important/urgent kind');
+    assert.match(labels, /أخبار الأقسام/, 'section kind');
+    assert.doesNotMatch(labels, /مورد/, 'there is no resource news kind');
+  });
+
+  it('walks title -> body -> doctor -> event and creates a draft', async () => {
+    const bot = new FakeBot();
+    const userData = {};
+    await news.startCreateNews(callbackCtx(bot, publisher, 'news_new:notify', userData), 'notify');
+    assert.equal(userData.news_new_type, 'notify');
+
+    await news.handleNewsText(messageCtx(bot, publisher, 'Lecture today 10:00', userData));
+    assert.equal(userData.news_new_step, 'body');
+
+    await news.handleNewsText(messageCtx(bot, publisher, 'Hall 3', userData));
+    await news.handleNewsText(messageCtx(bot, publisher, 'Dr. Salma', userData));
+    const handled = await news.handleNewsText(messageCtx(bot, publisher, '2026-10-01', userData));
+    assert.equal(handled, true, 'the final step was consumed');
+
+    const drafts = db.listNews({ status: 'draft' });
+    const draft = drafts.find((row) => row.title === 'Lecture today 10:00');
+    assert.ok(draft, 'the draft was created');
+    assert.equal(draft.news_type, 'notify');
+    assert.equal(draft.doctor, 'Dr. Salma');
+  });
+
+  it('previews a draft without publishing it, then publishes on confirmation', async () => {
+    const bot = new FakeBot();
+    const newsId = db.createNews({
+      newsType: 'notify',
+      title: 'Preview me',
+      body: 'Body text',
+      senderId: publisher,
+      status: 'draft',
+    });
+
+    await news.previewAdminNews(callbackCtx(bot, publisher, `news_admin_preview:${newsId}`), newsId);
+    assert.match(lastEdit(bot), /Preview me/, 'the preview shows the content');
+    assert.equal(db.getNewsDetail(newsId).status, 'draft', 'preview does not publish');
+
+    await news.publishDraft(callbackCtx(bot, publisher, `news_admin_publish:${newsId}`), newsId);
+    assert.equal(db.getNewsDetail(newsId).status, 'published', 'confirmation publishes it');
+  });
+
+  it('points Section News at a real section and rejects a nonexistent one', async () => {
+    const bot = new FakeBot();
+    const newsId = db.createNews({
+      newsType: 'section',
+      title: 'Section news draft',
+      senderId: publisher,
+      status: 'draft',
+    });
+
+    await news.setSectionReference(
+      callbackCtx(bot, publisher, `news_set_section:${newsId}:${publishSection}`),
+      newsId,
+      publishSection,
+    );
+    assert.equal(db.getNewsDetail(newsId).section_folder_id, publishSection);
+
+    await news.setSectionReference(
+      callbackCtx(bot, publisher, `news_set_section:${newsId}:999999`),
+      newsId,
+      999999,
+    );
+    assert.match(lastEdit(bot), /غير موجود/);
+    assert.equal(
+      db.getNewsDetail(newsId).section_folder_id,
+      publishSection,
+      'a bogus section never replaces a real one',
+    );
   });
 });

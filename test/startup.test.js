@@ -10,7 +10,8 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import * as db from '../src/db/index.js';
-import { cleanupDb, FakeBot, freshDb } from './helpers/harness.js';
+import * as contributions from '../src/ui/contributions.js';
+import { callbackCtx, cleanupDb, FakeBot, freshDb } from './helpers/harness.js';
 
 let dbPath;
 let botModule;
@@ -63,6 +64,70 @@ describe('createBot startup path', () => {
     });
     assert.equal(error.retry_after, 7);
     assert.equal(error.status, 429);
+  });
+});
+
+describe('media routing', () => {
+  it('routes an uploaded document into the armed contribution flow', async () => {
+    const bot = new FakeBot();
+    await botModule.createBot({ transport: bot });
+
+    const student = 8500;
+    db.registerUser(student, 'uploader', 'Uploader');
+    const folder = db.addFolder(0, 'Uploads Section', 'general');
+    db.updateFolderAcceptsContributions(folder, 1);
+
+    // Arm through the real UI path, sharing the adapter's per-user store so the
+    // dispatch below sees the armed state.
+    const userData = adapter.userDataFor(student);
+    await contributions.armContribution(
+      callbackCtx(bot, student, `contrib_arm:${folder}`, userData),
+      folder,
+    );
+    assert.equal(userData.contrib_state, 'await_file', 'the flow is armed for a file');
+
+    const handled = await adapter.dispatchUpdate(
+      {
+        update_id: 1,
+        message: {
+          from: { id: student },
+          chat: { id: student },
+          document: { file_id: 'doc-1', file_name: 'lecture.pdf' },
+        },
+      },
+      bot,
+      {},
+    );
+
+    assert.equal(handled, true, 'the media message was handled by the contribution flow');
+    assert.equal(userData.contrib_file_id, 'doc-1', 'the file reference was captured');
+    assert.equal(userData.contrib_state, 'await_title', 'the flow advanced to the title step');
+  });
+
+  it('answers an out-of-flow upload with the "no upload in progress" notice', async () => {
+    const bot = new FakeBot();
+    await botModule.createBot({ transport: bot });
+    const student = 8501;
+    db.registerUser(student, 'nomedia', 'NoMedia');
+
+    const handled = await adapter.dispatchUpdate(
+      {
+        update_id: 1,
+        message: {
+          from: { id: student },
+          chat: { id: student },
+          document: { file_id: 'doc-2', file_name: 'x.pdf' },
+        },
+      },
+      bot,
+      {},
+    );
+
+    // Media is always claimed by the catch-all, which must tell the student
+    // how to start a real upload rather than silently dropping the message.
+    assert.equal(handled, true);
+    assert.match(bot.calls.at(-1).args.text, /لا توجد عملية رفع/);
+    assert.equal(adapter.userDataFor(student).contrib_file_id, undefined);
   });
 });
 
