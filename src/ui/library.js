@@ -288,6 +288,9 @@ export async function libraryCallbackHandler(ctx) {
 
   if (data === 'search') {
     if (await libraryHiddenFor(ctx)) return;
+    // Arm the pending-query marker, as Python does with `search_mode = True`,
+    // so the prompt is followed by an actual search.
+    ctx.userData.library_search = true;
     await showSearchPrompt(ctx);
     return;
   }

@@ -14,6 +14,13 @@ export const DEFAULT_DB_NAME = 'medbot_v2.sqlite3';
 export const DB_PATH_ENV_VAR = 'MEDBOT_DB_PATH';
 
 // ---------------------------------------------------------------------------
+// Assistant daily allowance
+// ---------------------------------------------------------------------------
+// Mirrors Python `main.py` DAILY_LIMIT. The same figure is used for the
+// pre-generation quota check and the quota screen, so the two cannot disagree.
+export const AI_DAILY_LIMIT = 25;
+
+// ---------------------------------------------------------------------------
 // RBAC — roles and capabilities
 // ---------------------------------------------------------------------------
 // 'none' keeps the row (and username) but revokes admin access.

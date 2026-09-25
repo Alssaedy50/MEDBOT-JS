@@ -140,7 +140,11 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 82 | Single-owner workflow state (one consumer per message) | ✅ | `telegram.test.js` |
 | 83 | `/cancel` clears every armed workflow | ✅ | `telegram.test.js` |
 | 84 | An unconsumed message never dead-ends the student | ✅ | `telegram.test.js` |
-| 85 | Command routing (`/start`, `/help`, `/cancel`) | ✅ | `startup.test.js` |
+| 85 | Command routing (`/start`, `/quota`, `/whoami`, `/search`, `/ask`, `/cancel`, `/contact`) | ✅ | `startup.test.js`, `commands.test.js` |
+| 85b | `/quota` reports the shared daily allowance (25, as Python) | ✅ | `commands.test.js` |
+| 85c | `/whoami` never auto-promotes the first caller | ✅ | `commands.test.js` |
+| 85d | `/search` and the search button both arm the pending-query marker | ✅ | `commands.test.js` |
+| 85e | `/ask <q>` answers in chat mode and charges one allowance unit | ✅ | `commands.test.js` |
 | 86 | Media (document/photo) routing | ✅ | `telegram.test.js` |
 | 87 | Keyboard builders for each screen | ✅ | `admin.test.js`, `news.test.js` |
 | 87b | Library `folder:` / `file:` drill-down lists only real rows | ✅ | `telegram.test.js` |

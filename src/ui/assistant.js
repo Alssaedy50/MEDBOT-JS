@@ -13,9 +13,10 @@
 import * as db from '../db/index.js';
 import * as ai from '../ai/index.js';
 import * as workflow from '../workflow.js';
+import { AI_DAILY_LIMIT } from '../constants.js';
 import { btn, escHtml, keyboard } from '../telegram/ui.js';
 
-const AI_DAILY_LIMIT = 20;
+
 export const ASSISTANT_WORKFLOW = 'ai_chat';
 
 export function esc(value) {

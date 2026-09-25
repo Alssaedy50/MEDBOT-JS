@@ -26,6 +26,11 @@ const COMMANDS = new Map([
   ['/start', 'start'],
   ['/cancel', 'cancel'],
   ['/help', 'help'],
+  ['/quota', 'quota'],
+  ['/whoami', 'whoami'],
+  ['/search', 'search'],
+  ['/ask', 'ask'],
+  ['/contact', 'contact'],
 ]);
 
 /** Normalise a raw Telegram update into the context shape handlers expect. */

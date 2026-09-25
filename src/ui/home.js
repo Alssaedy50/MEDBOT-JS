@@ -9,6 +9,7 @@
 
 import * as db from '../db/index.js';
 import * as i18n from '../i18n.js';
+import { AI_DAILY_LIMIT } from '../constants.js';
 import { btn, escHtml, keyboard } from '../telegram/ui.js';
 
 export function esc(value) {
@@ -155,7 +156,7 @@ export async function showAccount(ctx) {
 
   let quota = 0;
   try {
-    quota = db.getRemainingQuota(userId, 20);
+    quota = db.getRemainingQuota(userId, AI_DAILY_LIMIT);
   } catch {
     quota = 0;
   }

@@ -3,7 +3,7 @@
  */
 
 import { get, run, withDb, withTransaction } from './core.js';
-import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from '../constants.js';
+import { AI_DAILY_LIMIT, DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from '../constants.js';
 
 /** Register or refresh a user row. Idempotent (INSERT OR IGNORE + UPDATE). */
 export function registerUser(userId, username = null, fullName = null) {
@@ -87,7 +87,7 @@ function today() {
  * `BEGIN IMMEDIATE` serialises concurrent quota updates so two requests cannot
  * both read the same old count and exceed `maxLimit`.
  */
-export function checkAndIncrementQuota(userId, maxLimit = 20) {
+export function checkAndIncrementQuota(userId, maxLimit = AI_DAILY_LIMIT) {
   return withTransaction((db) => {
     const usageDate = today();
     const row = get(
@@ -112,7 +112,7 @@ export function checkAndIncrementQuota(userId, maxLimit = 20) {
 }
 
 /** Remaining AI requests for today (never negative). */
-export function getRemainingQuota(userId, maxLimit = 20) {
+export function getRemainingQuota(userId, maxLimit = AI_DAILY_LIMIT) {
   return withDb((db) => {
     const row = get(
       db,
