@@ -205,6 +205,16 @@ export function isOwner(userId) {
   return Boolean(record) && record.role === 'owner';
 }
 
+/** Every account currently holding the owner role, oldest first. */
+export function getOwnerIds() {
+  return withDb((db) =>
+    db
+      .prepare("SELECT telegram_id FROM admins WHERE role = 'owner' ORDER BY added_at ASC")
+      .all()
+      .map((row) => row[0]),
+  );
+}
+
 /**
  * Capability check. Owner: always. Non-admin: never.
  *

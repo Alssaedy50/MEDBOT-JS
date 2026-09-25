@@ -15,7 +15,7 @@ export function esc(value) {
   return escHtml(value);
 }
 
-export function homeKeyboard(userId = null) {
+export function homeKeyboard() {
   return keyboard([[btn('🏠 الرئيسية', 'home')]]);
 }
 
@@ -200,7 +200,6 @@ export async function showAccount(ctx) {
 
 /** About screen from the admin-editable platform settings. */
 export async function showAbout(ctx) {
-  const language = await lang(ctx.from.id);
   const settings = platformSettings();
 
   const body = String(settings.platform_about ?? '').trim() || 'لم تُضف معلومات عن المنصة بعد.';

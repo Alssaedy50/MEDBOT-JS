@@ -41,7 +41,10 @@ import {
   PLATFORM_SEARCH_PROMPT,
   UNIFIED_ASSISTANT_PROMPT,
 } from './prompts.js';
-import { getCandidates, providerFailover } from './router.js';
+import { getCandidates, providerFailover, warmAiPool } from './router.js';
+
+// Re-exported so the bot can warm the provider pool during startup.
+export { warmAiPool };
 
 const NODE_LABELS = {
   book: '📚 كتاب', books: '📚 كتب', video: '🎥 فيديو', audio: '🎧 صوتي',
@@ -247,7 +250,9 @@ export function buildPlatformSearchAnswer(results) {
  *         -> [fallback] full-catalog read + verified-id matching
  *         -> short answer + one-tap buttons from VERIFIED registry ids
  */
-export async function generatePlatformSearchResult(userPrompt, userId = null, fetchImpl = fetch) {
+// `userId` is kept for signature parity with the chat entry point; platform
+// search is registry-scoped, so it has nothing per-user to apply here.
+export async function generatePlatformSearchResult(userPrompt, _userId = null, fetchImpl = fetch) {
   const prompt = String(userPrompt ?? '').trim();
   if (!prompt) return { text: '⚠️ يرجى كتابة ما تبحث عنه.', actions: [] };
 

@@ -11,7 +11,6 @@
 import * as db from '../db/index.js';
 import * as audit from '../audit.js';
 import * as authorization from '../authorization.js';
-import * as i18n from '../i18n.js';
 import * as workflow from '../workflow.js';
 import { btn, contentIcon, escHtml, keyboard, resourceIcon } from '../telegram/ui.js';
 

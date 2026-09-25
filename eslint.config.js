@@ -19,6 +19,8 @@ export default [
         setInterval: 'readonly',
         clearInterval: 'readonly',
         URL: 'readonly',
+        URLSearchParams: 'readonly',
+        AbortSignal: 'readonly',
         TextEncoder: 'readonly',
         TextDecoder: 'readonly',
         AbortController: 'readonly',

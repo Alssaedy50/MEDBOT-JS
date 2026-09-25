@@ -12,7 +12,6 @@
 
 import * as db from '../db/index.js';
 import * as ai from '../ai/index.js';
-import * as i18n from '../i18n.js';
 import * as workflow from '../workflow.js';
 import { btn, escHtml, keyboard } from '../telegram/ui.js';
 
@@ -25,14 +24,6 @@ export function esc(value) {
 
 function homeKeyboard() {
   return keyboard([[btn('🏠 الرئيسية', 'home')]]);
-}
-
-async function lang(userId) {
-  try {
-    return db.getUserLanguage(userId);
-  } catch {
-    return i18n.DEFAULT_LANGUAGE;
-  }
 }
 
 /** True when the assistant is hidden for this caller (admins bypass). */
@@ -116,7 +107,6 @@ export async function handleAssistantText(ctx) {
   if (!workflow.owns(ctx, ASSISTANT_WORKFLOW)) return false;
 
   const userId = ctx.from.id;
-  const language = await lang(userId);
   const text = String(ctx.text ?? '').trim();
 
   if (text === '/cancel') {

@@ -144,10 +144,6 @@ function scopedNewsIds(userId) {
   }
 }
 
-function canManageNews(userId, newsId) {
-  return authorization.can(userId, 'news.edit', 'news', newsId);
-}
-
 function isScopeRestricted(userId) {
   return authorization.isScopeRestricted(userId);
 }
@@ -155,21 +151,6 @@ function isScopeRestricted(userId) {
 // ---------------------------------------------------------------------------
 // Student side — 📰 News Center
 // ---------------------------------------------------------------------------
-
-/** One compact feed entry: type, title, section, time, read state. */
-function feedLine(news, isRead, language) {
-  const mark = isRead ? i18n.t('news_read', language) : i18n.t('news_unread', language);
-  const parts = [`${db.NEWS_TYPE_ICONS[news.news_type] ?? '📰'} <b>${esc(news.title)}</b>`];
-
-  const section = news.section_name || news.subject_name;
-  if (section) parts.push(`🗂 ${esc(section)}`);
-
-  const stamp = news.published_at || news.created_at;
-  if (stamp) parts.push(`🕒 ${esc(stamp)}`);
-
-  parts.push(mark);
-  return parts.join(' · ');
-}
 
 /**
  * The student News Center: chronological, paginated, read-aware.
@@ -258,7 +239,7 @@ export async function showNewsFeed(ctx, { page = 0, newsType = null } = {}) {
  * Shared by the student reader and the admin preview so both always show the
  * same real registry context (current names/breadcrumb, not a copy).
  */
-export function detailLines(news, language) {
+export function detailLines(news, _language) {
   const lines = [
     `${db.NEWS_TYPE_ICONS[news.news_type] ?? '📰'} <b>${esc(news.title)}</b>`,
     `🏷 ${typeLabel(news.news_type)}`,
@@ -1276,7 +1257,7 @@ export async function pickResource(ctx, newsId, folderId = null) {
 
   if (folderId === null || folderId === undefined) {
     // Root listing: recent resources plus the entry folders to browse.
-    let files = listAllContent().filter((file) => folderOk(file[1]));
+    const files = listAllContent().filter((file) => folderOk(file[1]));
     for (const [contentId, , title] of files.slice(0, 25)) {
       rows.push([
         btn(`📄 ${String(title).slice(0, 24)}`, `news_ref_set_resource:${newsId}:${contentId}`),

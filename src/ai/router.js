@@ -428,15 +428,12 @@ export async function providerFailover({
   systemPrompt,
   candidates,
   userId = null,
-  label,
   sourcesFooter = '',
   fetchImpl = fetch,
 }) {
   const validator = new GroundingValidator();
 
   for (const item of candidates ?? []) {
-    const provider = item.provider;
-
     try {
       const started = Date.now();
       let answer = await providers.request({

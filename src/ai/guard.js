@@ -96,7 +96,7 @@ export function collapseRepeatedUnits(text) {
 export function hasRepetition(text) {
   if (!text) return false;
 
-  let [, repeats] = collapseRepeatedUnits(text);
+  const [, repeats] = collapseRepeatedUnits(text);
   if (repeats > 0) return true;
 
   // Paragraph-level check: consecutive identical multi-line blocks.

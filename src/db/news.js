@@ -12,7 +12,7 @@
  * item, never a kind of its own.
  */
 
-import { get, isIntegrityError, run, withDb, withTransaction } from './core.js';
+import { get, isIntegrityError, run, withDb } from './core.js';
 import { buildBreadcrumbPaths } from './registry.js';
 import {
   MAX_NEWS_BODY_LENGTH,
