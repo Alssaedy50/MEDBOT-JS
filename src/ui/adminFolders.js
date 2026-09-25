@@ -270,7 +270,7 @@ export async function showFolderAdmin(ctx, folderId) {
     [btn('➕ إضافة قسم فرعي', `admin_folder_create:${folderId}`)],
     [btn('📤 رفع مورد', `admin_upload:${folderId}`)],
     [btn('✏️ إعادة تسمية', `admin_folder_rename:${folderId}`)],
-    [btn('📦 تغيير النوع', `admin_folder_retype:${folderId}`)],
+    [btn('📦 تغيير النوع', `admin_folder_retype_existing:${folderId}`)],
     [
       btn(
         accepts ? '⛔ إيقاف استقبال المساهمات' : '✅ تفعيل استقبال المساهمات',
@@ -1096,7 +1096,7 @@ export async function armUpload(ctx, folderId) {
   );
 }
 
-/** Capture the uploaded media and ask for the title. Returns handled. */
+/** Capture the uploaded media and offer the title-confirmation preview. */
 export async function handleUploadMedia(ctx) {
   if (ctx.userData?.admin_upload_state !== 'await_file') return false;
   if (!workflow.owns(ctx, ADMIN_UPLOAD_WORKFLOW)) return false;
@@ -1105,50 +1105,79 @@ export async function handleUploadMedia(ctx) {
   const media = contributions.extractMedia(ctx.message);
   if (!media) return false;
 
-  ctx.userData.admin_upload_file_id = media.fileId;
-  ctx.userData.admin_upload_file_type = media.fileType;
-  ctx.userData.admin_upload_state = 'await_title';
-  workflow.begin(ctx, ADMIN_UPLOAD_WORKFLOW);
-
-  await ctx.reply(
-    '📄 الملف مستلم.\n\n✍️ أرسل الآن عنوان المورد.\n\nلإلغاء العملية أرسل /cancel.',
-    {
-      reply_markup: keyboard([
-        [btn('❌ إلغاء', `admin_content:${ctx.userData.admin_upload_folder}`)],
-        [btn('🏠 الرئيسية', 'home')],
-      ]),
-    },
-  );
-  return true;
-}
-
-/** Consume the resource title and register the content. Returns handled. */
-export async function handleUploadText(ctx) {
-  if (ctx.userData?.admin_upload_state !== 'await_title') return false;
-  if (ctx.kind !== 'message') return false;
-  if (!workflow.owns(ctx, ADMIN_UPLOAD_WORKFLOW)) return false;
-
-  const text = String(ctx.text ?? '').trim();
-  if (text === '/cancel') {
-    workflow.clear(ctx);
-    await ctx.reply('❌ تم إلغاء العملية.', { reply_markup: homeKeyboard() });
-    return true;
-  }
-  if (!text) return false;
-
   const folderId = ctx.userData.admin_upload_folder;
-  const fileId = ctx.userData.admin_upload_file_id;
-  const fileType = ctx.userData.admin_upload_file_type;
 
+  // A stale/forged session must never post out of scope.
   if (!authorization.can(ctx.from.id, 'resource.create', 'folder', folderId)) {
     workflow.clear(ctx);
     await ctx.reply('🚫 هذا القسم خارج نطاق مسؤوليتك.', { reply_markup: homeKeyboard() });
     return true;
   }
 
+  // Hold the uploaded file as a preview so the admin can confirm the suggested
+  // title, type a custom one, or cancel before anything is registered.
+  ctx.userData.admin_upload_preview = {
+    fileId: media.fileId,
+    fileType: media.fileType,
+    folderId,
+    title: media.suggestedTitle,
+  };
+  ctx.userData.admin_upload_state = 'await_confirm';
+
+  await ctx.reply(
+    '📥 <b>تم استلام المورد</b>\n\n' +
+      `📄 العنوان المقترح: <b>${esc(media.suggestedTitle)}</b>\n` +
+      `📎 النوع: <code>${esc(media.fileType)}</code>\n\n` +
+      'اختر طريقة تسجيل العنوان:',
+    {
+      reply_markup: keyboard([
+        [btn('✅ تسجيل بالعنوان المقترح', 'admin_upload_confirm')],
+        [btn('✏️ إدخال عنوان مخصص', 'admin_upload_custom_title')],
+        [btn('❌ إلغاء', `admin_folder:${folderId}`)],
+      ]),
+    },
+  );
+  return true;
+}
+
+/** Read the armed preview, or `null` after clearing a stale session. */
+function takeUploadPreview(ctx) {
+  const preview = ctx.userData?.admin_upload_preview;
+  if (!preview || typeof preview !== 'object') return null;
+  return preview;
+}
+
+/** Register the previewed upload after all gates pass. */
+async function registerAdminUpload(ctx, preview) {
+  const folderId = Number.parseInt(preview.folderId, 10);
+  const title = String(preview.title ?? 'Resource').trim() || 'Resource';
+  const fileType = preview.fileType || 'document';
+
+  if (!Number.isInteger(folderId)) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('⚠️ القسم الهدف غير صالح.', {
+      reply_markup: keyboard([[btn('🗂 إدارة الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
+  if (!authorization.can(ctx.from.id, 'resource.create', 'folder', folderId)) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('🚫 هذا القسم خارج نطاق مسؤوليتك.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  if (!preview.fileId) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('⚠️ لا يوجد ملف Telegram صالح للتسجيل.', {
+      reply_markup: keyboard([[btn('🗂 إدارة الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
   let contentId;
   try {
-    contentId = db.addContent(folderId, text, fileId, fileType, 'direct', null, ctx.from.id);
+    contentId = db.addContent(folderId, title, preview.fileId, fileType, 'direct', null, ctx.from.id);
   } catch {
     contentId = null;
   }
@@ -1156,16 +1185,19 @@ export async function handleUploadText(ctx) {
   workflow.clear(ctx);
 
   if (!contentId) {
-    await ctx.reply('⚠️ تعذّر إضافة المورد.', {
-      reply_markup: keyboard([[btn('⬅️ المحتوى', `admin_content:${folderId}`)]]),
+    await ctx.editMessageText('⚠️ تعذر تسجيل المورد. لم يتم تأكيد الإضافة.', {
+      reply_markup: keyboard([
+        [btn('🗂 إدارة الأقسام', 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
     });
-    return true;
+    return;
   }
 
   await audit.logAction(ctx.from.id, 'content_upload', {
     targetType: 'content',
     targetId: contentId,
-    details: text,
+    details: title,
   });
 
   // A newly registered resource produces (once) its own 📚 Section News item.
@@ -1185,12 +1217,91 @@ export async function handleUploadText(ctx) {
     // Archive mirroring is best-effort.
   }
 
-  await ctx.reply(`✅ تم إضافة المورد: <b>${esc(text)}</b>`, {
+  await ctx.editMessageText(`✅ تم إضافة المورد: <b>${esc(title)}</b>`, {
     reply_markup: keyboard([
       [btn('🔧 إدارة المورد', `admin_file:${contentId}`)],
       [btn('⬅️ المحتوى', `admin_content:${folderId}`)],
     ]),
   });
+}
+
+/** Register the upload under the suggested title. */
+export async function confirmUpload(ctx) {
+  if (!has(ctx.from.id, 'can_content')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const preview = takeUploadPreview(ctx);
+  if (!preview) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('⚠️ انتهت جلسة الرفع. ابدأ العملية من جديد.', {
+      reply_markup: keyboard([[btn('🗂 إدارة الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
+  await registerAdminUpload(ctx, preview);
+}
+
+/** Ask for a custom title, keeping the preview armed. */
+export async function requestCustomTitle(ctx) {
+  if (!has(ctx.from.id, 'can_content')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const preview = takeUploadPreview(ctx);
+  if (!preview) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('⚠️ انتهت جلسة الرفع. ابدأ العملية من جديد.', {
+      reply_markup: keyboard([[btn('🗂 إدارة الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
+  if (!authorization.can(ctx.from.id, 'resource.create', 'folder', preview.folderId)) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('🚫 هذا القسم خارج نطاق مسؤوليتك.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  ctx.userData.admin_upload_state = 'await_custom_title';
+  workflow.begin(ctx, ADMIN_UPLOAD_WORKFLOW);
+
+  await ctx.editMessageText(
+    '✏️ <b>العنوان المخصص</b>\n\nأرسل الآن عنوان المورد في رسالة نصية.\n\nللإلغاء أرسل /cancel.',
+    {
+      reply_markup: keyboard([[btn('❌ إلغاء', `admin_folder:${preview.folderId}`)]]),
+    },
+  );
+}
+
+/** Consume a typed custom title and register the previewed upload. */
+export async function handleUploadCustomTitleText(ctx) {
+  if (ctx.userData?.admin_upload_state !== 'await_custom_title') return false;
+  if (ctx.kind !== 'message') return false;
+  if (!workflow.owns(ctx, ADMIN_UPLOAD_WORKFLOW)) return false;
+
+  const text = String(ctx.text ?? '').trim();
+  if (text === '/cancel') {
+    workflow.clear(ctx);
+    await ctx.reply('❌ تم إلغاء العملية.', { reply_markup: homeKeyboard() });
+    return true;
+  }
+  if (!text) return false;
+
+  const preview = takeUploadPreview(ctx);
+  if (!preview) {
+    workflow.clear(ctx);
+    await ctx.reply('⚠️ انتهت جلسة الرفع. ابدأ من جديد.', { reply_markup: homeKeyboard() });
+    return true;
+  }
+  if (text.length > 150) return false;
+
+  preview.title = text;
+  ctx.userData.admin_upload_state = 'await_confirm';
+  await registerAdminUpload(ctx, preview);
   return true;
 }
 
@@ -1460,7 +1571,10 @@ export async function adminFoldersCallbackHandler(ctx) {
     await armFolderRename(ctx, Number.parseInt(data.split(':')[1], 10));
     return;
   }
-  if (data.startsWith('admin_folder_retype:')) {
+  // Python's detail screen uses `admin_folder_retype_existing:` for the
+  // "change the type of this existing section" action; both names route to the
+  // same menu so older messages never dead-end.
+  if (data.startsWith('admin_folder_retype:') || data.startsWith('admin_folder_retype_existing:')) {
     await showFolderTypeMenu(ctx, Number.parseInt(data.split(':')[1], 10));
     return;
   }
@@ -1537,6 +1651,14 @@ export async function adminFoldersCallbackHandler(ctx) {
     await armUpload(ctx, Number.parseInt(data.split(':')[1], 10) || 0);
     return;
   }
+  if (data === 'admin_upload_confirm') {
+    await confirmUpload(ctx);
+    return;
+  }
+  if (data === 'admin_upload_custom_title') {
+    await requestCustomTitle(ctx);
+    return;
+  }
   if (data.startsWith('admin_file:')) {
     await showFileAdmin(ctx, Number.parseInt(data.split(':')[1], 10));
     return;
@@ -1553,4 +1675,6 @@ export const ADMIN_FOLDER_PREFIXES = [
   'admin_file:',
   'admin_file_',
   'admin_upload:',
+  'admin_upload_confirm',
+  'admin_upload_custom_title',
 ];

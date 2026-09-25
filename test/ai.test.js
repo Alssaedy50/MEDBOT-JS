@@ -23,6 +23,7 @@ import * as guard from '../src/ai/guard.js';
 import * as router from '../src/ai/router.js';
 import * as medicalSources from '../src/medicalSources.js';
 import { PLATFORM_SEARCH_NO_MATCH } from '../src/ai/prompts.js';
+import * as prompts from '../src/ai/prompts.js';
 import { cleanupDb, freshDb } from './helpers/harness.js';
 
 let dbPath;
@@ -367,6 +368,43 @@ describe('trusted sources footer', () => {
     assert.equal(medicalSources.buildSourcesFooter([]), '');
     assert.equal(medicalSources.buildSourcesFooter(null), '');
     assert.equal(medicalSources.buildSourcesFooter([{ pmid: null, url: '' }]), '');
+  });
+});
+
+/**
+ * The medical-answer contract: a faithful English academic answer followed by
+ * a short Arabic summary, with a bounded output cap. Ported from the Python
+ * `BilingualMedicalAnswerTests`.
+ */
+describe('bilingual medical answer contract', () => {
+  it('requires English academic prose before the Arabic summary', () => {
+    const prompt = prompts.UNIFIED_ASSISTANT_PROMPT;
+    assert.match(prompt, /English \(academic\)/);
+    assert.match(prompt, /العربية/);
+    assert.match(prompt, /مشوّه للمعنى/);
+    assert.match(prompt, /شرحاً أميناً/);
+    assert.ok(
+      prompt.indexOf('English (academic)') < prompt.indexOf('**العربية'),
+      'the English block must precede the Arabic block',
+    );
+  });
+
+  it('keeps the output-token cap bounded', () => {
+    assert.equal(Number.isInteger(prompts.MAX_OUTPUT_TOKENS), true);
+    assert.ok(prompts.MAX_OUTPUT_TOKENS > 0);
+    assert.ok(prompts.MAX_OUTPUT_TOKENS <= 2000);
+  });
+
+  it('never raises when PubMed is unreachable', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error('network down');
+    };
+    try {
+      assert.deepEqual(await medicalSources.searchPubmed('cardiac cycle', 3), []);
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });
 

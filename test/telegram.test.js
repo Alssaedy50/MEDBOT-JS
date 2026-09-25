@@ -206,6 +206,45 @@ describe('family prefix routing', () => {
       'admin_messages must reach the messaging handler, not the generic admin route',
     );
   });
+
+  it('routes the new admin reference, preview and retype callbacks', async () => {
+    const bot = new FakeBot();
+    db.ensureConfiguredAdmin(ownerId, 'owner');
+    const scratch = db.addFolder(0, 'Alias Family', 'general');
+
+    for (const data of [
+      'admin_roles',
+      'admin_perms_guide',
+      `admin_preview:${ownerId}`,
+      `admin_folder_retype_existing:${scratch}`,
+      'audit_log',
+    ]) {
+      await router.routeCallback(callbackCtx(bot, ownerId, data));
+      assert.ok(
+        !/لم يعد صالحاً/.test(lastEdit(bot)),
+        `${data} must resolve, not hit the stale-button catch-all`,
+      );
+    }
+  });
+
+  it('never dead-ends the legacy assistant gateway callbacks', async () => {
+    const bot = new FakeBot();
+    const studentId = 9202;
+    db.registerUser(studentId, 'legacy', 'Legacy');
+
+    const legacy = {
+      assistant_search: /بحث في موارد المنصة/,
+      assistant_start: /بحث في موارد المنصة/,
+      assistant_medical: /اسأل المساعد الذكي/,
+    };
+
+    for (const [data, expected] of Object.entries(legacy)) {
+      await router.routeCallback(callbackCtx(bot, studentId, data));
+      const text = lastEdit(bot);
+      assert.match(text, expected, `${data} lands on its surviving mode`);
+      assert.ok(!/لم يعد صالحاً/.test(text), `${data} must not hit the catch-all`);
+    }
+  });
 });
 
 /**

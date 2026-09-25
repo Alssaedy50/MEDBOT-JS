@@ -303,8 +303,8 @@ export async function showNotificationHistory(ctx) {
 // Audit log viewer
 // ---------------------------------------------------------------------------
 
-/** Read-only audit-log viewer (owner + can_admins). */
-export async function showAudit(ctx) {
+/** Read-only audit-log viewer (owner + can_admins), optionally filtered. */
+export async function showAudit(ctx, action = null) {
   if (!audit.canViewAudit(ctx.from.id)) {
     await ctx.editMessageText('🔒 سجل التدقيق متاح للمالك ومن يملك صلاحية إدارة المشرفين.', {
       reply_markup: homeKeyboard(),
@@ -315,21 +315,25 @@ export async function showAudit(ctx) {
   let entries = [];
   let total = 0;
   try {
-    entries = db.getAuditEntries(20);
+    entries = db.getAuditEntries(20, action);
     total = db.getAuditCount();
   } catch {
     entries = [];
     total = 0;
   }
 
-  const lines = ['📜 <b>سجل التدقيق</b>', '', `📊 إجمالي الأحداث: ${total}`, ''];
+  const lines = ['📜 <b>سجل التدقيق</b>'];
+  if (action) {
+    lines.push(`🔎 فلتر: ${esc(audit.ACTION_LABELS[action] ?? action)}`);
+  }
+  lines.push(`📊 إجمالي الأحداث: ${total}`, '');
 
   if (!entries.length) {
     lines.push('ℹ️ لا توجد أحداث مسجلة بعد.');
   } else {
     for (const row of entries) {
-      const [, actorId, actorRole, action, targetType, targetId, details, createdAt] = row;
-      const label = audit.ACTION_LABELS[action] ?? action;
+      const [, actorId, actorRole, entryAction, targetType, targetId, details, createdAt] = row;
+      const label = audit.ACTION_LABELS[entryAction] ?? entryAction;
       lines.push(
         `${label}\n` +
           `   👤 <code>${actorId ?? '—'}</code> · 👑 ${esc(actorRole ?? '—')}\n` +
@@ -340,8 +344,21 @@ export async function showAudit(ctx) {
     }
   }
 
+  const actionRows = [];
+  let currentRow = [];
+  for (const key of audit.AUDIT_ACTIONS) {
+    currentRow.push(btn((audit.ACTION_LABELS[key] ?? key).slice(0, 26), `audit_act:${key}`));
+    if (currentRow.length === 2) {
+      actionRows.push(currentRow);
+      currentRow = [];
+    }
+  }
+  if (currentRow.length) actionRows.push(currentRow);
+
   await ctx.editMessageText(lines.join('\n'), {
     reply_markup: keyboard([
+      ...actionRows,
+      [btn('📜 كل السجل', 'admin_audit')],
       [btn('⬅️ إدارة المنصة', 'admin')],
       [btn('🏠 الرئيسية', 'home')],
     ]),
@@ -651,7 +668,7 @@ export async function adminSettingsCallbackHandler(ctx) {
     await showSettings(ctx);
     return;
   }
-  if (data.startsWith('settings_edit:')) {
+  if (data.startsWith('settings_edit:') || data.startsWith('set_edit:')) {
     await armSettingEdit(ctx, data.split(':')[1]);
     return;
   }
@@ -659,16 +676,23 @@ export async function adminSettingsCallbackHandler(ctx) {
     await showNotifications(ctx);
     return;
   }
-  if (data === 'notify_new') {
+  // `notify_new`/`notify_history` are the current names; `notif_new` and
+  // `notif_history` are the Python-era names still carried by messages sent
+  // before the rename, so both must resolve.
+  if (data === 'notify_new' || data === 'notif_new') {
     await armNotification(ctx);
     return;
   }
-  if (data === 'notify_history') {
+  if (data === 'notify_history' || data === 'notif_history') {
     await showNotificationHistory(ctx);
     return;
   }
-  if (data === 'admin_audit') {
+  if (data === 'admin_audit' || data === 'audit_log') {
     await showAudit(ctx);
+    return;
+  }
+  if (data.startsWith('audit_act:')) {
+    await showAudit(ctx, data.split(':', 2)[1]);
     return;
   }
   if (data === 'admin_ai') {
@@ -702,10 +726,15 @@ export async function adminSettingsCallbackHandler(ctx) {
 export const ADMIN_SETTINGS_PREFIXES = [
   'admin_settings',
   'settings_edit:',
+  'set_edit:',
   'admin_notifications',
   'notify_new',
+  'notif_new',
   'notify_history',
+  'notif_history',
   'admin_audit',
+  'audit_log',
+  'audit_act:',
   'admin_ai',
   'admin_runtime',
   'admin_archive',

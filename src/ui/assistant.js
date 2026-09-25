@@ -165,6 +165,20 @@ export async function handleAssistantText(ctx) {
   return true;
 }
 
+/**
+ * Legacy gateway callbacks still carried by messages sent before the current
+ * mode split. They must never dead-end: `assistant_medical` was the
+ * conversational path, `assistant_search`/`assistant_start` were the
+ * resource-lookup path, so each maps to its closest surviving mode.
+ */
+const LEGACY_MODE_ALIASES = Object.freeze({
+  assistant_search: 'search',
+  assistant_start: 'search',
+  assistant_medical: 'chat',
+  assistant_platform: 'search',
+  assistant_chat: 'chat',
+});
+
 /** Callback handler for the assistant namespace. */
 export async function assistantCallbackHandler(ctx) {
   await ctx.answer();
@@ -182,7 +196,22 @@ export async function assistantCallbackHandler(ctx) {
     return;
   }
 
+  if (Object.hasOwn(LEGACY_MODE_ALIASES, data)) {
+    if (await assistantHiddenFor(ctx)) return;
+    await armAssistant(ctx, LEGACY_MODE_ALIASES[data]);
+    return;
+  }
+
   await ctx.editMessageText('⚠️ إجراء غير معروف.', { reply_markup: homeKeyboard() });
 }
 
-export const ASSISTANT_PREFIXES = ['assistant', 'ai_search', 'ai_chat'];
+export const ASSISTANT_PREFIXES = [
+  'assistant',
+  'ai_search',
+  'ai_chat',
+  'assistant_search',
+  'assistant_start',
+  'assistant_medical',
+  'assistant_platform',
+  'assistant_chat',
+];

@@ -94,6 +94,8 @@ export async function showAdmins(ctx) {
   }
 
   rows.push([btn('➕ إضافة مشرف', 'admin_add')]);
+  rows.push([btn('⚙️ إدارة الصلاحيات', 'admin_perms_guide')]);
+  rows.push([btn('ℹ️ صلاحيات الأدوار', 'admin_roles')]);
   if (ownerCount <= 1) {
     rows.push([btn('👑 نقل الملكية', 'admin_transfer')]);
   }
@@ -101,6 +103,145 @@ export async function showAdmins(ctx) {
   rows.push([btn('🏠 الرئيسية', 'home')]);
 
   await ctx.editMessageText(lines.join('\n'), { reply_markup: keyboard(rows) });
+}
+
+/** Read-only reference explaining what each role can do. */
+export async function showRoleReference(ctx) {
+  if (!canManageAdmins(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const lines = ['👑 <b>صلاحيات الأدوار</b>', ''];
+  for (const role of ['owner', 'admin', 'reviewer']) {
+    lines.push(`<b>${esc(db.ROLE_LABELS[role] ?? role)}</b>`);
+    lines.push(esc(db.ROLE_DESCRIPTIONS[role] ?? ''));
+    lines.push('');
+  }
+
+  await ctx.editMessageText(lines.join('\n').trimEnd(), {
+    reply_markup: keyboard([
+      [btn('⬅️ إدارة المشرفين', 'admin_admins')],
+      [btn('🏠 الرئيسية', 'home')],
+    ]),
+  });
+}
+
+/**
+ * Read-only guide to the permission + scope model.
+ *
+ * Gated by `can_admins`, so a scoped admin (who lacks it) never reaches it.
+ */
+export async function showPermissionsGuide(ctx) {
+  if (!canManageAdmins(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const lines = [
+    '⚙️ <b>إدارة الصلاحيات والنطاقات</b>',
+    '',
+    'النموذج: <b>الدور + الصلاحيات + النطاقات</b>.',
+    '«المشرف» يحصل على صلاحيات محددة، ويمكن تقييده بنطاق (قسم / موضوع / مورد) فلا يعمل إلا داخله.',
+    '',
+    '🛡 <b>الصلاحيات المتاحة (Scope-aware)</b>',
+  ];
+  for (const key of db.SCOPED_PERMISSIONS) {
+    lines.push(`• ${esc(db.SCOPED_PERMISSION_LABELS[key] ?? key)}`);
+  }
+
+  lines.push('', '🧭 <b>النطاقات</b>');
+  for (const key of db.SCOPE_TYPES) {
+    lines.push(`• ${esc(db.SCOPE_TYPE_LABELS[key] ?? key)}`);
+  }
+
+  lines.push('');
+  lines.push(
+    'ℹ️ المشرف بلا نطاقات = وصول كامل بحسب صلاحياته. بمجرد إضافة نطاق واحد يصبح مقيّدًا به.',
+  );
+
+  await ctx.editMessageText(lines.join('\n'), {
+    reply_markup: keyboard([
+      [btn('👥 إدارة المشرفين', 'admin_admins')],
+      [btn('🏠 الرئيسية', 'home')],
+    ]),
+  });
+}
+
+/**
+ * Read-only preview of what a given admin sees and can manage.
+ *
+ * This is a review aid, not a session switch: the acting admin's Telegram
+ * identity is never changed, no session is created or faked, and the target's
+ * role/permissions are never mutated.
+ */
+export async function showAdminPreview(ctx, adminId) {
+  if (!canManageAdmins(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  let record;
+  try {
+    record = db.getAdminRecord(adminId);
+  } catch {
+    record = null;
+  }
+  if (!record) {
+    await ctx.editMessageText('⚠️ المشرف غير موجود.', {
+      reply_markup: keyboard([[btn('⬅️ إدارة المشرفين', 'admin_admins')]]),
+    });
+    return;
+  }
+
+  let permissions;
+  try {
+    permissions = db.getAdminPermissions(adminId);
+  } catch {
+    permissions = {};
+  }
+
+  const name = String(record.username ?? '').trim() || 'بدون اسم';
+
+  const lines = [
+    '👁 <b>معاينة واجهة المشرف</b>',
+    `🆔 <code>${esc(adminId)}</code>`,
+    `📝 الاسم: ${esc(name)}`,
+    `👑 الدور: ${esc(db.ROLE_LABELS[record.role] ?? record.role)}`,
+    '',
+    '🔐 <b>ما يستطيع هذا الحساب الوصول إليه</b>',
+  ];
+
+  const granted = db.PERMISSION_KEYS.filter((key) => permissions[key]).map(
+    (key) => db.PERMISSION_LABELS[key] ?? key,
+  );
+
+  if (granted.length) {
+    for (const label of granted) lines.push(`✅ ${esc(label)}`);
+  } else {
+    lines.push('⛔ لا يملك أي صلاحية إدارية حالياً.');
+  }
+
+  lines.push('');
+  lines.push(esc(db.ROLE_DESCRIPTIONS[record.role] ?? ''));
+  lines.push('');
+  lines.push(
+    'ℹ️ هذه معاينة للقراءة فقط: هويتك في Telegram لم تتغير، ولا توجد جلسة مزيفة. ' +
+      'للتحكم في الوصول استخدم أزرار الصلاحيات.',
+  );
+
+  await audit.logAction(ctx.from.id, 'admin_preview', {
+    targetType: 'admin',
+    targetId: adminId,
+  });
+
+  await ctx.editMessageText(lines.join('\n'), {
+    reply_markup: keyboard([
+      [btn('🔐 تعديل صلاحيات هذا المشرف', `admin_view:${adminId}`)],
+      [btn('⬅️ إدارة المشرفين', 'admin_admins')],
+      [btn('🏠 الرئيسية', 'home')],
+    ]),
+  });
 }
 
 /** One admin: role/revoke actions plus the scope entry point. */
@@ -163,6 +304,7 @@ export async function showAdmin(ctx, adminId) {
   }
 
   const rows = [];
+  rows.push([btn('👁 معاينة واجهة المشرف', `admin_preview:${adminId}`)]);
   if (!isOwnerTarget) {
     rows.push([btn('👑 تغيير الدور', `admin_role_menu:${adminId}`)]);
     rows.push([btn('🧭 إدارة النطاق', `scope_menu:${adminId}`)]);
@@ -881,6 +1023,18 @@ export async function adminManagementCallbackHandler(ctx) {
     await armAddAdmin(ctx);
     return;
   }
+  if (data === 'admin_roles') {
+    await showRoleReference(ctx);
+    return;
+  }
+  if (data === 'admin_perms_guide') {
+    await showPermissionsGuide(ctx);
+    return;
+  }
+  if (data.startsWith('admin_preview:')) {
+    await showAdminPreview(ctx, Number.parseInt(data.split(':')[1], 10));
+    return;
+  }
   if (data === 'admin_transfer') {
     await showTransferMenu(ctx);
     return;
@@ -963,6 +1117,9 @@ export async function adminManagementCallbackHandler(ctx) {
 export const ADMIN_MGMT_PREFIXES = [
   'admin_admins',
   'admin_add',
+  'admin_roles',
+  'admin_perms_guide',
+  'admin_preview:',
   'admin_transfer',
   'admin_transfer_confirm:',
   'admin_transfer_do:',

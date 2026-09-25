@@ -53,6 +53,7 @@ export const AUDIT_ACTIONS = Object.freeze([
   'news_resource_auto',
   'scope_grant',
   'scope_revoke',
+  'admin_preview',
   'authz_denied',
 ]);
 
@@ -98,6 +99,7 @@ export const ACTION_LABELS = Object.freeze({
   news_resource_auto: '🟢 خبر مورد تلقائي',
   scope_grant: '🧭 منح نطاق',
   scope_revoke: '✂️ سحب نطاق',
+  admin_preview: '👁 معاينة واجهة مشرف',
   authz_denied: '🚫 رفض تصريح',
 });
 

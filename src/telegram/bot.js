@@ -111,7 +111,7 @@ export function registerHandlers() {
   // Order matters: the most specific armed workflow first, so a typed title is
   // never consumed by a broader flow.
   registerTextHandler('news', news.handleNewsText);
-  registerTextHandler('adminUpload', adminFolders.handleUploadText);
+  registerTextHandler('adminUploadCustomTitle', adminFolders.handleUploadCustomTitleText);
   registerTextHandler('adminFileRename', adminFolders.handleFileRenameText);
   registerTextHandler('adminFolderCreate', adminFolders.handleFolderCreateText);
   registerTextHandler('adminFolderRename', adminFolders.handleFolderRenameText);

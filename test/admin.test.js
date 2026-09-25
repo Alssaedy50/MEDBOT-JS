@@ -138,6 +138,97 @@ describe('role and permission editing', () => {
   });
 });
 
+describe('role address and permission reference screens', () => {
+  it('lists every role description without offering owner as assignable', async () => {
+    const bot = new FakeBot();
+    await adminMgmt.adminManagementCallbackHandler(callbackCtx(bot, ownerId, 'admin_roles'));
+
+    const text = lastEdit(bot);
+    assert.match(text, /صلاحيات الأدوار/);
+    assert.match(text, /المالك/);
+    assert.match(text, /مشرف/);
+    assert.match(text, /مراجع/);
+
+    const buttons = lastButtons(bot);
+    assert.ok(!buttons.some((data) => data.startsWith('admin_setrole:')), 'no role is assigned here');
+  });
+
+  it('explains scoped permissions and scope kinds', async () => {
+    const bot = new FakeBot();
+    await adminMgmt.adminManagementCallbackHandler(
+      callbackCtx(bot, ownerId, 'admin_perms_guide'),
+    );
+
+    const text = lastEdit(bot);
+    assert.match(text, /إدارة الصلاحيات والنطاقات/);
+    for (const label of ['عرض الموارد', 'إدارة الأقسام', 'مراجعة المساهمات']) {
+      assert.match(text, new RegExp(label), `the guide documents ${label}`);
+    }
+    for (const kind of ['قسم', 'موضوع', 'مورد']) {
+      assert.match(text, new RegExp(kind), `the guide documents the ${kind} scope`);
+    }
+  });
+
+  it('refuses the reference screens to an admin without can_admins', async () => {
+    const scopedAdmin = 4030;
+    db.addSubAdmin(scopedAdmin, 'no-admins');
+    db.applyRolePreset(scopedAdmin, 'reviewer');
+
+    for (const data of ['admin_roles', 'admin_perms_guide']) {
+      const bot = new FakeBot();
+      await adminMgmt.adminManagementCallbackHandler(callbackCtx(bot, scopedAdmin, data));
+      assert.match(lastEdit(bot), /🔒/, `${data} is gated`);
+    }
+  });
+});
+
+describe('admin interface preview', () => {
+  it('summarises what the target account can do, read-only', async () => {
+    const bot = new FakeBot();
+    const target = 4040;
+    db.addSubAdmin(target, 'preview-target');
+    db.applyRolePreset(target, 'reviewer');
+
+    await adminMgmt.adminManagementCallbackHandler(
+      callbackCtx(bot, ownerId, `admin_preview:${target}`),
+    );
+
+    const text = lastEdit(bot);
+    assert.match(text, /معاينة واجهة المشرف/);
+    assert.match(text, new RegExp(String(target)));
+    assert.match(text, /مراجعة المساهمات/, 'a granted capability is listed');
+    assert.match(text, /للقراءة فقط/, 'the preview says it does not switch the session');
+
+    // It is a review aid: it must not mutate the target or the ownership.
+    const record = db.getAdminRecord(target);
+    assert.equal(record.role, 'reviewer');
+    assert.deepEqual(db.getOwnerIds(), [ownerId]);
+  });
+
+  it('audits the preview without changing access', async () => {
+    const bot = new FakeBot();
+    const target = 4041;
+    db.addSubAdmin(target, 'audit-target');
+    const before = db.userHasPermission(target, 'can_content');
+
+    await adminMgmt.adminManagementCallbackHandler(
+      callbackCtx(bot, ownerId, `admin_preview:${target}`),
+    );
+
+    const entries = db.getAuditEntries(50, 'admin_preview');
+    assert.ok(entries.length >= 1, 'the preview is audited');
+    assert.equal(db.userHasPermission(target, 'can_content'), before);
+  });
+
+  it('reports a missing admin instead of dumping a broken screen', async () => {
+    const bot = new FakeBot();
+    await adminMgmt.adminManagementCallbackHandler(
+      callbackCtx(bot, ownerId, 'admin_preview:999999'),
+    );
+    assert.match(lastEdit(bot), /غير موجود/);
+  });
+});
+
 describe('scoped RBAC — the single hierarchical scope picker', () => {
   it('opens at the real hierarchy root without asking for a scope type first', async () => {
     const bot = new FakeBot();

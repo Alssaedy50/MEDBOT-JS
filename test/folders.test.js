@@ -20,6 +20,7 @@ import {
   FakeBot,
   freshDb,
   lastEdit,
+  mediaCtx,
   messageCtx,
 } from './helpers/harness.js';
 
@@ -128,7 +129,7 @@ describe('section detail screen', () => {
       `admin_folder_create:${tree.year}`,
       `admin_upload:${tree.year}`,
       `admin_folder_rename:${tree.year}`,
-      `admin_folder_retype:${tree.year}`,
+      `admin_folder_retype_existing:${tree.year}`,
       `admin_folder_toggle:${tree.year}`,
       `admin_folder_move:${tree.year}`,
       `admin_folder_delete:${tree.year}`,
@@ -399,5 +400,153 @@ describe('section move scope gate', () => {
       !buttons.includes(`admin_folder_move_to:${parent}:${child}`),
       'a descendant is not a destination',
     );
+  });
+});
+
+describe('admin resource upload preview', () => {
+  /** Arm the upload state for a folder, as `armUpload` leaves it. */
+  function armedState(folderId) {
+    return {
+      [workflow.ACTIVE_KEY]: 'admin_upload',
+      admin_upload: true,
+      admin_upload_folder: folderId,
+      admin_upload_state: 'await_file',
+    };
+  }
+
+  const documentMessage = {
+    document: { file_id: 'doc-file-1', file_name: 'Anatomy Notes.pdf' },
+  };
+
+  it('offers the suggested title with confirm, custom and cancel choices', async () => {
+    const bot = new FakeBot();
+    const userData = armedState(tree.subject);
+
+    const handled = await folders.handleUploadMedia(
+      mediaCtx(bot, ownerId, documentMessage, userData),
+    );
+
+    assert.equal(handled, true, 'the media message is consumed');
+    const text = lastReply(bot);
+    assert.match(text, /العنوان المقترح/, 'the suggested title is shown');
+    assert.match(text, /Anatomy Notes\.pdf/, 'the suggested title comes from the file name');
+
+    assert.deepEqual(replyButtons(bot), [
+      'admin_upload_confirm',
+      'admin_upload_custom_title',
+      `admin_folder:${tree.subject}`,
+    ]);
+  });
+
+  it('registers the resource under the suggested title on confirm', async () => {
+    const bot = new FakeBot();
+    const userData = armedState(tree.subject);
+
+    await folders.handleUploadMedia(mediaCtx(bot, ownerId, documentMessage, userData));
+    await folders.adminFoldersCallbackHandler(callbackCtx(bot, ownerId, 'admin_upload_confirm', userData));
+
+    const rows = db.getFiles(tree.subject);
+    const added = rows.find((row) => row[1] === 'Anatomy Notes.pdf');
+    assert.ok(added, 'the resource is stored under the suggested title');
+    assert.equal(added[2], 'doc-file-1', 'the Telegram file id is preserved');
+
+    assert.match(lastEdit(bot), /تم إضافة المورد/, 'success is confirmed');
+    assert.equal(userData.admin_upload_state, undefined, 'the workflow state is cleared');
+  });
+
+  it('registers a typed custom title instead of the suggestion', async () => {
+    const bot = new FakeBot();
+    const userData = armedState(tree.subject);
+    const suggestedBefore = db
+      .getFiles(tree.subject)
+      .filter((row) => row[1] === 'Anatomy Notes.pdf').length;
+
+    await folders.handleUploadMedia(mediaCtx(bot, ownerId, documentMessage, userData));
+    await folders.adminFoldersCallbackHandler(
+      callbackCtx(bot, ownerId, 'admin_upload_custom_title', userData),
+    );
+    assert.equal(userData.admin_upload_state, 'await_custom_title');
+
+    const consumed = await folders.handleUploadCustomTitleText(
+      messageCtx(bot, ownerId, 'تشريح - ملخص مخصص', userData),
+    );
+
+    assert.equal(consumed, true);
+    const rows = db.getFiles(tree.subject);
+    assert.ok(
+      rows.some((row) => row[1] === 'تشريح - ملخص مخصص'),
+      'the custom title is used',
+    );
+    assert.equal(
+      rows.filter((row) => row[1] === 'Anatomy Notes.pdf').length,
+      suggestedBefore,
+      'the suggested title is not also stored',
+    );
+  });
+
+  it('does not register anything for a stale confirmation session', async () => {
+    const bot = new FakeBot();
+    const userData = { [workflow.ACTIVE_KEY]: 'admin_upload' };
+    const before = db.getFiles(tree.subject).length;
+
+    await folders.adminFoldersCallbackHandler(
+      callbackCtx(bot, ownerId, 'admin_upload_confirm', userData),
+    );
+
+    assert.match(lastEdit(bot), /انتهت جلسة الرفع/, 'the stale session is reported');
+    assert.equal(
+      db.getFiles(tree.subject).length,
+      before,
+      'no resource is created without an armed preview',
+    );
+  });
+
+  it('refuses the upload when the target folder is outside the admin scope', async () => {
+    const bot = new FakeBot();
+    const scopedAdmin = 7200;
+    const outside = db.addFolder(0, 'Outside Branch', 'general');
+    db.addSubAdmin(scopedAdmin, 'scoped');
+    db.applyRolePreset(scopedAdmin, 'admin');
+    db.addAdminScope(scopedAdmin, 'folder', tree.year, ownerId);
+
+    const userData = armedState(outside);
+    const before = db.getFiles(outside).length;
+
+    const handled = await folders.handleUploadMedia(
+      mediaCtx(bot, scopedAdmin, documentMessage, userData),
+    );
+
+    assert.equal(handled, true, 'the out-of-scope upload is consumed and stopped');
+    assert.match(lastReply(bot), /خارج نطاق مسؤوليتك/);
+    assert.equal(
+      db.getFiles(outside).length,
+      before,
+      'nothing is registered outside scope',
+    );
+  });
+
+  it('refuses a forged confirmation for an out-of-scope folder', async () => {
+    const bot = new FakeBot();
+    const scopedAdmin = 7300;
+    const outside = db.addFolder(0, 'Forged Target', 'general');
+    db.addSubAdmin(scopedAdmin, 'scoped');
+    db.applyRolePreset(scopedAdmin, 'admin');
+    db.addAdminScope(scopedAdmin, 'folder', tree.year, ownerId);
+
+    const userData = {
+      [workflow.ACTIVE_KEY]: 'admin_upload',
+      admin_upload_preview: {
+        fileId: 'forged-file',
+        fileType: 'document',
+        folderId: outside,
+        title: 'forged',
+      },
+    };
+    const before = db.getFiles(outside).length;
+
+    await folders.confirmUpload(callbackCtx(bot, scopedAdmin, 'admin_upload_confirm', userData));
+
+    assert.match(lastEdit(bot), /خارج نطاق مسؤوليتك/);
+    assert.equal(db.getFiles(outside).length, before);
   });
 });

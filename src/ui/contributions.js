@@ -185,13 +185,29 @@ export async function armContribution(ctx, folderId) {
 export function extractMedia(message) {
   if (!message) return null;
   if (message.document) {
-    return { fileId: message.document.file_id, fileType: 'document' };
+    return {
+      fileId: message.document.file_id,
+      fileType: 'document',
+      suggestedTitle: message.document.file_name || 'Document',
+    };
   }
-  if (message.audio) return { fileId: message.audio.file_id, fileType: 'audio' };
-  if (message.voice) return { fileId: message.voice.file_id, fileType: 'audio' };
-  if (message.video) return { fileId: message.video.file_id, fileType: 'video' };
+  if (message.audio) {
+    return {
+      fileId: message.audio.file_id,
+      fileType: 'audio',
+      suggestedTitle: message.audio.file_name || message.audio.title || 'Audio',
+    };
+  }
+  if (message.voice) return { fileId: message.voice.file_id, fileType: 'audio', suggestedTitle: 'Voice Note' };
+  if (message.video) {
+    return {
+      fileId: message.video.file_id,
+      fileType: 'video',
+      suggestedTitle: message.video.file_name || 'Video',
+    };
+  }
   if (message.photo?.length) {
-    return { fileId: message.photo[message.photo.length - 1].file_id, fileType: 'photo' };
+    return { fileId: message.photo[message.photo.length - 1].file_id, fileType: 'photo', suggestedTitle: 'Photo' };
   }
   return null;
 }
