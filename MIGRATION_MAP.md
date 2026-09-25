@@ -96,6 +96,17 @@ linked `resource_id`, and that is a property of the item, not a news kind.
 `legacy resource` rows are folded into `section` by migration v17 and only keep a
 display label for any un-migrated row.
 
+**Section/subject semantics.** A `section` news item stores:
+
+- `section_folder_id` — the real folder the author picked as the section;
+- `subject_folder_id` — an *optional*, explicitly chosen branch, never inferred
+  from the section's position in the tree (a section may be any real node, so
+  its parent says nothing about the subject);
+- `resource_id` — an optional linked resource, not a news kind.
+
+An auto Section News item produced for a newly registered resource anchors the
+resource's own folder as the section and leaves `subject_folder_id` empty.
+
 Admin News UX (`📰 News` → `➕ Publish News` / `📋 Published News` / `🗄 Archive`),
 student News UX (`📋 All News` / `🚨 Important / Urgent` / `📚 Section News`) and
 subscriptions (`🚨 Important / Urgent` / `📚 Section News` / `📚 Manage Followed
