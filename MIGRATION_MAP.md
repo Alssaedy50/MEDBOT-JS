@@ -158,13 +158,34 @@ equivalent was added — inventing a quiz feature would exceed the Python
 behaviour. Model discovery/health from `ai_discovery.py`/`ai_router.py` is
 reimplemented in `src/ai/router.js`.
 
-## 11. Audit
+## 11. Emergency Resource Archive
+
+| Python | JavaScript | Notes |
+|---|---|---|
+| `archive.py` | `src/archive.js` | Standalone disaster-recovery channel mirror. |
+| `database.py` archive helpers | `src/db/notifications.js` | `archive_sync` rows + status transitions. |
+| Admin surface | `src/ui/adminSettings.js` | `admin_archive`, `archive_resync`, `archive_retry`, `archive_status`. |
+
+The mirror is **registration-driven**, exactly as in Python: a resource is posted
+when it is uploaded (`src/ui/adminFolders.js`) or when a contribution is approved
+(`src/ui/contributions.js`), and an admin can sweep or retry from the surface.
+Startup does **not** sweep the catalog — there is deliberately no boot-time
+resync, so no test asserts one. Enablement is environment-only
+(`MEDBOT_ARCHIVE_CHANNEL` / `ARCHIVE_CHANNEL_ID`), the channel is never
+hardcoded, and publication identity is the normalised (title, type, file_id)
+triple so a rename or a move cannot republish the same file.
+
+`ai_architect.py` is **dead code** in Python (nothing imports it; the only
+matches are the unrelated word "architecture"), so no equivalent was written —
+reimplementing it would add a feature the Python bot never runs.
+
+## 12. Audit
 
 `src/audit.js` + `src/db/audit.js`: privileged actions are recorded append-only
 with actor, role, action, target and details. Viewing is limited to the owner and
 `can_admins`. Auditing is best-effort and never blocks the action.
 
-## 12. Telegram handlers and keyboards
+## 13. Telegram handlers and keyboards
 
 | Python | JavaScript | Notes |
 |---|---|---|
@@ -178,7 +199,7 @@ The Telegram client (`src/telegram/client.js`) is a small dependency-free
 `fetch` transport, which keeps the project free of a heavy client library and
 makes the transport trivially stubbable in tests.
 
-## 13. Tests and configuration
+## 14. Tests and configuration
 
 | Python test | JavaScript equivalent |
 |---|---|
@@ -190,6 +211,12 @@ makes the transport trivially stubbable in tests.
 | `test_contribution_ux.py` | `test/contributions.test.js` |
 | `test_ai*.py`, `test_medbot_grounding.py`, `test_medbot_search_intent.py` | `test/ai.test.js` |
 | `test_keys.py`, `test_messaging.py`, `test_medbot_router.py` | `test/telegram.test.js`, `test/startup.test.js` |
+| `test_medbot_fixes.py` | `test/telegram.test.js`, `test/messages.test.js` (workflow ownership, `/cancel`, reply audit) |
+| `test_medbot_phase2.py` | `test/contributions.test.js` (review columns, reviewer + reason, double-review guards) |
+| `test_news_phase2_fixes.py` | `test/delivery.test.js` (startup recovery, crash-window semantics) |
+| `test_archive_sync.py` | `test/archive.test.js` |
+| `test_platform_update.py` | `test/admin.test.js` (owner transfer, new permission keys) |
+| `test_medbot_performance.py` | `test/database.test.js`, `test/startup.test.js` (pragmas, breadcrumbs, pool reuse) |
 
 Run with `npm test` (`node --test`). Configuration is environment-driven and
 documented in `.env.example`; there is no Python runtime file in this repository.
