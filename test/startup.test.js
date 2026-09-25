@@ -43,6 +43,35 @@ describe('createBot startup path', () => {
     assert.equal(bot, null, 'no token and no transport means no bot to run');
   });
 
+  it('starts the delivery-recovery worker exactly once per boot', async () => {
+    const newsDelivery = await import('../src/newsDelivery.js');
+    await botModule.createBot({ transport: new FakeBot() });
+
+    // A second, concurrent start is a no-op while the first worker is active:
+    // a repeated boot must never spawn a duplicate recovery loop.
+    assert.equal(typeof newsDelivery.startRecovery(new FakeBot()), 'boolean');
+    await newsDelivery.drainBackground();
+  });
+
+  it('does not run an archive resync at startup', async () => {
+    // The Python bot mirrors resources when they are registered and through the
+    // admin actions; startup does not sweep the catalog. A boot with the archive
+    // configured must therefore post nothing to the channel.
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    const bot = new FakeBot();
+    const folderId = db.addFolder(0, 'قسم البدء', 'general');
+    db.addContent(folderId, 'مورد البدء', 'file-boot', 'document');
+
+    await botModule.createBot({ transport: bot });
+    await import('../src/newsDelivery.js').then((m) => m.drainBackground());
+
+    const posts = bot.calls.filter((c) =>
+      ['sendDocument', 'sendVideo', 'sendPhoto', 'sendAudio'].includes(c.method),
+    );
+    assert.equal(posts.length, 0, 'startup must not sweep the archive');
+    delete process.env.MEDBOT_ARCHIVE_CHANNEL;
+  });
+
   it('registers a route for every subsystem the bot wires up', async () => {
     await botModule.createBot({ transport: new FakeBot() });
     const names = adapter.registeredRoutes

@@ -117,6 +117,24 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 70 | Admin review (approve/reject) | ✅ | `contributions.test.js` |
 | 71 | Review gated by `can_contributions` | ✅ | `contributions.test.js` |
 
+## Emergency Resource Archive
+
+| # | Feature | Status | Test |
+|---|---|---|---|
+| 95 | Enablement is env-only (`MEDBOT_ARCHIVE_CHANNEL` / `ARCHIVE_CHANNEL_ID`) | ✅ | `archive.test.js` |
+| 96 | Numeric channel id sent as number, `@username` as string | ✅ | `archive.test.js` |
+| 97 | Resource identity is (normalised title, type, file_id) — a rename/move cannot republish | ✅ | `archive.test.js` |
+| 98 | Publication is idempotent (one post per resource) | ✅ | `archive.test.js` |
+| 99 | Media dispatch by registered file type | ✅ | `archive.test.js` |
+| 100 | Per-folder section header posted once | ✅ | `archive.test.js` |
+| 101 | A failed send is recorded, never thrown | ✅ | `archive.test.js` |
+| 102 | Resync skips published rows, mirrors pending ones | ✅ | `archive.test.js` |
+| 103 | Retry reaches only failed rows and never reconstructs an orphan | ✅ | `archive.test.js` |
+| 104 | Admin surface: `archive_resync` / `archive_retry` / `archive_status` | ✅ | `archive.test.js` |
+| 105 | Resync/retry are authorized and audited | ✅ | `archive.test.js` |
+| 106 | Upload/approved contribution mirror with the header, best-effort | ✅ | `archive.test.js` |
+| 107 | No startup resync (matches Python; the mirror is registration-driven) | ✅ | `startup.test.js` |
+
 ## AI and resource search
 
 | # | Feature | Status | Test |

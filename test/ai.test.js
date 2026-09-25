@@ -20,6 +20,7 @@ import * as db from '../src/db/index.js';
 import * as ai from '../src/ai/index.js';
 import * as intent from '../src/ai/intent.js';
 import * as guard from '../src/ai/guard.js';
+import * as router from '../src/ai/router.js';
 import { PLATFORM_SEARCH_NO_MATCH } from '../src/ai/prompts.js';
 import { cleanupDb, freshDb } from './helpers/harness.js';
 
@@ -285,5 +286,77 @@ describe('grounding validator', () => {
       'Second, different paragraph about the lungs.',
       'Third paragraph about circulation.'].join('\n');
     assert.equal(guard.hasRepetition(varied), false);
+  });
+});
+
+describe('grounding context', () => {
+  it('describes an empty result set without inventing anything', () => {
+    const context = intent.buildLibraryContext([]);
+    assert.equal(typeof context, 'string');
+    assert.equal(context.includes('PHYSIOLOGY'), false);
+  });
+
+  it('carries only the registered names it was given', () => {
+    const results = [{ id: registry.physiology, name: 'PHYSIOLOGY', path: 'Second Year › PHYSIOLOGY' }];
+    const context = intent.buildLibraryContext(results);
+    assert.match(context, /PHYSIOLOGY/);
+    assert.match(context, /Second Year/);
+  });
+
+  it('renders only real registered rows, never an invented branch', () => {
+    const [folders, contents, paths] = ai.loadRegistry();
+    const catalog = ai.buildPlatformCatalog(folders, contents, paths);
+    assert.match(catalog, /PHYSIOLOGY/);
+    assert.match(catalog, /GIT Physiology/);
+    // A curriculum the registry does not contain is never rendered.
+    assert.equal(/First Year|Anatomy|Histology/.test(catalog), false);
+  });
+
+  it('bounds the catalog so a huge library cannot blow the prompt', () => {
+    const folders = [];
+    const contents = [];
+    for (let i = 0; i < 3000; i += 1) {
+      folders.push([i + 1, 0, `قسم رقم ${i}`, 'general', 0]);
+    }
+    const catalog = ai.buildPlatformCatalog(folders, contents, {});
+    assert.ok(catalog.length <= 20000, `catalog length ${catalog.length} is bounded`);
+    assert.match(catalog, /اختصار/);
+  });
+
+  it('renders an empty catalog for an empty library', () => {
+    assert.equal(typeof ai.buildPlatformCatalog([], [], []), 'string');
+  });
+});
+
+describe('router health', () => {
+  it('puts a model in cooldown with exponential backoff and clears it on success', () => {
+    router.resetRouterState();
+    const model = { provider: 'groq', model: 'llama', endpoint: 'https://x' };
+
+    assert.equal(router.isInCooldown(model), false);
+    router.markModelFailure(model, 'rate_limit');
+    assert.equal(router.isInCooldown(model), true);
+
+    router.markModelSuccess(model);
+    assert.equal(router.isInCooldown(model), false);
+    assert.equal(router.modelHealthSnapshot().successes[router.modelKey(model)], 1);
+  });
+
+  it('caps the cooldown so a permanently broken model is retried eventually', () => {
+    router.resetRouterState();
+    const model = { provider: 'gemini', model: 'flash', endpoint: 'https://y' };
+    for (let i = 0; i < 10; i += 1) router.markModelFailure(model, 'server_error');
+
+    const until = router.modelHealthSnapshot().cooldowns[router.modelKey(model)];
+    const wait = until - Date.now() / 1000;
+    assert.ok(wait <= router.MAX_COOLDOWN_SECONDS + 1, `cooldown ${wait} is capped`);
+    router.resetRouterState();
+  });
+
+  it('keys models by provider, model and endpoint together', () => {
+    const a = router.modelKey({ provider: 'groq', model: 'llama', endpoint: 'e1' });
+    const b = router.modelKey({ provider: 'groq', model: 'llama', endpoint: 'e2' });
+    const c = router.modelKey({ provider: 'gemini', model: 'llama', endpoint: 'e1' });
+    assert.equal(new Set([a, b, c]).size, 3);
   });
 });
