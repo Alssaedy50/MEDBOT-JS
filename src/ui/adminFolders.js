@@ -786,8 +786,19 @@ export async function showMovePicker(ctx, folderId, parentId = 0) {
     folders = [];
   }
 
+  // A scoped admin only sees destinations inside their own branch. The
+  // authoritative gate in `moveFolder` would refuse an out-of-scope target
+  // anyway; filtering here keeps the picker from exposing the rest of the tree,
+  // and entering at the scope roots instead of the platform root.
+  if (authorization.isScopeRestricted(ctx.from.id)) {
+    const allowed = authorization.scopedFolderIds(ctx.from.id) ?? new Set();
+    folders = folders.filter((folder) => allowed.has(folder[0]));
+  }
+
   // A folder can never be moved into itself or one of its own descendants.
-  const candidates = folders.filter((folder) => folder[0] !== folderId);
+  const candidates = folders.filter(
+    (folder) => folder[0] !== folderId && !db.isDescendantOf(folderId, folder[0]),
+  );
 
   let breadcrumb = 'الرئيسية 🏠';
   if (parentId) {
@@ -818,7 +829,11 @@ export async function showMovePicker(ctx, folderId, parentId = 0) {
     rows.push([btn('⬅️ رجوع', `admin_folder_move_browse:${folderId}:${parent || 0}`)]);
   }
 
-  rows.push([btn('🏠 نقل إلى الجذر', `admin_folder_move_to:${folderId}:0`)]);
+  // Moving to the root would escape every scope, so a scoped admin may not
+  // choose it.
+  if (!authorization.isScopeRestricted(ctx.from.id)) {
+    rows.push([btn('🏠 نقل إلى الجذر', `admin_folder_move_to:${folderId}:0`)]);
+  }
   rows.push([btn('⬅️ إلغاء', `admin_folder:${folderId}`)]);
   rows.push([btn('🏠 الرئيسية', 'home')]);
 
@@ -831,8 +846,17 @@ export async function showMovePicker(ctx, folderId, parentId = 0) {
 
 /** Execute a validated folder move. */
 export async function moveFolder(ctx, folderId, newParentId) {
+  // Scope gate: both the source and the destination must be inside the admin's
+  // responsibility, so a move can never smuggle a branch into or out of scope.
   if (!authorization.can(ctx.from.id, 'section.manage', 'folder', folderId)) {
     await ctx.editMessageText('🚫 هذا القسم خارج نطاق مسؤوليتك.', {
+      reply_markup: keyboard([[btn('⬅️ الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
+  if (newParentId !== 0 && !authorization.can(ctx.from.id, 'section.manage', 'folder', newParentId)) {
+    await ctx.editMessageText('🚫 القسم الهدف خارج نطاق مسؤوليتك.', {
       reply_markup: keyboard([[btn('⬅️ الأقسام', 'admin_folders')]]),
     });
     return;
@@ -844,19 +868,23 @@ export async function moveFolder(ctx, folderId, newParentId) {
     await audit.logAction(ctx.from.id, 'folder_move', {
       targetType: 'folder',
       targetId: folderId,
-      details: `parent=${newParentId}`,
+      details: `target=${newParentId}`,
     });
-    await ctx.editMessageText(`✅ ${message}`, {
+    await ctx.editMessageText(`✅ تم نقل القسم بنجاح.\n\n${message}`, {
       reply_markup: keyboard([
-        [btn('🔧 إدارة القسم', `admin_folder:${folderId}`)],
-        [btn('⬅️ الأقسام', 'admin_folders')],
+        [btn('🗂 إدارة القسم', `admin_folder:${folderId}`)],
+        [btn('🗂 إدارة الأقسام', 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
       ]),
     });
     return;
   }
 
   await ctx.editMessageText(`⚠️ ${message}`, {
-    reply_markup: keyboard([[btn('⬅️ رجوع', `admin_folder:${folderId}`)]]),
+    reply_markup: keyboard([
+      [btn('↩️ إدارة القسم', `admin_folder:${folderId}`)],
+      [btn('🗂 إدارة الأقسام', 'admin_folders')],
+    ]),
   });
 }
 

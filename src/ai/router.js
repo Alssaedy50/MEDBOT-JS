@@ -13,6 +13,7 @@
 import { randomInt } from 'node:crypto';
 
 import * as db from '../db/index.js';
+import { ensureSourcesFooter } from '../medicalSources.js';
 import * as providers from './providers.js';
 import { GroundingValidator } from './intent.js';
 import { guardAnswer, hasRepetition } from './guard.js';
@@ -476,7 +477,7 @@ export async function providerFailover({
       await recordSuccess(item, latencyMs);
 
       // The application, not the model, owns the final citation footer.
-      answer = ensureFooter(answer, sourcesFooter);
+      answer = ensureSourcesFooter(answer, sourcesFooter);
       return answer;
     } catch (error) {
       await recordFailure(item, error);
@@ -493,14 +494,6 @@ export async function providerFailover({
   }
 
   return '';
-}
-
-function ensureFooter(answer, footer) {
-  const cleaned = String(answer ?? '').replace(/\s+$/, '');
-  if (!footer) return cleaned;
-  const lowered = cleaned.toLowerCase();
-  if (lowered.includes('pubmed') || lowered.includes('pmid')) return cleaned;
-  return `${cleaned}${footer}`;
 }
 
 // Re-exported so the facade and tests share one prompt constant.

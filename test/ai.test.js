@@ -21,6 +21,7 @@ import * as ai from '../src/ai/index.js';
 import * as intent from '../src/ai/intent.js';
 import * as guard from '../src/ai/guard.js';
 import * as router from '../src/ai/router.js';
+import * as medicalSources from '../src/medicalSources.js';
 import { PLATFORM_SEARCH_NO_MATCH } from '../src/ai/prompts.js';
 import { cleanupDb, freshDb } from './helpers/harness.js';
 
@@ -325,6 +326,47 @@ describe('grounding context', () => {
 
   it('renders an empty catalog for an empty library', () => {
     assert.equal(typeof ai.buildPlatformCatalog([], [], []), 'string');
+  });
+});
+
+/**
+ * The application owns the citation block: verified PubMed records are
+ * appended under the answer, and a model that already cited them is not
+ * duplicated. Ported from the Python `TrustedSourcesFooterTests`.
+ */
+describe('trusted sources footer', () => {
+  it('lists only records carrying both a PMID and a URL', () => {
+    const footer = medicalSources.buildSourcesFooter([
+      { pmid: '111', title: 'Verified paper', url: 'https://pubmed.ncbi.nlm.nih.gov/111/' },
+      { pmid: null, title: 'No pmid', url: '' },
+    ]);
+    assert.match(footer, /PubMed/);
+    assert.match(footer, /PMID: 111/);
+    assert.match(footer, /https:\/\/pubmed\.ncbi\.nlm\.nih\.gov\/111\//);
+    assert.ok(!footer.includes('No pmid'), 'an unverifiable record is never cited');
+  });
+
+  it('appends the sources footer when the model omits citations', () => {
+    const footer = medicalSources.buildSourcesFooter([
+      { pmid: '333', title: 'T', url: 'https://x/333' },
+    ]);
+    const merged = medicalSources.ensureSourcesFooter('A grounded answer.', footer);
+    assert.match(merged, /A grounded answer\./);
+    assert.match(merged, /PMID: 333/);
+  });
+
+  it('does not duplicate a footer the model already produced', () => {
+    const footer = medicalSources.buildSourcesFooter([
+      { pmid: '222', title: 'T', url: 'https://x/222' },
+    ]);
+    const answer = 'Conclusion based on PubMed PMID: 222.';
+    assert.equal(medicalSources.ensureSourcesFooter(answer, footer), answer);
+  });
+
+  it('omits the footer entirely when nothing is verifiable', () => {
+    assert.equal(medicalSources.buildSourcesFooter([]), '');
+    assert.equal(medicalSources.buildSourcesFooter(null), '');
+    assert.equal(medicalSources.buildSourcesFooter([{ pmid: null, url: '' }]), '');
   });
 });
 

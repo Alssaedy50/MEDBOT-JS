@@ -315,3 +315,89 @@ describe('section creation flow', () => {
     assert.equal(userData.admin_folder_name, undefined);
   });
 });
+
+describe('section move scope gate', () => {
+  it('refuses a destination outside the admin scope', async () => {
+    const bot = new FakeBot();
+    const scopedAdmin = 7300;
+    const outside = db.addFolder(0, 'Fourth Year', 'general');
+    db.addSubAdmin(scopedAdmin, 'scoped-move');
+    db.applyRolePreset(scopedAdmin, 'admin');
+    db.addAdminScope(scopedAdmin, 'folder', tree.subject, ownerId);
+
+    await folders.moveFolder(
+      callbackCtx(bot, scopedAdmin, `admin_folder_move_to:${tree.subject}:${outside}`),
+      tree.subject,
+      outside,
+    );
+
+    assert.match(lastEdit(bot), /خارج نطاق مسؤوليتك/);
+    assert.equal(db.getParentId(tree.subject), tree.year, 'the move did not happen');
+  });
+
+  it('allows a move that stays inside the admin scope', async () => {
+    const bot = new FakeBot();
+    const scopedAdmin = 7301;
+    const branch = db.addFolder(tree.year, 'Branch', 'general');
+    db.addSubAdmin(scopedAdmin, 'scoped-move-ok');
+    db.applyRolePreset(scopedAdmin, 'admin');
+    db.addAdminScope(scopedAdmin, 'folder', tree.year, ownerId);
+
+    await folders.moveFolder(
+      callbackCtx(bot, scopedAdmin, `admin_folder_move_to:${branch}:${tree.subject}`),
+      branch,
+      tree.subject,
+    );
+
+    assert.match(lastEdit(bot), /تم نقل القسم بنجاح/);
+    assert.equal(db.getParentId(branch), tree.subject);
+  });
+
+  it('hides the root destination from a scoped admin but shows it to the owner', async () => {
+    const scopedAdmin = 7302;
+    db.addSubAdmin(scopedAdmin, 'scoped-root');
+    db.applyRolePreset(scopedAdmin, 'admin');
+    db.addAdminScope(scopedAdmin, 'folder', tree.year, ownerId);
+
+    const scopedBot = new FakeBot();
+    await folders.showMovePicker(
+      callbackCtx(scopedBot, scopedAdmin, `admin_folder_move:${tree.subject}`),
+      tree.subject,
+    );
+    assert.ok(
+      !lastButtons(scopedBot).includes(`admin_folder_move_to:${tree.subject}:0`),
+      'a scoped admin cannot relocate a branch out of scope to the root',
+    );
+
+    const ownerBot = new FakeBot();
+    await folders.showMovePicker(
+      callbackCtx(ownerBot, ownerId, `admin_folder_move:${tree.subject}`),
+      tree.subject,
+    );
+    assert.ok(
+      lastButtons(ownerBot).includes(`admin_folder_move_to:${tree.subject}:0`),
+      'the owner keeps the root destination',
+    );
+  });
+
+  it('never offers the moved section itself or one of its descendants', async () => {
+    const bot = new FakeBot();
+    const parent = db.addFolder(0, 'Cycle Root', 'general');
+    const child = db.addFolder(parent, 'Cycle Child', 'general');
+
+    await folders.showMovePicker(
+      callbackCtx(bot, ownerId, `admin_folder_move:${parent}`),
+      parent,
+    );
+
+    const buttons = lastButtons(bot);
+    assert.ok(
+      !buttons.includes(`admin_folder_move_to:${parent}:${parent}`),
+      'the section itself is not a destination',
+    );
+    assert.ok(
+      !buttons.includes(`admin_folder_move_to:${parent}:${child}`),
+      'a descendant is not a destination',
+    );
+  });
+});
