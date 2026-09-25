@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import * as db from '../src/db/index.js';
 import { AI_DAILY_LIMIT } from '../src/constants.js';
-import { cleanupDb, freshDb } from './helpers/harness.js';
+import { cleanupDb, freshDb, FakeBot, lastEdit } from './helpers/harness.js';
 
 let dbPath;
 let adapter;
@@ -117,6 +117,35 @@ describe('/whoami', () => {
 
     assert.match(lastText, /مُعرّف Telegram/);
     assert.equal(db.isUserAdmin(fresh), false, 'a plain caller is not an admin');
+  });
+});
+
+describe('/account (حسابي)', () => {
+  it('reports the assistant allowance against the real limit', async () => {
+    const student = 9504;
+    db.registerUser(student, 'account', 'Account');
+    botModule.registerHandlers();
+
+    const bot = new FakeBot();
+    await adapter.dispatchUpdate(
+      {
+        update_id: 1,
+        callback_query: {
+          id: 'CB-ACCOUNT',
+          from: { id: student, first_name: 'Account' },
+          message: { message_id: 5, chat: { id: student } },
+          data: 'account',
+        },
+      },
+      bot,
+      {},
+    );
+
+    const text = lastEdit(bot);
+    // The denominator must be the shared AI_DAILY_LIMIT, never a hardcoded
+    // figure that silently drifts from the limiter the assistant enforces.
+    assert.match(text, new RegExp(`/${AI_DAILY_LIMIT}\\b`));
+    assert.doesNotMatch(text, /\/20\b/);
   });
 });
 

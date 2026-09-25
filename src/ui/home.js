@@ -185,7 +185,7 @@ export async function showAccount(ctx) {
       `👤 ${esc(ctx.from.first_name ?? ctx.from.full_name)}\n` +
       `🆔 <code>${userId}</code>\n` +
       `🔗 ${esc(handle)}\n\n` +
-      `🤖 استهلاك المساعد اليوم: ${quota}/20 متبقٍ\n` +
+      `🤖 استهلاك المساعد اليوم: ${quota}/${AI_DAILY_LIMIT} متبقٍ\n` +
       `📤 مساهماتي: ${contributions}\n` +
       `📰 نسبة الأخبار المقروءة: ${readPercent}%\n` +
       `🌐 ${languageLabel}`,
