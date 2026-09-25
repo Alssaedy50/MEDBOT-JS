@@ -120,7 +120,7 @@ export function registerHandlers() {
   registerTextHandler('contact', messages.handleMessageText);
   registerTextHandler('adminAdd', adminManagement.handleAddAdminText);
   registerTextHandler('settings', adminSettings.handleSettingText);
-  registerTextHandler('topicsCreate', topics.handleTopicCreateText);
+  registerTextHandler('topicsCreate', topics.handleTopicsText);
   registerTextHandler('notifications', adminSettings.handleNotificationText);
   registerTextHandler('assistant', assistant.handleAssistantText);
   registerTextHandler('librarySearch', handleLibrarySearch);
