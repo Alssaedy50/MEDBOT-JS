@@ -19,6 +19,11 @@
  *   ctx.reply(t,o)            send a new message
  *   ctx.getBot()              the transport
  *
+ * A callback context also carries the two Telegram identifiers the Bot API
+ * requires but the UI never names: `callbackQueryId` (to acknowledge the tap)
+ * and `messageId` (to edit the message the tap came from). The adapter sets
+ * both from the raw update; they are never reconstructed from other state.
+ *
  * `src/telegram/adapter.js` maps real Telegraf updates onto this shape; the
  * test harness builds it directly.
  */
@@ -61,7 +66,15 @@ function normaliseUser(user) {
  * returns a throwing stub so a mistake surfaces immediately instead of silently
  * dropping a message.
  */
-export function buildCallbackContext({ from, data, bot = null, chatId = null, userData = {} }) {
+export function buildCallbackContext({
+  from,
+  data,
+  bot = null,
+  chatId = null,
+  userData = {},
+  callbackQueryId = null,
+  messageId = null,
+}) {
   const context = {
     kind: 'callback',
     from: normaliseUser(from),
@@ -69,6 +82,8 @@ export function buildCallbackContext({ from, data, bot = null, chatId = null, us
     userData,
     chatId: chatId ?? from?.id ?? null,
     bot,
+    callbackQueryId,
+    messageId,
     answered: false,
     edited: false,
     lastText: null,
@@ -79,7 +94,7 @@ export function buildCallbackContext({ from, data, bot = null, chatId = null, us
       this.answered = true;
       if (bot?.answerCallbackQuery) {
         try {
-          await bot.answerCallbackQuery();
+          await bot.answerCallbackQuery(this.callbackQueryId);
         } catch {
           // A callback acknowledgement is best-effort, exactly like Python.
         }
@@ -95,7 +110,7 @@ export function buildCallbackContext({ from, data, bot = null, chatId = null, us
         try {
           await bot.editMessageText(text, {
             chat_id: this.chatId,
-            message_id: options.message_id,
+            message_id: options.message_id ?? this.messageId,
             parse_mode: options.parse_mode ?? ParseMode.HTML,
             reply_markup: options.reply_markup ?? null,
           });

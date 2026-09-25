@@ -26,6 +26,7 @@ import {
 let dbPath;
 let router;
 let botModule;
+let adapter;
 let ownerId;
 let registry;
 
@@ -33,6 +34,7 @@ before(async () => {
   dbPath = freshDb('router');
   router = await import('../src/telegram/router.js');
   botModule = await import('../src/telegram/bot.js');
+  adapter = await import('../src/telegram/adapter.js');
   // Routes only exist after the bot wires them up; tests must use the real
   // registration, not a hand-built stub router.
   botModule.registerHandlers();
@@ -392,5 +394,78 @@ describe('workflow text consumption end to end', () => {
     // marker, so the message was handled as a normal search/chat instead.
     assert.equal(userData.contact_category, 'inquiry');
     assert.equal(workflow.owns({ userData }, 'ai_chat'), true);
+  });
+});
+
+describe('adapter callback plumbing', () => {
+  /**
+   * A transport as strict as the real Bot API about the two callback
+   * identifiers. The shared `FakeBot` ignores them, which is exactly why the
+   * adapter could drop them unnoticed: on Telegram a missing callback_query_id
+   * leaves the tap unacknowledged (spinner never stops) and a missing
+   * message_id leaves every button dead, because the edit is rejected and the
+   * context swallows the error.
+   */
+  class StrictBot extends FakeBot {
+    async answerCallbackQuery(callbackQueryId) {
+      if (!callbackQueryId) throw new Error('Bad Request: callback query id empty');
+      return this._record('answerCallbackQuery', { callbackQueryId });
+    }
+
+    async editMessageText(text, options = {}) {
+      if (options.message_id === null || options.message_id === undefined) {
+        throw new Error('Bad Request: message id empty');
+      }
+      return this._record('editMessageText', { text, options });
+    }
+  }
+
+  function rawCallback(callbackQueryId, messageId, data) {
+    return {
+      update_id: 1,
+      callback_query: {
+        id: callbackQueryId,
+        from: { id: 9600, first_name: 'Student', username: 's' },
+        message: { message_id: messageId, chat: { id: 9600 } },
+        data,
+      },
+    };
+  }
+
+  it('forwards the callback query id and the message id from the raw update', async () => {
+    const bot = new StrictBot();
+    const studentId = 9600;
+    db.registerUser(studentId, 'student6', 'Student6');
+    await botModule.createBot({ transport: bot });
+
+    const handled = await adapter.dispatchUpdate(
+      rawCallback('CB-UNIQUE-1', 4242, 'home'),
+      bot,
+      {},
+    );
+
+    assert.equal(handled, true);
+    const ack = bot.calls.find((call) => call.method === 'answerCallbackQuery');
+    assert.equal(ack?.args?.callbackQueryId, 'CB-UNIQUE-1', 'the tap is acknowledged by id');
+
+    const edit = bot.last('editMessageText');
+    assert.ok(edit, 'the screen is edited, not dropped');
+    assert.equal(edit.args.options.message_id, 4242, 'the edit targets the tapped message');
+  });
+
+  it('routes every rendered button with a complete callback context', async () => {
+    // A pressed button from the home screen must actually edit in place; the
+    // strict transport would throw (and the context swallow it) otherwise.
+    const bot = new StrictBot();
+    const studentId = 9601;
+    db.registerUser(studentId, 'student7', 'Student7');
+
+    await router.routeCallback(callbackCtx(bot, studentId, 'home'));
+    const other = lastButtons(bot).find((value) => value && value !== 'home');
+    if (!other) assert.fail('the home screen renders at least one other button');
+
+    const guided = new StrictBot();
+    await adapter.dispatchUpdate(rawCallback('CB-2', 77, other), guided, {});
+    assert.ok(guided.last('editMessageText'), `"${other}" must render a screen`);
   });
 });

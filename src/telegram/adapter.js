@@ -45,6 +45,11 @@ export function buildContext(update, bot, options = {}) {
       bot,
       chatId: query.message?.chat?.id ?? query.from?.id,
       userData: userData(query.from?.id),
+      // The Bot API needs both identifiers, and neither can be inferred: the
+      // query id acknowledges the tap (otherwise the client spinner never
+      // stops) and the message id targets the message to edit in place.
+      callbackQueryId: query.id ?? null,
+      messageId: query.message?.message_id ?? null,
     });
   }
 
