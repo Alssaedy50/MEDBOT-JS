@@ -1,9 +1,13 @@
 /**
- * Contact Admin (📬 تواصل مع المنصة) — student message surface and the admin
- * inbox/reply flow.
+ * Contact Admin (📬 التواصل مع الإدارة) — student message surface, the student's
+ * own history, and the admin inbox/reply flow.
  *
- * Lifecycle: NEW -> IN_REVIEW -> REPLIED -> CLOSED. A CLOSED message can never
- * be replied to again, and an admin reply is delivered to the original student.
+ * Lifecycle: NEW -> IN_REVIEW -> REPLIED -> CLOSED. A CLOSED message can never be
+ * replied to again, and an admin reply is delivered to the original student.
+ *
+ * Callback namespace mirrors the Python reference: `contact`, `msg_cat:<category>`,
+ * `msg_cancel`, `msg_mine`, `admin_messages`, `msg_open:<id>`, `msg_reply:<id>`,
+ * `msg_status:<id>:<STATUS>`.
  */
 
 import * as db from '../db/index.js';
@@ -14,13 +18,6 @@ import { btn, escHtml, keyboard } from '../telegram/ui.js';
 export const CONTACT_WORKFLOW = 'contact_message';
 export const REPLY_WORKFLOW = 'admin_reply';
 
-const CATEGORY_LABELS = Object.freeze({
-  suggestion: '💡 اقتراح',
-  problem: '⚠️ مشكلة',
-  resource: '📚 طلب مورد',
-  other: '💬 أخرى',
-});
-
 export function esc(value) {
   return escHtml(value);
 }
@@ -29,79 +26,149 @@ function homeKeyboard() {
   return keyboard([[btn('🏠 الرئيسية', 'home')]]);
 }
 
+function categoryLabel(category) {
+  return db.MESSAGE_CATEGORY_LABELS[category] ?? category;
+}
+
 function statusLabel(status) {
-  return (
-    {
-      NEW: '🆕 جديد',
-      IN_REVIEW: '👀 قيد المراجعة',
-      REPLIED: '✅ تم الرد',
-      CLOSED: '🔒 مغلق',
-    }[status] ?? status
-  );
+  return db.MESSAGE_STATUS_LABELS[status] ?? status;
+}
+
+/** The platform-configurable contact label, falling back to the default. */
+function contactLabel() {
+  try {
+    const configured = String(db.getPlatformSetting('contact_text') ?? '').trim();
+    return configured || 'تواصل مع المنصة';
+  } catch {
+    return 'تواصل مع المنصة';
+  }
+}
+
+function contactKeyboard() {
+  return keyboard([
+    [btn('💬 رسالة', 'msg_cat:message')],
+    [btn('📑 طلب ملخص', 'msg_cat:summary')],
+    [btn('💡 اقتراح', 'msg_cat:suggestion')],
+    [btn('🚩 بلاغ', 'msg_cat:report')],
+    [btn('📥 رسائلي', 'msg_mine')],
+    [btn('🏠 الرئيسية', 'home')],
+  ]);
+}
+
+/** Drop any armed contact/reply state, including the workflow claim. */
+function clearContactState(ctx) {
+  if (!ctx.userData) return;
+  delete ctx.userData.contact_category;
+  delete ctx.userData.contact_reply_id;
+  const active = ctx.userData[workflow.ACTIVE_KEY];
+  if (active === CONTACT_WORKFLOW || active === REPLY_WORKFLOW) {
+    workflow.clear(ctx);
+  }
+}
+
+function isAdmin(userId) {
+  try {
+    return db.isUserAdmin(userId);
+  } catch {
+    return false;
+  }
+}
+
+function canHandleMessages(userId) {
+  try {
+    return db.userHasPermission(userId, 'can_messages');
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Student view: the contact menu plus their own message history.
+ * True when Contact is hidden for this caller (admins bypass).
+ *
+ * Contact is reachable before the catch-all router, so it needs its own
+ * visibility check to honour the platform's hidden-feature setting.
  */
-export async function showContact(ctx) {
-  let messages = [];
+async function contactHiddenFor(ctx) {
   try {
-    messages = db.getUserMessages(ctx.from.id, 10);
+    if (isAdmin(ctx.from.id)) return false;
+    if (!db.isFeatureHidden('contact')) return false;
   } catch {
-    messages = [];
+    return false;
   }
 
-  const lines = [
-    '📬 <b>تواصل مع المنصة</b>',
-    '',
-    'اختر نوع الرسالة ثم أرسل نصها في رسالة واحدة.',
-    '',
-  ];
+  await ctx.editMessageText('🛠 هذا القسم غير متاح مؤقتاً للصيانة أو التحديث.', {
+    reply_markup: homeKeyboard(),
+  });
+  return true;
+}
 
-  if (messages.length) {
-    lines.push('📜 <b>رسائلك السابقة:</b>');
-    for (const row of messages) {
-      const [messageId, category, , status, reply] = row;
-      lines.push(
-        `• #${messageId} ${CATEGORY_LABELS[category] ?? category} — ${statusLabel(status)}`,
-      );
-      if (reply) lines.push(`   ↳ الرد: ${esc(String(reply).slice(0, 80))}`);
-    }
-  }
+// ---------------------------------------------------------------------------
+// Student side
+// ---------------------------------------------------------------------------
 
-  const rows = [
-    [btn('💡 اقتراح', 'msg_suggestion')],
-    [btn('⚠️ مشكلة', 'msg_problem')],
-    [btn('📚 طلب مورد', 'msg_resource')],
-    [btn('💬 أخرى', 'msg_other')],
-    [btn('🏠 الرئيسية', 'home')],
-  ];
-
-  await ctx.editMessageText(lines.join('\n'), { reply_markup: keyboard(rows) });
+/** The contact screen: category chooser. */
+export async function showContact(ctx) {
+  clearContactState(ctx);
+  await ctx.editMessageText(
+    `📬 <b>${esc(contactLabel())}</b>\n\n` +
+      'اختر نوع الرسالة التي تريد إرسالها.\n' +
+      'يمكنك إرسال رسالة، طلب ملخص، اقتراح، أو بلاغ.',
+    { reply_markup: contactKeyboard() },
+  );
 }
 
 /** Arm the message flow for a category. */
 export async function armMessage(ctx, category) {
   if (!db.MESSAGE_CATEGORIES.includes(category)) {
-    await ctx.editMessageText('⚠️ نوع رسالة غير معروف.', { reply_markup: homeKeyboard() });
+    await ctx.editMessageText('⚠️ نوع الرسالة غير مدعوم.', {
+      reply_markup: contactKeyboard(),
+    });
     return;
   }
 
-  workflow.begin(ctx, CONTACT_WORKFLOW);
   ctx.userData.contact_category = category;
+  workflow.begin(ctx, CONTACT_WORKFLOW);
 
   await ctx.editMessageText(
-    `📬 <b>${CATEGORY_LABELS[category] ?? category}</b>\n\n` +
-      'أرسل نص رسالتك في رسالة واحدة.\n\n' +
-      `ℹ️ الحد الأقصى ${db.MAX_MESSAGE_BODY_LENGTH} حرفاً.\n` +
-      'لإلغاء العملية أرسل /cancel.',
+    `📝 <b>${esc(categoryLabel(category))}</b>\n\n` +
+      'اكتب الآن نص الرسالة وأرسله.\n\n' +
+      'لإلغاء العملية اضغط ❌ إلغاء أو أرسل /cancel.',
     {
       reply_markup: keyboard([
-        [btn('❌ إلغاء', 'contact')],
+        [btn('❌ إلغاء', 'msg_cancel')],
         [btn('🏠 الرئيسية', 'home')],
       ]),
     },
   );
+}
+
+/** Notify the admins who can act on messages. Best-effort per recipient. */
+async function notifyAdminsNewMessage(bot, messageId, category, body, sender) {
+  let admins = [];
+  try {
+    admins = db.getAdminsWithPermission('can_messages');
+  } catch {
+    return 0;
+  }
+
+  const text =
+    '📬 <b>رسالة جديدة من طالب</b>\n\n' +
+    `🆔 <code>${messageId}</code>\n` +
+    `🏷 النوع: ${esc(categoryLabel(category))}\n` +
+    `👤 من: ${esc(sender || 'طالب')}\n\n` +
+    `📝 ${esc(String(body).slice(0, 400))}\n\n` +
+    'افتح لوحة الإدارة للرد.';
+
+  let delivered = 0;
+  for (const [adminId] of admins) {
+    try {
+      await bot.sendMessage(adminId, text, { parse_mode: 'HTML' });
+      delivered += 1;
+    } catch {
+      // An unreachable admin must not fail the submission.
+    }
+  }
+  return delivered;
 }
 
 /** Consume the typed message body. Returns handled. */
@@ -109,17 +176,16 @@ export async function handleMessageText(ctx) {
   const category = ctx.userData?.contact_category;
   if (!category) return false;
   if (ctx.kind !== 'message') return false;
-  if (!workflow.owns(ctx, CONTACT_WORKFLOW)) return false;
 
   const text = String(ctx.text ?? '').trim();
 
   if (text === '/cancel') {
-    workflow.clear(ctx);
-    delete ctx.userData.contact_category;
-    await ctx.reply('❌ تم إلغاء العملية.', { reply_markup: homeKeyboard() });
+    clearContactState(ctx);
+    await ctx.reply('❌ تم إلغاء إرسال الرسالة.', { reply_markup: homeKeyboard() });
     return true;
   }
-  if (!text) return false;
+
+  if (!workflow.owns(ctx, CONTACT_WORKFLOW)) return false;
 
   let messageId;
   try {
@@ -130,190 +196,221 @@ export async function handleMessageText(ctx) {
       text,
     );
   } catch (error) {
-    await ctx.reply(`⚠️ ${error.message}`, { reply_markup: homeKeyboard() });
+    // A validation failure keeps the flow armed so the student can retype.
+    if (error instanceof db.MessageValidationError) {
+      await ctx.reply(error.message);
+      return true;
+    }
+    clearContactState(ctx);
+    await ctx.reply('⚠️ تعذر إرسال الرسالة حالياً. لم يتم تأكيد الإرسال.', {
+      reply_markup: homeKeyboard(),
+    });
     return true;
   }
 
-  workflow.clear(ctx);
-  delete ctx.userData.contact_category;
+  clearContactState(ctx);
 
-  // Notify admins who can handle messages.
+  await ctx.reply(
+    '✅ <b>تم استلام رسالتك.</b>\n\n' +
+      `🆔 رقم الرسالة: <code>${messageId}</code>\n` +
+      '🏷 الحالة: 🆕 <b>جديدة</b>\n\n' +
+      'ستتم مراجعتها من قبل الإدارة، وسيتم إشعارك عند الرد.\n' +
+      'يمكنك متابعة الحالة من «📥 رسائلي».',
+    {
+      reply_markup: keyboard([
+        [btn('📥 رسائلي', 'msg_mine')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    },
+  );
+
   try {
-    const recipients = db.getAdminsWithPermission('can_messages');
-    const bot = ctx.bot;
+    const bot = ctx.getBot();
     if (bot?.sendMessage) {
-      const notification =
-        `📬 <b>رسالة جديدة #${messageId}</b>\n\n` +
-        `👤 ${esc(ctx.from.full_name ?? ctx.from.first_name)}\n` +
-        `🆔 <code>${ctx.from.id}</code>\n` +
-        `🏷 ${CATEGORY_LABELS[category] ?? category}\n\n` +
-        `${esc(text.slice(0, 300))}`;
-      for (const [adminId] of recipients) {
-        try {
-          await bot.sendMessage(adminId, notification, {
-            parse_mode: 'HTML',
-            reply_markup: keyboard([[btn('📬 فتح الرسالة', `msg_view:${messageId}`)]]),
-          });
-        } catch {
-          // One unreachable admin must not fail the submission.
-        }
-      }
+      await notifyAdminsNewMessage(
+        bot,
+        messageId,
+        category,
+        text,
+        ctx.from.full_name ?? ctx.from.first_name,
+      );
     }
   } catch {
     // Admin notification is best-effort.
   }
 
-  await ctx.reply(`✅ تم إرسال رسالتك (#${messageId}). سيتم الرد عليك قريباً.`, {
-    reply_markup: keyboard([[btn('📬 تواصل مع المنصة', 'contact')], [btn('🏠 الرئيسية', 'home')]]),
-  });
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Admin inbox
-// ---------------------------------------------------------------------------
-
-function canHandleMessages(userId) {
+/** A student's own messages and their statuses. */
+export async function showMyMessages(ctx) {
+  let items = [];
   try {
-    return db.userHasPermission(userId, 'can_messages');
+    items = db.getUserMessages(ctx.from.id);
   } catch {
-    return false;
-  }
-}
-
-/** Admin inbox listing, optionally filtered by status. */
-export async function showMessageInbox(ctx, status = null) {
-  if (!canHandleMessages(ctx.from.id)) {
-    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
-    return;
+    items = [];
   }
 
-  let messages = [];
-  let openCount = 0;
-  try {
-    messages = db.getMessagesByStatus(status, 20);
-    openCount = db.getOpenMessagesCount();
-  } catch {
-    messages = [];
-    openCount = 0;
-  }
-
-  const lines = [
-    '📬 <b>رسائل الطلاب</b>',
-    '',
-    `🆕 غير مغلقة: ${openCount}`,
-    '',
-  ];
-
-  if (!messages.length) {
-    lines.push('• لا توجد رسائل في هذا العرض.');
-  } else {
-    for (const row of messages) {
-      const [messageId, , userName, category, , messageStatus] = row;
-      lines.push(
-        `• #${messageId} ${CATEGORY_LABELS[category] ?? category} — ${statusLabel(messageStatus)}\n   👤 ${esc(userName ?? '')}`,
-      );
-    }
-  }
-
-  const rows = [];
-  for (const row of messages) {
-    const [messageId, , , , , messageStatus] = row;
-    rows.push([btn(`#${messageId} · ${statusLabel(messageStatus)}`, `msg_view:${messageId}`)]);
-  }
-  rows.push([btn('🆕 غير المغلقة', 'msg_open')]);
-  rows.push([btn('📋 كل الرسائل', 'msg_all')]);
-  rows.push([btn('⬅️ إدارة المنصة', 'admin')]);
-  rows.push([btn('🏠 الرئيسية', 'home')]);
-
-  await ctx.editMessageText(lines.join('\n'), { reply_markup: keyboard(rows) });
-}
-
-/** One message with its reply/close actions. */
-export async function showMessage(ctx, messageId) {
-  if (!canHandleMessages(ctx.from.id)) {
-    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
-    return;
-  }
-
-  let message;
-  try {
-    message = db.getMessage(messageId);
-  } catch {
-    message = null;
-  }
-
-  if (!message) {
-    await ctx.editMessageText('⚠️ الرسالة غير موجودة.', {
-      reply_markup: keyboard([[btn('⬅️ الرسائل', 'msg_open')]]),
+  if (!items.length) {
+    await ctx.editMessageText('📥 <b>رسائلي</b>\n\nلم ترسل أي رسالة بعد.', {
+      reply_markup: keyboard([
+        [btn('📬 التواصل مع الإدارة', 'contact')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
     });
     return;
   }
 
-  const [, userId, userName, category, body, status, adminReply, reviewedBy] = message;
-
-  const lines = [
-    `📬 <b>رسالة #${messageId}</b>`,
-    '',
-    `👤 ${esc(userName ?? '')} · 🆔 <code>${userId}</code>`,
-    `🏷 ${CATEGORY_LABELS[category] ?? category}`,
-    `📊 ${statusLabel(status)}`,
-    '',
-    esc(body),
-  ];
-
-  if (adminReply) {
-    lines.push('', '💬 <b>الرد:</b>', esc(adminReply));
+  const lines = ['📥 <b>رسائلي</b>', ''];
+  for (const item of items) {
+    const [messageId, category, body, status, reply] = item;
+    lines.push(`🆔 <code>${messageId}</code> — ${esc(statusLabel(status))}`);
+    lines.push(`🏷 ${esc(categoryLabel(category))}`);
+    lines.push(`📝 ${esc(String(body).slice(0, 200))}`);
+    if (reply) lines.push(`↩️ <b>الرد:</b> ${esc(String(reply).slice(0, 300))}`);
+    lines.push('');
   }
-  if (reviewedBy) lines.push('', `👤 بواسطة: <code>${reviewedBy}</code>`);
 
-  const rows = [];
-  if (status !== 'CLOSED') {
-    rows.push([btn('✍️ رد', `msg_reply:${messageId}`)]);
-    if (status === 'NEW') rows.push([btn('👀 قيد المراجعة', `msg_review:${messageId}`)]);
-    rows.push([btn('🔒 إغلاق', `msg_close:${messageId}`)]);
-  }
-  rows.push([btn('⬅️ الرسائل', 'msg_open')]);
-  rows.push([btn('🏠 الرئيسية', 'home')]);
-
-  await ctx.editMessageText(lines.join('\n'), { reply_markup: keyboard(rows) });
+  await ctx.editMessageText(lines.join('\n'), {
+    reply_markup: keyboard([
+      [btn('📬 التواصل مع الإدارة', 'contact')],
+      [btn('🏠 الرئيسية', 'home')],
+    ]),
+  });
 }
 
-/** Arm the reply flow: the next typed message is the reply body. */
-export async function armReply(ctx, messageId) {
-  if (!canHandleMessages(ctx.from.id)) {
+// ---------------------------------------------------------------------------
+// Admin side
+// ---------------------------------------------------------------------------
+
+/** Admin inbox listing, optionally filtered by status. */
+export async function showMessageInbox(ctx, status = null) {
+  if (!isAdmin(ctx.from.id) || !canHandleMessages(ctx.from.id)) {
     await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
     return;
   }
 
-  let message;
+  let items = [];
+  let openCount = '?';
   try {
-    message = db.getMessage(messageId);
+    items = db.getMessagesByStatus(status);
+    openCount = db.getOpenMessagesCount();
   } catch {
-    message = null;
+    items = [];
+    openCount = '?';
   }
-  if (!message) {
+
+  const rows = [];
+  for (const item of items) {
+    const [messageId, , userName, , , messageStatus] = item;
+    rows.push([
+      btn(
+        `${statusLabel(messageStatus)} | ${String(userName || 'طالب').slice(0, 18)} | #${messageId}`,
+        `msg_open:${messageId}`,
+      ),
+    ]);
+  }
+  rows.push([btn('⬅️ Admin', 'admin')]);
+  rows.push([btn('🏠 الرئيسية', 'home')]);
+
+  await ctx.editMessageText(
+    '📬 <b>رسائل الطلاب</b>\n\n' +
+      `🟢 غير مغلقة: ${openCount}\n` +
+      `📦 الإجمالي المعروض: ${items.length}\n\n` +
+      'اختر رسالة لعرضها والرد عليها.',
+    { reply_markup: keyboard(rows) },
+  );
+}
+
+/** One message with its reply/status actions. */
+export async function showMessage(ctx, messageId) {
+  if (!isAdmin(ctx.from.id) || !canHandleMessages(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  clearContactState(ctx);
+
+  let record;
+  try {
+    record = db.getMessage(messageId);
+  } catch {
+    record = null;
+  }
+
+  if (!record) {
+    await ctx.editMessageText('⚠️ الرسالة غير موجودة.', {
+      reply_markup: keyboard([
+        [btn('📬 الرسائل', 'admin_messages')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    });
+    return;
+  }
+
+  const [id, userId, userName, category, body, status, adminReply, reviewedBy, createdAt] =
+    record;
+
+  let text =
+    '📬 <b>رسالة طالب</b>\n\n' +
+    `🆔 <code>${id}</code>\n` +
+    `👤 ${esc(userName || 'طالب')} (<code>${userId}</code>)\n` +
+    `🏷 ${esc(categoryLabel(category))}\n` +
+    `📊 الحالة: ${esc(statusLabel(status))}\n` +
+    `🕒 ${esc(createdAt ?? '')}\n\n` +
+    `📝 ${esc(body)}`;
+
+  if (adminReply) text += `\n\n↩️ <b>الرد الحالي:</b> ${esc(adminReply)}`;
+  if (reviewedBy) text += `\n👤 بواسطة: <code>${reviewedBy}</code>`;
+
+  await ctx.editMessageText(text, {
+    reply_markup: keyboard([
+      [btn('✏️ رد', `msg_reply:${id}`)],
+      [btn('👀 قيد المراجعة', `msg_status:${id}:IN_REVIEW`)],
+      [btn('🔒 إغلاق', `msg_status:${id}:CLOSED`)],
+      [btn('⬅️ الرسائل', 'admin_messages')],
+      [btn('🏠 الرئيسية', 'home')],
+    ]),
+  });
+}
+
+/** Arm the reply flow: the next typed message is the reply body. */
+export async function armReply(ctx, messageId) {
+  if (!isAdmin(ctx.from.id) || !canHandleMessages(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  let record;
+  try {
+    record = db.getMessage(messageId);
+  } catch {
+    record = null;
+  }
+  if (!record) {
     await ctx.editMessageText('⚠️ الرسالة غير موجودة.', { reply_markup: homeKeyboard() });
     return;
   }
-  if (message[5] === 'CLOSED') {
-    await ctx.editMessageText('⚠️ لا يمكن الرد على رسالة مغلقة.', {
-      reply_markup: keyboard([[btn('⬅️ الرسالة', `msg_view:${messageId}`)]]),
+  if (record[5] === 'CLOSED') {
+    await ctx.editMessageText('🔒 هذه الرسالة مغلقة ولا يمكن الرد عليها.', {
+      reply_markup: keyboard([
+        [btn('📬 الرسائل', 'admin_messages')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
     });
     return;
   }
 
   workflow.begin(ctx, REPLY_WORKFLOW);
-  ctx.userData.contact_reply_id = messageId;
+  ctx.userData.contact_reply_id = Number(messageId);
 
   await ctx.editMessageText(
-    `✍️ <b>الرد على رسالة #${messageId}</b>\n\n` +
-      'أرسل نص الرد في رسالة واحدة.\n\n' +
-      `ℹ️ الحد الأقصى ${db.MAX_MESSAGE_REPLY_LENGTH} حرفاً.\n` +
+    '✏️ <b>الرد على الرسالة</b>\n\n' +
+      `اكتب نص الرد للرسالة <code>${messageId}</code> وأرسله.\n\n` +
       'لإلغاء العملية أرسل /cancel.',
     {
       reply_markup: keyboard([
-        [btn('❌ إلغاء', `msg_view:${messageId}`)],
+        [btn('⬅️ الرسالة', `msg_open:${messageId}`)],
         [btn('🏠 الرئيسية', 'home')],
       ]),
     },
@@ -327,66 +424,107 @@ export async function handleReplyText(ctx) {
   if (ctx.kind !== 'message') return false;
   if (!workflow.owns(ctx, REPLY_WORKFLOW)) return false;
 
+  if (!canHandleMessages(ctx.from.id)) {
+    clearContactState(ctx);
+    await ctx.reply('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return true;
+  }
+
   const text = String(ctx.text ?? '').trim();
 
   if (text === '/cancel') {
-    workflow.clear(ctx);
-    delete ctx.userData.contact_reply_id;
-    await ctx.reply('❌ تم إلغاء العملية.', { reply_markup: homeKeyboard() });
-    return true;
-  }
-  if (!text) return false;
-
-  if (!canHandleMessages(ctx.from.id)) {
-    workflow.clear(ctx);
-    delete ctx.userData.contact_reply_id;
-    await ctx.reply('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    clearContactState(ctx);
+    await ctx.reply('❌ تم إلغاء الرد.', { reply_markup: homeKeyboard() });
     return true;
   }
 
   let result;
   try {
-    result = db.replyToMessage(messageId, ctx.from.id, text);
+    result = db.replyToMessage(Number(messageId), ctx.from.id, text);
   } catch {
     result = null;
   }
 
-  workflow.clear(ctx);
-  delete ctx.userData.contact_reply_id;
+  clearContactState(ctx);
 
   if (!result) {
-    await ctx.reply('⚠️ تعذّر إرسال الرد (الرسالة مغلقة أو غير موجودة).', {
-      reply_markup: keyboard([[btn('⬅️ الرسائل', 'msg_open')]]),
+    await ctx.reply('ℹ️ تعذر الرد. الرسالة غير موجودة أو مغلقة.', {
+      reply_markup: keyboard([
+        [btn('📬 الرسائل', 'admin_messages')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
     });
     return true;
   }
 
-  const [studentId] = result;
+  const [studentId, repliedId] = result;
 
-  await audit.logAction(ctx.from.id, 'message_reply', {
-    targetType: 'message',
-    targetId: messageId,
+  await ctx.reply(`✅ تم إرسال الرد على الرسالة <code>${repliedId}</code>.`, {
+    reply_markup: keyboard([
+      [btn('📬 الرسائل', 'admin_messages')],
+      [btn('🏠 الرئيسية', 'home')],
+    ]),
   });
 
-  // Deliver the reply to the original student.
   try {
     const bot = ctx.getBot();
     if (bot?.sendMessage) {
-      await bot.sendMessage(studentId, `📬 <b>رد إدارة المنصة على رسالتك #${messageId}</b>\n\n${esc(text)}`, {
-        parse_mode: 'HTML',
-      });
+      await bot.sendMessage(
+        studentId,
+        '📬 <b>رد الإدارة على رسالتك</b>\n\n' +
+          `🆔 <code>${repliedId}</code>\n\n` +
+          `↩️ ${esc(text)}`,
+        { parse_mode: 'HTML' },
+      );
     }
   } catch {
     // The reply is stored even if the student cannot be reached.
   }
 
-  await ctx.reply(`✅ تم إرسال الرد للطالب (#${messageId}).`, {
-    reply_markup: keyboard([
-      [btn('📬 فتح الرسالة', `msg_view:${messageId}`)],
-      [btn('🏠 الرئيسية', 'home')],
-    ]),
+  await audit.logAction(ctx.from.id, 'message_reply', {
+    targetType: 'message',
+    targetId: repliedId,
   });
+
   return true;
+}
+
+/** Change a message's status (IN_REVIEW / CLOSED / ...). */
+async function changeStatus(ctx, messageId, status) {
+  if (!isAdmin(ctx.from.id) || !canHandleMessages(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  if (!db.MESSAGE_STATUSES.includes(status)) {
+    await ctx.editMessageText('⚠️ حالة غير معروفة.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  let ok = false;
+  try {
+    ok = db.setMessageStatus(messageId, status);
+  } catch {
+    ok = false;
+  }
+
+  if (!ok) {
+    await ctx.editMessageText('⚠️ تعذر تحديث الحالة.', {
+      reply_markup: keyboard([
+        [btn('📬 الرسائل', 'admin_messages')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    });
+    return;
+  }
+
+  await audit.logAction(ctx.from.id, 'message_status', {
+    targetType: 'message',
+    targetId: messageId,
+    details: `status=${status}`,
+  });
+
+  await showMessage(ctx, messageId);
 }
 
 /** Callback handler for the message namespace. */
@@ -394,29 +532,36 @@ export async function messagesCallbackHandler(ctx) {
   await ctx.answer();
   const data = ctx.data ?? '';
 
-  // Student side.
   if (data === 'contact') {
+    if (await contactHiddenFor(ctx)) return;
     await showContact(ctx);
     return;
   }
-  if (data.startsWith('msg_') && !data.startsWith('msg_view:') && !data.startsWith('msg_reply:') && !data.startsWith('msg_review:') && !data.startsWith('msg_close:') && data !== 'msg_open' && data !== 'msg_all') {
-    const category = data.slice(4);
-    if (db.MESSAGE_CATEGORIES.includes(category)) {
-      await armMessage(ctx, category);
-      return;
-    }
+
+  if (data.startsWith('msg_cat:')) {
+    if (await contactHiddenFor(ctx)) return;
+    await armMessage(ctx, data.slice('msg_cat:'.length));
+    return;
   }
 
-  // Admin side.
-  if (data === 'msg_open') {
+  if (data === 'msg_cancel') {
+    await showContact(ctx);
+    return;
+  }
+
+  if (data === 'msg_mine') {
+    clearContactState(ctx);
+    await showMyMessages(ctx);
+    return;
+  }
+
+  if (data === 'admin_messages') {
+    clearContactState(ctx);
     await showMessageInbox(ctx, null);
     return;
   }
-  if (data === 'msg_all') {
-    await showMessageInbox(ctx, null);
-    return;
-  }
-  if (data.startsWith('msg_view:')) {
+
+  if (data.startsWith('msg_open:')) {
     const messageId = Number.parseInt(data.split(':')[1], 10);
     if (Number.isNaN(messageId)) {
       await ctx.editMessageText('⚠️ معرف غير صالح.', { reply_markup: homeKeyboard() });
@@ -425,6 +570,7 @@ export async function messagesCallbackHandler(ctx) {
     await showMessage(ctx, messageId);
     return;
   }
+
   if (data.startsWith('msg_reply:')) {
     const messageId = Number.parseInt(data.split(':')[1], 10);
     if (Number.isNaN(messageId)) {
@@ -434,30 +580,16 @@ export async function messagesCallbackHandler(ctx) {
     await armReply(ctx, messageId);
     return;
   }
-  if (data.startsWith('msg_review:')) {
-    const messageId = Number.parseInt(data.split(':')[1], 10);
-    if (!Number.isNaN(messageId) && canHandleMessages(ctx.from.id)) {
-      db.setMessageStatus(messageId, 'IN_REVIEW');
-      await audit.logAction(ctx.from.id, 'message_status', {
-        targetType: 'message',
-        targetId: messageId,
-        details: 'IN_REVIEW',
-      });
+
+  if (data.startsWith('msg_status:')) {
+    const parts = data.split(':');
+    const messageId = Number.parseInt(parts[1], 10);
+    const status = parts[2];
+    if (Number.isNaN(messageId) || !status) {
+      await ctx.editMessageText('⚠️ طلب غير صالح.', { reply_markup: homeKeyboard() });
+      return;
     }
-    await showMessage(ctx, messageId);
-    return;
-  }
-  if (data.startsWith('msg_close:')) {
-    const messageId = Number.parseInt(data.split(':')[1], 10);
-    if (!Number.isNaN(messageId) && canHandleMessages(ctx.from.id)) {
-      db.setMessageStatus(messageId, 'CLOSED');
-      await audit.logAction(ctx.from.id, 'message_status', {
-        targetType: 'message',
-        targetId: messageId,
-        details: 'CLOSED',
-      });
-    }
-    await showMessage(ctx, messageId);
+    await changeStatus(ctx, messageId, status);
     return;
   }
 
@@ -465,3 +597,23 @@ export async function messagesCallbackHandler(ctx) {
 }
 
 export const MESSAGE_PREFIXES = ['contact', 'msg_'];
+
+/** `/contact` shortcut for the contact screen. */
+export async function contactCommand(ctx) {
+  clearContactState(ctx);
+
+  try {
+    if (!isAdmin(ctx.from.id) && db.isFeatureHidden('contact')) {
+      await ctx.reply('🛠 هذا القسم غير متاح مؤقتاً للصيانة أو التحديث.', {
+        reply_markup: homeKeyboard(),
+      });
+      return;
+    }
+  } catch {
+    // A settings read failure must not block the contact screen.
+  }
+
+  await ctx.reply('📬 <b>التواصل مع الإدارة</b>\n\nاختر نوع الرسالة التي تريد إرسالها.', {
+    reply_markup: contactKeyboard(),
+  });
+}

@@ -86,7 +86,7 @@ export async function showAdminPanel(ctx) {
     rows.push([btn(`📥 مراجعة المساهمات${pending ? ` (${pending})` : ''}`, 'admin_pending')]);
   }
   if (has(userId, 'can_messages')) {
-    rows.push([btn(`📬 رسائل الطلاب${messages ? ` (${messages})` : ''}`, 'msg_open')]);
+    rows.push([btn(`📬 رسائل الطلاب${messages ? ` (${messages})` : ''}`, 'admin_messages')]);
   }
   if (has(userId, 'can_news')) {
     rows.push([btn('📰 الأخبار', 'admin_news')]);

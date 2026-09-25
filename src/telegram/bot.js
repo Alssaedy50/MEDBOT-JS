@@ -136,6 +136,7 @@ export function registerHandlers() {
   // ---- Commands ---------------------------------------------------
   registerCommand('start', startCommand);
   registerCommand('help', helpCommand);
+  registerCommand('contact', messages.contactCommand);
   registerCommand('cancel', cancelCommand);
   registerCommand('text', unhandledText);
 }
