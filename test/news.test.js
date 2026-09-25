@@ -548,4 +548,96 @@ describe('admin News UX and the publish wizard', () => {
       'a bogus section never replaces a real one',
     );
   });
+
+  it('does not invent a subject from the section parent', async () => {
+    const bot = new FakeBot();
+    const subject = db.addFolder(0, 'Subject Root', 'general');
+    const leaf = db.addFolder(subject, 'Leaf Section', 'general');
+
+    // Pick a child section: the old bug guessed its parent as the subject.
+    const childNews = db.createNews({
+      newsType: 'section',
+      title: 'Child anchored',
+      senderId: publisher,
+      status: 'draft',
+    });
+    await news.setSectionReference(
+      callbackCtx(bot, publisher, `x:${childNews}:${leaf}`),
+      childNews,
+      leaf,
+    );
+    const child = db.getNewsDetail(childNews);
+    assert.equal(child.section_folder_id, leaf, 'the picked folder is the section');
+    assert.equal(
+      child.subject_folder_id,
+      null,
+      'a subject is never inferred from the section parent',
+    );
+    assert.equal(child.subject_name, null);
+
+    // Pick a root section: no subject either.
+    const rootNews = db.createNews({
+      newsType: 'section',
+      title: 'Root anchored',
+      senderId: publisher,
+      status: 'draft',
+    });
+    await news.setSectionReference(
+      callbackCtx(bot, publisher, `x:${rootNews}:${subject}`),
+      rootNews,
+      subject,
+    );
+    const root = db.getNewsDetail(rootNews);
+    assert.equal(root.section_folder_id, subject);
+    assert.equal(root.subject_folder_id, null);
+  });
+
+  it('lets the author set and clear an explicit optional subject', async () => {
+    const bot = new FakeBot();
+    const subject = db.addFolder(0, 'Chosen Subject', 'general');
+    const section = db.addFolder(subject, 'Chosen Section', 'general');
+
+    const newsId = db.createNews({
+      newsType: 'section',
+      title: 'Subject explicit',
+      senderId: publisher,
+      status: 'draft',
+    });
+    await news.setSectionReference(
+      callbackCtx(bot, publisher, `x:${newsId}:${section}`),
+      newsId,
+      section,
+    );
+
+    await news.setSubjectReference(
+      callbackCtx(bot, publisher, `news_ref_set_subject:${newsId}:${subject}`),
+      newsId,
+      subject,
+    );
+    assert.equal(db.getNewsDetail(newsId).subject_folder_id, subject);
+    assert.equal(db.getNewsDetail(newsId).subject_name, 'Chosen Subject');
+
+    // Clearing removes the optional subject without touching the section.
+    await news.setSubjectReference(
+      callbackCtx(bot, publisher, `news_ref_unset_subject:${newsId}`),
+      newsId,
+      null,
+    );
+    const cleared = db.getNewsDetail(newsId);
+    assert.equal(cleared.subject_folder_id, null);
+    assert.equal(cleared.section_folder_id, section, 'clearing the subject keeps the section');
+  });
+
+  it('never infers a subject for an auto resource news item', () => {
+    const parent = db.addFolder(0, 'Auto Subject Root', 'general');
+    const leaf = db.addFolder(parent, 'Auto Leaf', 'general');
+    const contentId = db.addContent(leaf, 'Auto Leaf Resource', 'f-auto-leaf', 'document');
+
+    const auto = db.createResourceNewsForContent(contentId, publisher, 'draft');
+    const detail = db.getNewsDetail(auto);
+    assert.equal(detail.news_type, 'section');
+    assert.equal(detail.section_folder_id, leaf);
+    assert.equal(detail.subject_folder_id, null, 'no guessed subject on an auto item');
+    assert.equal(detail.resource_id, contentId, 'the resource stays an optional link');
+  });
 });

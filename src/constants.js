@@ -324,6 +324,63 @@ export const NEWS_STATUS_LABELS = Object.freeze({
   archived: '🗄 مؤرشف',
 });
 
+// ---------------------------------------------------------------------------
+// Registry node / file type labels (single source of truth)
+// ---------------------------------------------------------------------------
+// Node types are internal keys stored on `folders.node_type`. The UI must never
+// print the raw key ("general", "books", ...) at a student or an admin: it goes
+// through one of these maps so every screen shows the same Arabic label. The
+// list order is the canonical admin ordering.
+export const FOLDER_NODE_TYPES = Object.freeze([
+  'general',
+  'books',
+  'audio',
+  'video',
+  'mcq',
+  'summaries',
+]);
+
+export const NODE_TYPE_LABELS = Object.freeze({
+  general: '📁 عام',
+  books: '📚 كتب',
+  audio: '🎧 صوتيات',
+  video: '🎥 فيديو',
+  mcq: '📝 MCQ',
+  summaries: '📑 ملخصات',
+});
+
+/** The canonical resource file types, in display order. */
+export const CONTENT_FILE_TYPES = Object.freeze([
+  'document',
+  'audio',
+  'video',
+  'photo',
+  'mcq',
+]);
+
+export const FILE_TYPE_LABELS = Object.freeze({
+  document: '📄 مستند',
+  audio: '🎧 صوتي',
+  video: '🎥 فيديو',
+  photo: '🖼 صورة',
+  mcq: '📝 MCQ',
+});
+
+/**
+ * Arabic label for a raw node type, falling back to the value itself (never
+ * empty), so an unknown type is still readable rather than hidden.
+ */
+export function nodeTypeLabel(nodeType) {
+  const value = String(nodeType ?? '').trim().toLowerCase();
+  return NODE_TYPE_LABELS[value] ?? value ?? '📁';
+}
+
+/** Arabic label for a raw resource file type, same contract as above. */
+export function fileTypeLabel(fileType) {
+  const value = String(fileType ?? '').trim().toLowerCase();
+  return FILE_TYPE_LABELS[value] ?? value ?? '📄';
+}
+
 export const NEWS_VISIBILITIES = Object.freeze(['all', 'students']);
 export const NEWS_DELIVERY_SCOPES = Object.freeze(['all', 'subscribed']);
 

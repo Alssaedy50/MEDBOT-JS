@@ -64,6 +64,9 @@ export const NEWS_CALLBACKS = [
   'news_ref_child:',
   'news_ref_root:',
   'news_ref_set_section:',
+  'news_ref_subject:',
+  'news_ref_set_subject:',
+  'news_ref_unset_subject:',
   'news_ref_resource:',
   'news_ref_set_resource:',
   'news_ref_unlink:',
@@ -712,6 +715,9 @@ export function adminItemMenu(news, back = null) {
         rows.push([btn('🗂 اختيار القسم', `news_ref_root:${news.id}:0`)]);
       } else {
         rows.push([btn('📢 نشر', `news_admin_pub:${news.id}`)]);
+        // The subject is a distinct, explicit optional branch — never inferred
+        // from the section's position in the tree.
+        rows.push([btn('🧪 المادة (اختياري)', `news_ref_subject:${news.id}:0`)]);
       }
       if (news.resource_id) {
         rows.push([btn('🔗 تغيير المورد المرتبط', `news_ref_resource:${news.id}`)]);
@@ -1343,6 +1349,17 @@ export async function setSectionReference(ctx, newsId, rawFolderId) {
     return;
   }
 
+  let news;
+  try {
+    news = db.getNews(newsId);
+  } catch {
+    news = null;
+  }
+  if (!news || news.news_type !== 'section') {
+    await ctx.editMessageText('⚠️ الخبر غير موجود.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
   if (!authorization.can(ctx.from.id, 'news.edit', 'news', newsId)) {
     await ctx.editMessageText('🚫 هذا الخبر خارج نطاق مسؤوليتك.', {
       reply_markup: keyboard([[btn('⬅️ إدارة الأخبار', 'admin_news')]]),
@@ -1369,12 +1386,13 @@ export async function setSectionReference(ctx, newsId, rawFolderId) {
     return;
   }
 
+  // Store ONLY the section the author picked. `subject_folder_id` is a distinct,
+  // explicitly chosen optional branch and is never guessed from the parent
+  // depth: a section can be any real node (a year, a block or a leaf), so its
+  // parent says nothing about what the subject is.
   let ok = false;
   try {
-    ok = db.updateNews(newsId, {
-      section_folder_id: folder[0],
-      subject_folder_id: folder[1],
-    });
+    ok = db.updateNews(newsId, { section_folder_id: folder[0] });
   } catch {
     ok = false;
   }
@@ -1384,6 +1402,143 @@ export async function setSectionReference(ctx, newsId, rawFolderId) {
       targetType: 'news',
       targetId: newsId,
       details: `section=${folder[0]}`,
+    });
+  }
+  await showAdminNewsItem(ctx, newsId);
+}
+
+/** Browse the live folder tree to set a section news' optional subject. */
+export async function pickSubject(ctx, newsId, parentId = 0) {
+  if (!isManager(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  if (!authorization.can(ctx.from.id, 'news.edit', 'news', newsId)) {
+    await ctx.editMessageText('🚫 هذا الخبر خارج نطاق مسؤوليتك.', {
+      reply_markup: keyboard([[btn('⬅️ إدارة الأخبار', 'admin_news')]]),
+    });
+    return;
+  }
+
+  const scopedIds = scopedNewsIds(ctx.from.id);
+
+  let folders = [];
+  try {
+    folders = db.getFolders(parentId);
+  } catch {
+    folders = [];
+  }
+  if (scopedIds !== null) {
+    const roots = db.topicFolderRoots(ctx.from.id);
+    const allowed = db.listFolderIdsUnder(roots);
+    folders = folders.filter((folder) => allowed.has(folder[0]));
+  }
+
+  let breadcrumb = 'الرئيسية 🏠';
+  if (parentId) {
+    try {
+      breadcrumb = db.getBreadcrumbs(parentId);
+    } catch {
+      breadcrumb = String(parentId);
+    }
+  }
+
+  const rows = [];
+  for (const [folderId, name, nodeType] of folders) {
+    rows.push([
+      btn(`${resourceIcon(nodeType)} ${String(name).slice(0, 18)}`, `news_ref_subject:${newsId}:${folderId}`),
+      btn('✅ اختيار', `news_ref_set_subject:${newsId}:${folderId}`),
+    ]);
+  }
+
+  if (parentId) {
+    let parent = 0;
+    try {
+      parent = db.getParentId(parentId);
+    } catch {
+      parent = 0;
+    }
+    rows.push([btn('⬅️ رجوع', `news_ref_subject:${newsId}:${parent || 0}`)]);
+  }
+
+  rows.push([btn('✂️ بدون مادة', `news_ref_unset_subject:${newsId}`)]);
+  rows.push([btn('⬅️ الخبر', `news_admin_view:${newsId}`)]);
+  rows.push([btn('🏠 الرئيسية', 'home')]);
+
+  await ctx.editMessageText(
+    '🧪 <b>اختيار المادة (اختياري)</b>\n\n' +
+      `📍 ${esc(breadcrumb)}\n\n` +
+      'المادة فرع اختياري يختاره المؤلف صراحةً. تنقّل ثم اضغط «✅ اختيار»، أو اختر «بدون مادة».',
+    { reply_markup: keyboard(rows) },
+  );
+}
+
+/** Point a section news at an explicitly chosen subject, or clear it. */
+export async function setSubjectReference(ctx, newsId, rawFolderId) {
+  if (!isManager(ctx.from.id)) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  if (!authorization.can(ctx.from.id, 'news.edit', 'news', newsId)) {
+    await ctx.editMessageText('🚫 هذا الخبر خارج نطاق مسؤوليتك.', {
+      reply_markup: keyboard([[btn('⬅️ إدارة الأخبار', 'admin_news')]]),
+    });
+    return;
+  }
+
+  const folderId = toIntOrNull(rawFolderId);
+
+  // Clearing the optional subject is a normal edit, not a scope breach.
+  if (folderId === null) {
+    let cleared = false;
+    try {
+      cleared = db.updateNews(newsId, { subject_folder_id: null });
+    } catch {
+      cleared = false;
+    }
+    if (cleared) {
+      await audit.logAction(ctx.from.id, 'news_reference', {
+        targetType: 'news',
+        targetId: newsId,
+        details: 'subject=unlinked',
+      });
+    }
+    await showAdminNewsItem(ctx, newsId);
+    return;
+  }
+
+  if (!authorization.can(ctx.from.id, 'news.edit', 'folder', folderId)) {
+    await ctx.editMessageText('🚫 هذه المادة خارج نطاق مسؤوليتك.', {
+      reply_markup: keyboard([[btn('⬅️ الخبر', `news_admin_view:${newsId}`)]]),
+    });
+    return;
+  }
+
+  let folder;
+  try {
+    folder = db.getFolder(folderId);
+  } catch {
+    folder = null;
+  }
+  if (!folder) {
+    await ctx.editMessageText('⚠️ المادة غير موجودة.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  let ok = false;
+  try {
+    ok = db.updateNews(newsId, { subject_folder_id: folder[0] });
+  } catch {
+    ok = false;
+  }
+
+  if (ok) {
+    await audit.logAction(ctx.from.id, 'news_reference', {
+      targetType: 'news',
+      targetId: newsId,
+      details: `subject=${folder[0]}`,
     });
   }
   await showAdminNewsItem(ctx, newsId);
@@ -1794,6 +1949,36 @@ export async function newsCallbackHandler(ctx) {
       return;
     }
     await setSectionReference(ctx, newsId, folderId);
+    return;
+  }
+
+  if (data.startsWith('news_ref_set_subject:')) {
+    const [, newsId, folderId] = threeParts(data);
+    if (newsId === null || folderId === null) {
+      await ctx.editMessageText('⚠️ معرف غير صالح.', { reply_markup: homeKeyboard() });
+      return;
+    }
+    await setSubjectReference(ctx, newsId, folderId);
+    return;
+  }
+
+  if (data.startsWith('news_ref_subject:')) {
+    const [, newsId, folderId] = threeParts(data);
+    if (newsId === null) {
+      await ctx.editMessageText('⚠️ معرف غير صالح.', { reply_markup: homeKeyboard() });
+      return;
+    }
+    await pickSubject(ctx, newsId, folderId ?? 0);
+    return;
+  }
+
+  if (data.startsWith('news_ref_unset_subject:')) {
+    const newsId = tailInt(data);
+    if (newsId === null) {
+      await ctx.editMessageText('⚠️ معرف غير صالح.', { reply_markup: homeKeyboard() });
+      return;
+    }
+    await setSubjectReference(ctx, newsId, null);
     return;
   }
 

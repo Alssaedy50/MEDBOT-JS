@@ -22,19 +22,14 @@ export const ADMIN_FOLDER_WORKFLOW = 'admin_folder_create';
 export const ADMIN_RENAME_WORKFLOW = 'admin_folder_rename';
 
 /**
- * The folder-type vocabulary, matching the Python reference's
- * `FOLDER_TYPE_OPTIONS` exactly: `books`, `summaries` (plural), and no
- * `document`. A mismatch here would write a `node_type` the Python data model
- * never produces.
+ * The folder-type vocabulary and its Arabic labels both come from the central
+ * maps in `constants.js` (matching the Python reference's `FOLDER_TYPE_OPTIONS`
+ * exactly: `books`, `summaries` plural, no `document`). Keeping one source of
+ * truth means the picker, the rename screen and the type menu can never drift.
  */
-const NODE_TYPES = Object.freeze([
-  ['general', '📁 عام'],
-  ['books', '📚 كتب'],
-  ['audio', '🎧 صوتيات'],
-  ['video', '🎥 فيديو'],
-  ['mcq', '📝 MCQ'],
-  ['summaries', '📑 ملخصات'],
-]);
+const NODE_TYPES = Object.freeze(
+  db.FOLDER_NODE_TYPES.map((value) => [value, db.NODE_TYPE_LABELS[value] ?? value]),
+);
 
 const FOLDER_TYPE_KEYS = new Set(NODE_TYPES.map(([value]) => value));
 
@@ -299,7 +294,7 @@ export async function showFolderAdmin(ctx, folderId) {
   await ctx.editMessageText(
     `${resourceIcon(nodeType)} <b>${esc(name)}</b>\n\n` +
       `📍 ${esc(breadcrumb)}\n` +
-      `🏷 ${esc(nodeType)}\n` +
+      `🏷 ${esc(db.nodeTypeLabel(nodeType))}\n` +
       `📂 أقسام فرعية: ${childCount} · 📄 موارد: ${fileCount}\n` +
       `📤 ${accepts ? 'يستقبل مساهمات' : 'لا يستقبل مساهمات'}`,
     { reply_markup: keyboard(rows) },
@@ -558,7 +553,7 @@ export async function finishFolderCreate(ctx, accepts) {
   await ctx.editMessageText(
     '✅ <b>تم إنشاء القسم بنجاح.</b>\n\n' +
       `📁 الاسم: <b>${esc(name)}</b>\n` +
-      `🧩 النوع: <code>${esc(nodeType)}</code>\n` +
+      `🧩 النوع: <b>${esc(db.nodeTypeLabel(nodeType))}</b>\n` +
       `📤 استقبال المساهمات: ${wantsContributions ? 'نعم' : 'لا'}\n\n` +
       'يمكنك الآن رفع الموارد داخله أو إنشاء قسم فرعي.',
     {
@@ -1007,7 +1002,7 @@ export async function showFileAdmin(ctx, contentId) {
   await ctx.editMessageText(
     `${contentIcon(fileType)} <b>${esc(title)}</b>\n\n` +
       `📍 ${esc(path)}\n` +
-      `📎 ${esc(fileType)}\n` +
+      `📎 ${esc(db.fileTypeLabel(fileType))}\n` +
       `🔖 المصدر: ${esc(sourceType ?? 'direct')}`,
     { reply_markup: keyboard(rows) },
   );
@@ -1045,13 +1040,9 @@ export async function deleteFile(ctx, contentId) {
 // Content upload
 // ---------------------------------------------------------------------------
 
-const FILE_TYPES = Object.freeze([
-  ['document', '📄 مستند'],
-  ['audio', '🎧 صوتي'],
-  ['video', '🎥 فيديو'],
-  ['photo', '🖼 صورة'],
-  ['mcq', '📝 MCQ'],
-]);
+const FILE_TYPES = Object.freeze(
+  db.CONTENT_FILE_TYPES.map((value) => [value, db.FILE_TYPE_LABELS[value] ?? value]),
+);
 
 /** Arm the upload flow for a folder: the next media message is the file. */
 export async function armUpload(ctx, folderId) {

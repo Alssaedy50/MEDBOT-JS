@@ -156,6 +156,17 @@ describe('section detail screen', () => {
     );
     assert.ok(lastButtons(rootBot).includes('admin_folders'));
   });
+
+  it('shows the Arabic node label, never the raw node_type key', async () => {
+    const bot = new FakeBot();
+    // `tree.subject` is stored with node_type 'books'.
+    await folders.adminFoldersCallbackHandler(
+      callbackCtx(bot, ownerId, `admin_folder:${tree.subject}`),
+    );
+    const text = lastEdit(bot);
+    assert.match(text, /📚 كتب/, 'the Arabic label is shown');
+    assert.doesNotMatch(text, /books/, 'the raw internal key is never printed');
+  });
 });
 
 describe('section creation flow', () => {

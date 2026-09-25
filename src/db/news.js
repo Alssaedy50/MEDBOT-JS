@@ -945,19 +945,14 @@ export function createResourceNewsForContent(contentId, senderId = null, status 
 
   const [, folderId, title] = row;
 
-  let subjectId = null;
-  if (folderId !== null) {
-    const parent = withDb((db) =>
-      get(db, 'SELECT parent_id FROM folders WHERE id = ?', [folderId]),
-    );
-    if (parent && parent[0] !== null && parent[0] !== undefined) subjectId = parent[0];
-  }
-
+  // The resource's real folder is the section. No subject is inferred here: a
+  // subject is an explicit author choice, and the resource's folder depth says
+  // nothing about it.
   return createNews({
     newsType: 'section',
     title: title || 'مورد جديد',
     senderId,
-    subjectFolderId: subjectId,
+    subjectFolderId: null,
     sectionFolderId: folderId,
     resourceId: id,
     status,
