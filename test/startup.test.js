@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import * as db from '../src/db/index.js';
 import * as contributions from '../src/ui/contributions.js';
 import { callbackCtx, cleanupDb, FakeBot, freshDb } from './helpers/harness.js';
+import * as client from '../src/telegram/client.js';
 
 let dbPath;
 let botModule;
@@ -161,6 +162,33 @@ describe('media routing', () => {
 });
 
 describe('polling loop', () => {
+  it('requests every update type so a stale filter cannot hide button presses', () => {
+    // Telegram reuses the last `allowed_updates` when the parameter is omitted.
+    // A restricted set persisted by an earlier run would drop `callback_query`
+    // forever, so the client must name the full set on every poll.
+    assert.ok(Array.isArray(client.POLLING_ALLOWED_UPDATES));
+    assert.ok(client.POLLING_ALLOWED_UPDATES.includes('message'));
+    assert.ok(client.POLLING_ALLOWED_UPDATES.includes('callback_query'));
+    assert.equal(
+      new Set(client.POLLING_ALLOWED_UPDATES).size,
+      client.POLLING_ALLOWED_UPDATES.length,
+      'no duplicates',
+    );
+
+    const calls = [];
+    const transport = new client.TelegramTransport('token', {
+      fetchImpl: async (url, options) => {
+        calls.push(JSON.parse(options.body));
+        return { ok: true, status: 200, json: async () => ({ ok: true, result: [] }) };
+      },
+    });
+
+    return transport.getUpdates(0, 5).then(() => {
+      assert.ok(calls.length >= 1);
+      assert.deepEqual(calls[0].allowed_updates, [...client.POLLING_ALLOWED_UPDATES]);
+    });
+  });
+
   it('advances the offset past every handled update and can be stopped', async () => {
     await botModule.createBot({ transport: new FakeBot() });
 

@@ -12,6 +12,44 @@
 
 export const TELEGRAM_API = 'https://api.telegram.org';
 
+/**
+ * Update types the bot subscribes to on every long-poll.
+ *
+ * Telegram remembers the last `allowed_updates` it was given and reuses it when
+ * the parameter is omitted. A restricted set persisted by an earlier run (or a
+ * webhook) therefore keeps filtering out `callback_query` forever: `/start`
+ * works, but button presses never arrive. Naming the full set on every boot
+ * makes that stuck state impossible — this mirrors `Update.ALL_TYPES` in the
+ * Python reference.
+ */
+export const POLLING_ALLOWED_UPDATES = Object.freeze([
+  'message',
+  'edited_message',
+  'channel_post',
+  'edited_channel_post',
+  'inline_query',
+  'chosen_inline_result',
+  'callback_query',
+  'shipping_query',
+  'pre_checkout_query',
+  'poll',
+  'poll_answer',
+  'my_chat_member',
+  'chat_member',
+  'chat_join_request',
+  'chat_boost',
+  'removed_chat_boost',
+  'message_reaction',
+  'message_reaction_count',
+  'business_connection',
+  'business_message',
+  'edited_business_message',
+  'deleted_business_messages',
+  'purchased_paid_media',
+  'managed_bot',
+  'guest_message',
+]);
+
 /** A Telegram API failure, carrying the fields the caller needs to react. */
 export class BotApiError extends Error {
   constructor(method, status, description, parameters = null) {
@@ -164,7 +202,11 @@ export class TelegramTransport {
   async getUpdates(offset = 0, timeout = 30) {
     return this.call(
       'getUpdates',
-      { offset, timeout, allowed_updates: ['message', 'callback_query'] },
+      {
+        offset,
+        timeout,
+        allowed_updates: POLLING_ALLOWED_UPDATES,
+      },
       { timeoutMs: (timeout + 10) * 1000 },
     );
   }
