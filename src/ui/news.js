@@ -151,6 +151,25 @@ function isScopeRestricted(userId) {
   return authorization.isScopeRestricted(userId);
 }
 
+/**
+ * Child folders of `parentId`, filtered to a scoped admin's subtree.
+ *
+ * An unscoped admin sees the whole live tree; a scoped one sees only folders at
+ * or beneath their scope roots, so the browse-and-pick flows can never offer an
+ * out-of-scope anchor.
+ */
+function scopedBrowseFolders(userId, parentId = 0) {
+  let folders = [];
+  try {
+    folders = db.getFolders(parentId);
+  } catch {
+    return [];
+  }
+  if (scopedNewsIds(userId) === null) return folders;
+  const allowed = db.listFolderIdsUnder(db.topicFolderRoots(userId));
+  return folders.filter((folder) => allowed.has(folder[0]));
+}
+
 // ---------------------------------------------------------------------------
 // Student side — 📰 News Center
 // ---------------------------------------------------------------------------
@@ -1181,21 +1200,7 @@ export async function pickSection(ctx, newsId, parentId = 0) {
     return;
   }
 
-  const scopedIds = scopedNewsIds(ctx.from.id);
-
-  let folders = [];
-  try {
-    folders = db.getFolders(parentId);
-  } catch {
-    folders = [];
-  }
-
-  // Filter the browse tree to the admin's scope when restricted.
-  if (scopedIds !== null) {
-    const roots = db.topicFolderRoots(ctx.from.id);
-    const allowed = db.listFolderIdsUnder(roots);
-    folders = folders.filter((folder) => allowed.has(folder[0]));
-  }
+  const folders = scopedBrowseFolders(ctx.from.id, parentId);
 
   let breadcrumb = 'الرئيسية 🏠';
   if (parentId) {
@@ -1421,19 +1426,7 @@ export async function pickSubject(ctx, newsId, parentId = 0) {
     return;
   }
 
-  const scopedIds = scopedNewsIds(ctx.from.id);
-
-  let folders = [];
-  try {
-    folders = db.getFolders(parentId);
-  } catch {
-    folders = [];
-  }
-  if (scopedIds !== null) {
-    const roots = db.topicFolderRoots(ctx.from.id);
-    const allowed = db.listFolderIdsUnder(roots);
-    folders = folders.filter((folder) => allowed.has(folder[0]));
-  }
+  const folders = scopedBrowseFolders(ctx.from.id, parentId);
 
   let breadcrumb = 'الرئيسية 🏠';
   if (parentId) {
