@@ -35,6 +35,11 @@ const COMMANDS = new Map([
 
 /** Normalise a raw Telegram update into the context shape handlers expect. */
 export function buildContext(update, bot, options = {}) {
+  // A malformed entry (null, a primitive, a transport oddity) is simply not a
+  // context. Returning null here lets the dispatcher skip it instead of
+  // dereferencing nothing and taking the polling loop down with it.
+  if (!update || typeof update !== 'object') return null;
+
   const userData = options.userDataFor ?? userDataFor;
 
   if (update.callback_query) {
@@ -109,7 +114,12 @@ export function buildContext(update, bot, options = {}) {
  * the UI modules stay free of Telegram plumbing.
  */
 export async function dispatchUpdate(update, bot, options = {}) {
-  const context = buildContext(update, bot, options);
+  let context;
+  try {
+    context = buildContext(update, bot, options);
+  } catch {
+    context = null;
+  }
   if (!context) return false;
 
   try {
@@ -155,6 +165,8 @@ export async function dispatchUpdate(update, bot, options = {}) {
  *
  * Runs until `shouldStop()` returns true. Transport errors back off
  * exponentially (capped) so a transient network failure cannot spin the loop.
+ * A malformed entry in an otherwise valid batch is skipped and logged, never
+ * dereferenced: a single bad update must not end the process.
  */
 export async function pollUpdates(bot, options = {}) {
   const onError = options.onError ?? ((error) => console.error('Update error:', error));
@@ -175,6 +187,10 @@ export async function pollUpdates(bot, options = {}) {
     }
 
     for (const update of updates ?? []) {
+      if (!update || typeof update !== 'object') {
+        onError(new Error('Skipped a malformed update entry.'));
+        continue;
+      }
       offset = Math.max(offset, (update.update_id ?? 0) + 1);
       await dispatchUpdate(update, bot, options);
     }

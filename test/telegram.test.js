@@ -469,3 +469,34 @@ describe('adapter callback plumbing', () => {
     assert.ok(guided.last('editMessageText'), `"${other}" must render a screen`);
   });
 });
+
+describe('polling robustness', () => {
+  it('skips a malformed update instead of letting it end the loop', async () => {
+    // A single null/primitive entry in a batch must not be dereferenced: on the
+    // real stream that would throw out of `pollUpdates` and take the bot down.
+    let round = 0;
+    const transport = {
+      async getUpdates() {
+        round += 1;
+        if (round === 1) return [{ update_id: 1 }, null, 'junk'];
+        return [];
+      },
+    };
+    const errors = [];
+
+    const offset = await adapter.pollUpdates(transport, {
+      shouldStop: () => round > 2,
+      onError: (error) => errors.push(error.message),
+    });
+
+    assert.equal(offset, 2, 'the valid update still advances the offset');
+    assert.equal(errors.length, 2, 'each malformed entry is reported, not thrown');
+  });
+
+  it('never throws out of dispatchUpdate for a non-object update', async () => {
+    for (const bad of [null, undefined, 42, 'text']) {
+      const result = await adapter.dispatchUpdate(bad, new FakeBot(), {});
+      assert.equal(result, false);
+    }
+  });
+});
