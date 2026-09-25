@@ -116,13 +116,15 @@ export function aiRegistryMarkSuccess(id, latencyMs = null) {
   );
 }
 
-export function aiRegistryMarkFailure(id, errorCategory = null) {
+export function aiRegistryMarkFailure(id, errorCategory = null, availability = null, authStatus = null) {
   withDb((db) =>
     run(
       db,
       'UPDATE ai_registry SET last_failure = CURRENT_TIMESTAMP, last_test = CURRENT_TIMESTAMP, ' +
-        'error_category = COALESCE(?, error_category) WHERE id = ?',
-      [errorCategory, id],
+        'error_category = COALESCE(?, error_category), ' +
+        'availability = COALESCE(?, availability), ' +
+        'auth_status = COALESCE(?, auth_status) WHERE id = ?',
+      [errorCategory, availability, authStatus, id],
     ),
   );
 }
