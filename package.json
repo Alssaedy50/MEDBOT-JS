@@ -1,0 +1,24 @@
+{
+  "name": "medbot-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MEDBOT \u2014 Telegram medical-education LMS. JavaScript/Node.js implementation of the MEDBOT platform.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:watch": "node --test --watch \"test/**/*.test.js\"",
+    "lint": "eslint src test",
+    "check": "npm run lint && npm test"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "eslint": "^9.13.0"
+  }
+}
