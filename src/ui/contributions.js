@@ -746,7 +746,13 @@ export async function approveContribution(ctx, contributionId) {
   });
 }
 
-async function decideRejectOrRevise(ctx, contributionId, kind) {
+/**
+ * Arm the reject/revise note flow.
+ *
+ * Exported because both the `reject:<id>` and `revise:<id>` callbacks are
+ * legitimate entry points into the same "collect a note, then decide" step.
+ */
+export async function decideRejectOrRevise(ctx, contributionId, kind) {
   if (!authorization.can(ctx.from.id, 'contribution.review', 'contribution', contributionId)) {
     await ctx.editMessageText('🚫 هذه المساهمة خارج نطاق مسؤوليتك.', {
       reply_markup: keyboard([[btn('⬅️ المساهمات', 'admin_pending')]]),

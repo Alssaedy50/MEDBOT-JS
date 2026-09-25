@@ -486,3 +486,16 @@ export function contentFolderId(contentId) {
   );
   return row ? row[0] : null;
 }
+
+/**
+ * The content row created from an approved contribution, or null.
+ *
+ * The link lives on `content.source_contribution_id`, so this is a lookup, not a
+ * column on the contribution itself.
+ */
+export function contentIdForContribution(contribId) {
+  const row = withDb((db) =>
+    get(db, 'SELECT id FROM content WHERE source_contribution_id = ?', [contribId]),
+  );
+  return row ? row[0] : null;
+}
