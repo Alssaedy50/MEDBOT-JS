@@ -150,6 +150,8 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 87b | Library `folder:` / `file:` drill-down lists only real rows | ✅ | `telegram.test.js` |
 | 87c | `library:` / `library_parent:` root + parent-aware back navigation | ✅ | `telegram.test.js` |
 | 87d | Topics-menu "open resources" (`library:0`) resolves, not a stale button | ✅ | `telegram.test.js`, `topics.test.js` |
+| 87e | Family prefixes (`msg_`, `admin_folder_`) reach their handler | ✅ | `telegram.test.js` |
+| 87f | Every rendered `btn()` callback is claimed by some route | ✅ | `telegram.test.js` |
 
 ## Startup and configuration
 
@@ -181,6 +183,12 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 106 | Resync/retry are authorized and audited | ✅ | `archive.test.js` |
 | 107 | Upload/approved contribution mirror with the header, best-effort | ✅ | `archive.test.js` |
 | 108 | No startup resync (matches Python; the mirror is registration-driven) | ✅ | `startup.test.js` |
+
+## Deliberate divergences
+
+| Item | Divergence | Reason |
+|---|---|---|
+| `/help` | Registered in JS, absent in Python | Convenience alias that replies with the platform `help_text` setting and the home keyboard. It is additive: the Python command set (`/start`, `/quota`, `/whoami`, `/search`, `/cancel`, `/ask`, `/contact`) is fully preserved, so no Python behaviour is lost. |
 
 ## Deliberately out of scope
 

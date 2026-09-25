@@ -964,6 +964,8 @@ export const ADMIN_MGMT_PREFIXES = [
   'admin_admins',
   'admin_add',
   'admin_transfer',
+  'admin_transfer_confirm:',
+  'admin_transfer_do:',
   'admin_view:',
   'admin_role_menu:',
   'admin_setrole:',

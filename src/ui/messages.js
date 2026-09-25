@@ -596,7 +596,10 @@ export async function messagesCallbackHandler(ctx) {
   await ctx.editMessageText('⚠️ إجراء غير معروف.', { reply_markup: homeKeyboard() });
 }
 
-export const MESSAGE_PREFIXES = ['contact', 'msg_'];
+// The Python handler pattern also claims `admin_messages`, the student-inbox
+// button reachable from the home screen. Without it the tap falls to the
+// catch-all. Registered before the generic `admin` route, so it wins.
+export const MESSAGE_PREFIXES = ['contact', 'msg_', 'admin_messages'];
 
 /** `/contact` shortcut for the contact screen. */
 export async function contactCommand(ctx) {

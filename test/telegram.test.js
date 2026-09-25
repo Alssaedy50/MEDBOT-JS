@@ -8,6 +8,8 @@
 
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import * as db from '../src/db/index.js';
 import * as workflow from '../src/workflow.js';
@@ -130,6 +132,130 @@ describe('callback routing', () => {
       lastButtons(bot).some((data) => data === `folder:${registry.subject}`),
       'the parent screen lists its child',
     );
+  });
+});
+
+/**
+ * A family prefix such as `msg_` marks many callbacks that share a stem rather
+ * than one `stem:` namespace. These tests pin the trailing-underscore rule and
+ * the callback families that depend on it; when it regressed, every contact and
+ * every folder-management button silently fell to the catch-all.
+ */
+describe('family prefix routing', () => {
+  it('routes every msg_* callback to the messaging handler', async () => {
+    const bot = new FakeBot();
+    const studentId = 9200;
+    db.registerUser(studentId, 'contact', 'Contact');
+
+    for (const data of ['msg_cat:report', 'msg_cat:message', 'msg_cancel', 'msg_mine']) {
+      await router.routeCallback(callbackCtx(bot, studentId, data));
+      const text = lastEdit(bot);
+      assert.ok(
+        !/لم يعد صالحاً/.test(text),
+        `${data} must reach the messaging handler, got the catch-all`,
+      );
+    }
+  });
+
+  it('routes both admin_folder_* and admin_folder:<id> to the folder handler', async () => {
+    const bot = new FakeBot();
+    db.ensureConfiguredAdmin(ownerId, 'owner');
+    // A throwaway folder: toggling the shared registry folder would leak into
+    // the contribution tests below.
+    const scratch = db.addFolder(0, 'Scratch Family', 'general');
+
+    for (const data of [
+      `admin_folder_toggle:${scratch}`,
+      `admin_folder_create:${scratch}`,
+      `admin_folder:${scratch}`,
+      `admin_file_move:1`,
+    ]) {
+      await router.routeCallback(callbackCtx(bot, ownerId, data));
+      const text = lastEdit(bot);
+      assert.ok(
+        !/لم يعد صالحاً/.test(text),
+        `${data} must reach the folder handler, got the catch-all`,
+      );
+    }
+  });
+
+  it('routes the owner transfer confirmation callbacks', async () => {
+    const bot = new FakeBot();
+    db.ensureConfiguredAdmin(ownerId, 'owner');
+    const target = 9201;
+    db.registerUser(target, 'heir', 'Heir');
+
+    await router.routeCallback(callbackCtx(bot, ownerId, `admin_transfer_confirm:${target}`));
+    assert.ok(
+      !/لم يعد صالحاً/.test(lastEdit(bot)),
+      'the confirm screen must resolve, not hit the catch-all',
+    );
+    assert.ok(
+      lastButtons(bot).some((data) => data === `admin_transfer_do:${target}`),
+      'the confirmation offers the execute button',
+    );
+  });
+
+  it('routes the student-messages inbox button to the messaging handler', async () => {
+    const bot = new FakeBot();
+    db.ensureConfiguredAdmin(ownerId, 'owner');
+
+    await router.routeCallback(callbackCtx(bot, ownerId, 'admin_messages'));
+    assert.ok(
+      !/لم يعد صالحاً/.test(lastEdit(bot)),
+      'admin_messages must reach the messaging handler, not the generic admin route',
+    );
+  });
+});
+
+/**
+ * A screen can only offer a button whose callback some route claims. When a
+ * rendered callback matches no prefix, the tap hits the "stale button"
+ * catch-all — a dead button the user sees as a broken app. This sweep reads
+ * every `btn(label, callback_data)` literal in `src` and asserts it is
+ * claimable, so the next screen that introduces a new family cannot regress
+ * silently.
+ */
+describe('rendered callbacks are all routable', () => {
+  it('claims every static callback_data literal emitted by a btn() call', () => {
+    const root = path.resolve(import.meta.dirname, '..');
+    const prefixes = router.registeredRoutes().flatMap((route) => route.prefixes);
+
+    const matches = (data, prefix) =>
+      data === prefix ||
+      data.startsWith(`${prefix}:`) ||
+      (prefix.endsWith(':') && data.startsWith(prefix)) ||
+      (prefix.endsWith('_') && data.startsWith(prefix));
+
+    const literals = new Set();
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.js')) {
+          const source = readFileSync(full, 'utf8');
+          const btnRe = /btn\(([^,]+),\s*([^)]*)\)/g;
+          let match;
+          while ((match = btnRe.exec(source))) {
+            const literal = match[2].match(/[`'"]([^`'"]+)[`'"]/);
+            if (literal) literals.add(literal[1]);
+          }
+        }
+      }
+    };
+    walk(path.join(root, 'src'));
+
+    assert.ok(literals.size > 100, 'the sweep found the button vocabulary');
+
+    const dead = [...literals]
+      .filter((literal) => !literal.includes('${'))
+      .filter((literal) => {
+        const concrete = literal.replace(/\$\{[^}]*\}/g, '0');
+        return !prefixes.some((prefix) => matches(concrete, prefix));
+      })
+      .sort();
+
+    assert.deepEqual(dead, [], `these rendered callbacks match no route: ${dead.join(', ')}`);
   });
 });
 

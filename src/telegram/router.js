@@ -55,6 +55,8 @@ function prefixMatches(data, prefix) {
   if (data.startsWith(`${prefix}:`)) return true;
   // A registered prefix may itself carry the colon (e.g. "news_open:").
   if (prefix.endsWith(':') && data.startsWith(prefix)) return true;
+  // A trailing underscore marks a family (e.g. "msg_", "admin_folder_").
+  if (prefix.endsWith('_') && data.startsWith(prefix)) return true;
   return false;
 }
 
