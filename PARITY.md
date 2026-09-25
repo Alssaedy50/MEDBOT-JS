@@ -143,6 +143,9 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 85 | Command routing (`/start`, `/help`, `/cancel`) | ✅ | `startup.test.js` |
 | 86 | Media (document/photo) routing | ✅ | `telegram.test.js` |
 | 87 | Keyboard builders for each screen | ✅ | `admin.test.js`, `news.test.js` |
+| 87b | Library `folder:` / `file:` drill-down lists only real rows | ✅ | `telegram.test.js` |
+| 87c | `library:` / `library_parent:` root + parent-aware back navigation | ✅ | `telegram.test.js` |
+| 87d | Topics-menu "open resources" (`library:0`) resolves, not a stale button | ✅ | `telegram.test.js`, `topics.test.js` |
 
 ## Startup and configuration
 

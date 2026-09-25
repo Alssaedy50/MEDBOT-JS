@@ -59,7 +59,12 @@ export async function showFolder(ctx, folderId) {
   }
 
   if (!view || !view.folder) {
-    await ctx.editMessageText(i18n.t('not_found', language), { reply_markup: homeKeyboard() });
+    await ctx.editMessageText(i18n.t('not_found', language), {
+      reply_markup: keyboard([
+        [btn(i18n.t('library_title', language), 'library:0')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    });
     return;
   }
 
@@ -91,11 +96,7 @@ export async function showFolder(ctx, folderId) {
     rows.push([btn(`${contentIcon(fileType)} ${String(title).slice(0, 36)}`, `file:${contentId}`)]);
   }
 
-  if (parentId) {
-    rows.push([btn('⬅️ رجوع', `folder:${parentId}`)]);
-  } else {
-    rows.push([btn('⬅️ رجوع', 'home')]);
-  }
+  rows.push([btn('⬅️ رجوع', `library:${parentId || 0}`)]);
   rows.push([btn('🔎 بحث في الموارد', 'search')]);
   rows.push([btn('🏠 الرئيسية', 'home')]);
 
@@ -229,40 +230,59 @@ export async function runSearch(ctx, query) {
   await ctx.reply(lines.join('\n'), { reply_markup: keyboard(rows) });
 }
 
+/** The library root: the top level of the real hierarchy, or an empty notice. */
+export async function showLibraryRoot(ctx) {
+  if (await libraryHiddenFor(ctx)) return;
+  const language = await lang(ctx.from.id);
+
+  let roots = [];
+  try {
+    roots = db.getFolders(0);
+  } catch {
+    roots = [];
+  }
+
+  if (!roots.length) {
+    await ctx.editMessageText(
+      `${i18n.t('library_title', language)}\n\n${i18n.t('library_empty', language)}`,
+      { reply_markup: keyboard([[btn('🏠 الرئيسية', 'home')]]) },
+    );
+    return;
+  }
+
+  const lines = [`${i18n.t('library_title', language)}`, '', i18n.t('library_pick_year', language), ''];
+  const rows = [];
+  for (const [folderId, name, nodeType] of roots) {
+    lines.push(`${resourceIcon(nodeType)} ${esc(name)}`);
+    rows.push([btn(`${resourceIcon(nodeType)} ${String(name).slice(0, 36)}`, `folder:${folderId}`)]);
+  }
+  rows.push([btn('🔎 بحث في الموارد', 'search')]);
+  rows.push([btn('🏠 الرئيسية', 'home')]);
+
+  await ctx.editMessageText(lines.join('\n'), { reply_markup: keyboard(rows) });
+}
+
 /** Callback handler for the library namespace. */
 export async function libraryCallbackHandler(ctx) {
   await ctx.answer();
   const data = ctx.data ?? '';
 
   if (data === 'resources') {
-    if (await libraryHiddenFor(ctx)) return;
-    const language = await lang(ctx.from.id);
+    await showLibraryRoot(ctx);
+    return;
+  }
 
-    let roots = [];
-    try {
-      roots = db.getFolders(0);
-    } catch {
-      roots = [];
-    }
-
-    if (!roots.length) {
-      await ctx.editMessageText(
-        `${i18n.t('library_title', language)}\n\n${i18n.t('library_empty', language)}`,
-        { reply_markup: keyboard([[btn('🏠 الرئيسية', 'home')]]) },
-      );
+  // The Python reference routes both `library:` and `library_parent:` to
+  // show_library(parent_id); its folder keyboard emits `library:<target>` for
+  // the back button, and the topics menu emits `library:0`. Without these the
+  // back button and "open resources" taps would fall through to the catch-all.
+  if (data.startsWith('library:') || data.startsWith('library_parent:')) {
+    const target = Number.parseInt(data.split(':')[1], 10);
+    if (Number.isNaN(target) || target === 0) {
+      await showLibraryRoot(ctx);
       return;
     }
-
-    const lines = [`${i18n.t('library_title', language)}`, '', i18n.t('library_pick_year', language), ''];
-    const rows = [];
-    for (const [folderId, name, nodeType] of roots) {
-      lines.push(`${resourceIcon(nodeType)} ${esc(name)}`);
-      rows.push([btn(`${resourceIcon(nodeType)} ${String(name).slice(0, 36)}`, `folder:${folderId}`)]);
-    }
-    rows.push([btn('🔎 بحث في الموارد', 'search')]);
-    rows.push([btn('🏠 الرئيسية', 'home')]);
-
-    await ctx.editMessageText(lines.join('\n'), { reply_markup: keyboard(rows) });
+    await showFolder(ctx, target);
     return;
   }
 
@@ -295,4 +315,11 @@ export async function libraryCallbackHandler(ctx) {
   await ctx.editMessageText('⚠️ إجراء غير معروف.', { reply_markup: homeKeyboard() });
 }
 
-export const LIBRARY_PREFIXES = ['resources', 'search', 'folder:', 'file:'];
+export const LIBRARY_PREFIXES = [
+  'resources',
+  'search',
+  'library:',
+  'library_parent:',
+  'folder:',
+  'file:',
+];

@@ -92,6 +92,45 @@ describe('callback routing', () => {
       assert.ok(db.getFolder(id) || db.getFileRecord(id), `button ${data} must be a real row`);
     }
   });
+
+  it('opens the library root when a button emits library:0', async () => {
+    // The topics menu and the home screen both emit `library:0`; Python routes
+    // it to show_library(0), so it must not fall through to the catch-all.
+    const bot = new FakeBot();
+    const studentId = 9104;
+    db.registerUser(studentId, 'student5', 'Student5');
+
+    await router.routeCallback(callbackCtx(bot, studentId, 'library:0'));
+
+    const text = lastEdit(bot);
+    assert.ok(!/لم يعد صالحاً/.test(text), 'must not hit the stale-button catch-all');
+    const buttons = lastButtons(bot);
+    assert.ok(
+      buttons.some((data) => data === `folder:${registry.year}`),
+      'the library root lists the registered top-level folder',
+    );
+  });
+
+  it('walks back from a child folder through library:<parent>', async () => {
+    const bot = new FakeBot();
+    const studentId = 9105;
+    db.registerUser(studentId, 'student6', 'Student6');
+
+    await router.routeCallback(callbackCtx(bot, studentId, `folder:${registry.subject}`));
+
+    const back = lastButtons(bot).find((data) => data.startsWith('library:'));
+    assert.ok(back, 'a folder screen offers a back button');
+    assert.equal(back, `library:${registry.year}`, 'back targets the real parent, not the folder');
+
+    await router.routeCallback(callbackCtx(bot, studentId, back));
+    const text = lastEdit(bot);
+    assert.ok(!/لم يعد صالحاً/.test(text), 'back must resolve, not hit the catch-all');
+    assert.ok(text.includes('Router Year'), 'back lands on the parent folder screen');
+    assert.ok(
+      lastButtons(bot).some((data) => data === `folder:${registry.subject}`),
+      'the parent screen lists its child',
+    );
+  });
 });
 
 describe('single-owner workflow state', () => {
