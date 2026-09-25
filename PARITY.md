@@ -152,6 +152,11 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 87d | Topics-menu "open resources" (`library:0`) resolves, not a stale button | ✅ | `telegram.test.js`, `topics.test.js` |
 | 87e | Family prefixes (`msg_`, `admin_folder_`) reach their handler | ✅ | `telegram.test.js` |
 | 87f | Every rendered `btn()` callback is claimed by some route | ✅ | `telegram.test.js` |
+| 87g | Section creation walks parent → name → type → accepts | ✅ | `folders.test.js` |
+| 87h | Section parent picker is the real hierarchy, not a flat prompt | ✅ | `folders.test.js` |
+| 87i | Folder `node_type` vocabulary matches Python (`books`/`summaries`) | ✅ | `folders.test.js` |
+| 87j | Section detail offers upload, retype, move and child navigation | ✅ | `folders.test.js` |
+| 87k | A scoped admin cannot create a top-level section | ✅ | `folders.test.js` |
 
 ## Startup and configuration
 

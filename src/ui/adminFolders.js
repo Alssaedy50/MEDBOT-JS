@@ -21,15 +21,31 @@ export const ADMIN_FILE_MOVE_PICKER = 'admin_file_move';
 export const ADMIN_FOLDER_WORKFLOW = 'admin_folder_create';
 export const ADMIN_RENAME_WORKFLOW = 'admin_folder_rename';
 
+/**
+ * The folder-type vocabulary, matching the Python reference's
+ * `FOLDER_TYPE_OPTIONS` exactly: `books`, `summaries` (plural), and no
+ * `document`. A mismatch here would write a `node_type` the Python data model
+ * never produces.
+ */
 const NODE_TYPES = Object.freeze([
-  ['general', '📁 قسم عام'],
-  ['book', '📚 كتب'],
-  ['video', '🎥 فيديو'],
+  ['general', '📁 عام'],
+  ['books', '📚 كتب'],
   ['audio', '🎧 صوتيات'],
+  ['video', '🎥 فيديو'],
   ['mcq', '📝 MCQ'],
-  ['summary', '📑 ملخصات'],
-  ['document', '📄 مستندات'],
+  ['summaries', '📑 ملخصات'],
 ]);
+
+const FOLDER_TYPE_KEYS = new Set(NODE_TYPES.map(([value]) => value));
+
+/** The six type choices, one per row, plus the shared cancel. */
+function folderTypeRows() {
+  const rows = NODE_TYPES.map(([value, label]) => [
+    btn(label, `admin_folder_type:${value}`),
+  ]);
+  rows.push([btn('❌ إلغاء', 'admin_folders')]);
+  return rows;
+}
 
 export function esc(value) {
   return escHtml(value);
@@ -191,7 +207,11 @@ export async function showFolderManager(ctx, parentId = 0) {
     rows.push([btn('⬅️ رجوع', `admin_folders:${parent || 0}`)]);
   }
 
-  rows.push([btn('➕ قسم جديد', `admin_folder_create:${parentId}`)]);
+  // Creating a new top-level section is a platform-wide act, so a scoped admin
+  // never gets the entry point — matching the Python dashboard.
+  if (!scoped) {
+    rows.push([btn('➕ إنشاء قسم جديد', 'admin_folder_create')]);
+  }
   rows.push([btn('⬅️ إدارة المنصة', 'admin')]);
   rows.push([btn('🏠 الرئيسية', 'home')]);
 
@@ -228,10 +248,13 @@ export async function showFolderAdmin(ctx, folderId) {
 
   let childCount = 0;
   let fileCount = 0;
+  let children = [];
   try {
-    childCount = db.getFolderChildrenCount(folderId);
+    children = db.getFolders(folderId);
+    childCount = children.length;
     fileCount = db.getFiles(folderId).length;
   } catch {
+    children = [];
     childCount = 0;
     fileCount = 0;
   }
@@ -244,19 +267,34 @@ export async function showFolderAdmin(ctx, folderId) {
   }
 
   const rows = [
+    [btn('➕ إضافة قسم فرعي', `admin_folder_create:${folderId}`)],
+    [btn('📤 رفع مورد', `admin_upload:${folderId}`)],
     [btn('✏️ إعادة تسمية', `admin_folder_rename:${folderId}`)],
-    [btn('🏷 تغيير النوع', `admin_folder_retype:${folderId}`)],
+    [btn('📦 تغيير النوع', `admin_folder_retype:${folderId}`)],
     [
       btn(
         accepts ? '⛔ إيقاف استقبال المساهمات' : '✅ تفعيل استقبال المساهمات',
         `admin_folder_toggle:${folderId}`,
       ),
     ],
-    [btn('🚚 نقل', `admin_folder_move:${folderId}`)],
-    [btn('🗑 حذف', `admin_folder_delete:${folderId}`)],
-    [btn('⬅️ الأقسام', parentId ? `admin_folder_child:${parentId}` : 'admin_folders')],
-    [btn('🏠 الرئيسية', 'home')],
+    [btn('🚚 نقل القسم', `admin_folder_move:${folderId}`)],
   ];
+
+  // Direct navigation into this branch's real sub-sections, so the admin never
+  // has to leave the panel to walk the tree.
+  for (const [childId, childName, childType] of children) {
+    rows.push([
+      btn(`${resourceIcon(childType)} ${String(childName).slice(0, 35)}`, `admin_folder:${childId}`),
+    ]);
+  }
+
+  rows.push([btn('🗑 حذف القسم', `admin_folder_delete:${folderId}`)]);
+  if (parentId) {
+    rows.push([btn('⬅️ القسم الأب', `admin_folder:${parentId}`)]);
+  } else {
+    rows.push([btn('⬅️ إدارة الأقسام', 'admin_folders')]);
+  }
+  rows.push([btn('🏠 الرئيسية', 'home')]);
 
   await ctx.editMessageText(
     `${resourceIcon(nodeType)} <b>${esc(name)}</b>\n\n` +
@@ -284,6 +322,8 @@ export async function armFolderCreate(ctx, parentId = 0) {
   workflow.begin(ctx, ADMIN_FOLDER_WORKFLOW);
   ctx.userData.admin_folder_create = true;
   ctx.userData.admin_folder_parent = parentId;
+  delete ctx.userData.admin_folder_name;
+  delete ctx.userData.admin_folder_type;
 
   await ctx.editMessageText(
     '➕ <b>قسم جديد</b>\n\nأرسل اسم القسم في رسالة واحدة.\n\nلإلغاء العملية أرسل /cancel.',
@@ -296,7 +336,242 @@ export async function armFolderCreate(ctx, parentId = 0) {
   );
 }
 
-/** Consume the new folder name. Returns handled. */
+/**
+ * Hierarchical parent picker for a new folder.
+ *
+ * The Python reference opens the real tree at `parentId` and lets the admin
+ * descend until they reach the branch they want; "create here" commits the
+ * current node as the parent. There is no separate "choose a section" question.
+ */
+export async function showFolderParents(ctx, parentId = 0) {
+  if (!has(ctx.from.id, 'can_folders')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const target = Number.isFinite(parentId) ? parentId : 0;
+  if (target && !authorization.can(ctx.from.id, 'section.manage', 'folder', target)) {
+    await ctx.editMessageText('🚫 هذا القسم خارج نطاق مسؤوليتك.', {
+      reply_markup: keyboard([[btn('⬅️ الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
+  let folders = [];
+  try {
+    folders = db.getFolders(target);
+  } catch {
+    folders = [];
+  }
+
+  const scoped = authorization.isScopeRestricted(ctx.from.id);
+  if (scoped) {
+    const allowed = authorization.scopedFolderIds(ctx.from.id) ?? new Set();
+    folders = folders.filter((folder) => allowed.has(folder[0]));
+  }
+
+  const rows = [[btn('✅ إنشاء القسم هنا', `admin_folder_select_parent:${target}`)]];
+
+  for (const [folderId, name] of folders) {
+    rows.push([btn(`📁 ${String(name).slice(0, 35)}`, `admin_folder_parent:${folderId}`)]);
+  }
+
+  if (target) {
+    let parent = 0;
+    try {
+      parent = db.getParentId(target);
+    } catch {
+      parent = 0;
+    }
+    rows.push([btn('⬅️ رجوع', `admin_folder_parent:${parent || 0}`)]);
+  }
+
+  rows.push([btn('⬅️ إدارة الأقسام', 'admin_folders')]);
+
+  await ctx.editMessageText(
+    '📂 <b>اختيار القسم الأب</b>\n\n' +
+      'ادخل إلى القسم الذي تريد وضع القسم الجديد بداخله، ثم اضغط «إنشاء القسم هنا».',
+    { reply_markup: keyboard(rows) },
+  );
+}
+
+/** Commit `parentId` as the chosen parent and ask for the name. */
+export async function selectFolderParent(ctx, parentId) {
+  if (!has(ctx.from.id, 'can_folders')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+  if (parentId && !authorization.can(ctx.from.id, 'section.manage', 'folder', parentId)) {
+    await ctx.editMessageText('🚫 هذا القسم خارج نطاق مسؤوليتك.', {
+      reply_markup: keyboard([[btn('⬅️ الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
+  workflow.begin(ctx, ADMIN_FOLDER_WORKFLOW);
+  ctx.userData.admin_folder_create = true;
+  ctx.userData.admin_folder_parent = parentId;
+  delete ctx.userData.admin_folder_name;
+  delete ctx.userData.admin_folder_type;
+
+  await ctx.editMessageText(
+    '✏️ <b>اسم القسم الجديد</b>\n\nأرسل الآن اسم القسم في رسالة نصية.\n\nلإلغاء العملية استخدم الزر أدناه.',
+    {
+      reply_markup: keyboard([
+        [btn('❌ إلغاء', 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    },
+  );
+}
+
+/** The type menu, re-openable from the accepts step via «تغيير النوع». */
+export async function showFolderCreateTypes(ctx) {
+  if (!has(ctx.from.id, 'can_folders')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const name = ctx.userData?.admin_folder_name;
+  const parentId = ctx.userData?.admin_folder_parent;
+
+  if (!name || parentId === undefined || parentId === null) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('⚠️ انتهت جلسة إنشاء القسم. ابدأ العملية من جديد.', {
+      reply_markup: keyboard([
+        [btn('🗂 إدارة الأقسام', 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    });
+    return;
+  }
+
+  await ctx.editMessageText(`📁 القسم: <b>${esc(name)}</b>\n\nاختر نوع القسم:`, {
+    reply_markup: keyboard(folderTypeRows()),
+  });
+}
+
+/** Record the chosen type and ask whether the section accepts contributions. */
+export async function chooseFolderCreateType(ctx, nodeType) {
+  if (!has(ctx.from.id, 'can_folders')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const name = ctx.userData?.admin_folder_name;
+  const parentId = ctx.userData?.admin_folder_parent;
+
+  if (!name || parentId === undefined || parentId === null) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('⚠️ انتهت جلسة إنشاء القسم. ابدأ العملية من جديد.', {
+      reply_markup: keyboard([
+        [btn('🗂 إدارة الأقسام', 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    });
+    return;
+  }
+
+  const value = String(nodeType ?? '');
+  if (!FOLDER_TYPE_KEYS.has(value)) {
+    await ctx.editMessageText('⚠️ نوع قسم غير معروف.', {
+      reply_markup: keyboard(folderTypeRows()),
+    });
+    return;
+  }
+
+  ctx.userData.admin_folder_type = value;
+
+  await ctx.editMessageText(
+    `📁 القسم: <b>${esc(name)}</b>\n` +
+      `🧩 النوع: <code>${esc(value)}</code>\n\n` +
+      'هل يسمح هذا القسم باستقبال مساهمات الطلاب؟',
+    {
+      reply_markup: keyboard([
+        [btn('✅ نعم', 'admin_folder_accepts:1')],
+        [btn('❌ لا', 'admin_folder_accepts:0')],
+        [btn('⬅️ تغيير النوع', 'admin_folder_retype')],
+        [btn('❌ إلغاء', 'admin_folders')],
+      ]),
+    },
+  );
+}
+
+/** Create the folder once name, parent, type and accepts are all known. */
+export async function finishFolderCreate(ctx, accepts) {
+  if (!has(ctx.from.id, 'can_folders')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const name = ctx.userData?.admin_folder_name;
+  const parentId = ctx.userData?.admin_folder_parent;
+  const nodeType = ctx.userData?.admin_folder_type ?? 'general';
+
+  if (!name || parentId === undefined || parentId === null) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('⚠️ بيانات إنشاء القسم غير مكتملة. ابدأ العملية من جديد.', {
+      reply_markup: keyboard([
+        [btn('🗂 إدارة الأقسام', 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    });
+    return;
+  }
+
+  // Scope gate: a scoped admin may only build inside their own branch.
+  if (parentId && !authorization.can(ctx.from.id, 'section.manage', 'folder', parentId)) {
+    workflow.clear(ctx);
+    await ctx.editMessageText('🚫 هذا القسم خارج نطاق مسؤوليتك.', {
+      reply_markup: keyboard([[btn('⬅️ الأقسام', 'admin_folders')]]),
+    });
+    return;
+  }
+
+  const wantsContributions = accepts ? 1 : 0;
+
+  let folderId;
+  try {
+    folderId = db.addFolder(parentId, name, nodeType, wantsContributions);
+  } catch {
+    folderId = null;
+  }
+
+  workflow.clear(ctx);
+
+  if (!folderId) {
+    await ctx.editMessageText('⚠️ تعذّر إنشاء القسم.', {
+      reply_markup: keyboard([
+        [btn('🔄 إدارة الأقسام', 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    });
+    return;
+  }
+
+  await audit.logAction(ctx.from.id, 'folder_create', {
+    targetType: 'folder',
+    targetId: folderId,
+    details: `name=${name}, type=${nodeType}, parent=${parentId}`,
+  });
+
+  await ctx.editMessageText(
+    '✅ <b>تم إنشاء القسم بنجاح.</b>\n\n' +
+      `📁 الاسم: <b>${esc(name)}</b>\n` +
+      `🧩 النوع: <code>${esc(nodeType)}</code>\n` +
+      `📤 استقبال المساهمات: ${wantsContributions ? 'نعم' : 'لا'}\n\n` +
+      'يمكنك الآن رفع الموارد داخله أو إنشاء قسم فرعي.',
+    {
+      reply_markup: keyboard([
+        [btn('🔧 إدارة القسم', `admin_folder:${folderId}`)],
+        [btn('⬅️ الأقسام', parentId ? `admin_folder_child:${parentId}` : 'admin_folders')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    },
+  );
+}
+
+/** Consume the new folder name, then move on to the type step. */
 export async function handleFolderCreateText(ctx) {
   if (!ctx.userData?.admin_folder_create) return false;
   if (ctx.kind !== 'message') return false;
@@ -305,10 +580,9 @@ export async function handleFolderCreateText(ctx) {
   const text = String(ctx.text ?? '').trim();
   if (text === '/cancel') {
     workflow.clear(ctx);
-    await ctx.reply('❌ تم إلغاء العملية.', { reply_markup: homeKeyboard() });
+    await ctx.reply('❌ تم إلغاء إنشاء القسم.', { reply_markup: homeKeyboard() });
     return true;
   }
-  if (!text) return false;
 
   if (!has(ctx.from.id, 'can_folders')) {
     workflow.clear(ctx);
@@ -316,35 +590,21 @@ export async function handleFolderCreateText(ctx) {
     return true;
   }
 
-  const parentId = ctx.userData.admin_folder_parent ?? 0;
-
-  let folderId;
-  try {
-    folderId = db.addFolder(parentId, text, 'general', 0);
-  } catch {
-    folderId = null;
-  }
-
-  workflow.clear(ctx);
-
-  if (!folderId) {
-    await ctx.reply('⚠️ تعذّر إنشاء القسم.', {
-      reply_markup: keyboard([[btn('⬅️ الأقسام', 'admin_folders')]]),
-    });
+  if (!text) {
+    await ctx.reply('⚠️ اسم القسم لا يمكن أن يكون فارغاً. أرسل الاسم مرة أخرى.');
     return true;
   }
 
-  await audit.logAction(ctx.from.id, 'folder_create', {
-    targetType: 'folder',
-    targetId: folderId,
-    details: text,
-  });
+  if (text.length > 100) {
+    await ctx.reply('⚠️ اسم القسم طويل جداً. الحد الأقصى 100 حرف.');
+    return true;
+  }
 
-  await ctx.reply(`✅ تم إنشاء القسم: <b>${esc(text)}</b>`, {
-    reply_markup: keyboard([
-      [btn('🔧 إدارة القسم', `admin_folder:${folderId}`)],
-      [btn('⬅️ الأقسام', parentId ? `admin_folder_child:${parentId}` : 'admin_folders')],
-    ]),
+  ctx.userData.admin_folder_name = text;
+  ctx.userData.admin_folder_create = true;
+
+  await ctx.reply(`📁 اسم القسم:\n<b>${esc(text)}</b>\n\nاختر نوع القسم:`, {
+    reply_markup: keyboard(folderTypeRows()),
   });
   return true;
 }
@@ -1133,8 +1393,39 @@ export async function adminFoldersCallbackHandler(ctx) {
     await showFolderManager(ctx, Number.parseInt(data.split(':')[1], 10));
     return;
   }
+  if (data === 'admin_folder_create') {
+    await showFolderParents(ctx, 0);
+    return;
+  }
   if (data.startsWith('admin_folder_create:')) {
     await armFolderCreate(ctx, Number.parseInt(data.split(':')[1], 10) || 0);
+    return;
+  }
+  if (data.startsWith('admin_folder_parent:')) {
+    await showFolderParents(ctx, Number.parseInt(data.split(':')[1], 10) || 0);
+    return;
+  }
+  if (data.startsWith('admin_folder_select_parent:')) {
+    await selectFolderParent(ctx, Number.parseInt(data.split(':')[1], 10) || 0);
+    return;
+  }
+  if (data === 'admin_folder_retype') {
+    await showFolderCreateTypes(ctx);
+    return;
+  }
+  if (data.startsWith('admin_folder_type:')) {
+    await chooseFolderCreateType(ctx, data.split(':')[1]);
+    return;
+  }
+  if (data.startsWith('admin_folder_accepts:')) {
+    const accepts = Number.parseInt(data.split(':')[1], 10);
+    if (accepts !== 0 && accepts !== 1) {
+      await ctx.editMessageText('⚠️ تعذّر إكمال إنشاء القسم.', {
+        reply_markup: keyboard([[btn('🗂 إدارة الأقسام', 'admin_folders')]]),
+      });
+      return;
+    }
+    await finishFolderCreate(ctx, accepts === 1);
     return;
   }
   if (data.startsWith('admin_folder_rename:')) {
