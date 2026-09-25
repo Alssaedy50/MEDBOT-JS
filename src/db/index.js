@@ -9,6 +9,9 @@
 
 export * from './core.js';
 export * from './migrations.js';
+// Domain constants live in one module, but re-exported here so the rest of the
+// codebase reads them as `db.PERMISSION_KEYS` (as the Python `database.py` did).
+export * from '../constants.js';
 export * from './users.js';
 export * from './registry.js';
 export * from './admins.js';

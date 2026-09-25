@@ -59,6 +59,16 @@ export const WORKFLOWS = Object.freeze({
     'news_new_section',
     'news_new_resource',
   ],
+  contrib_upload: [
+    'contrib_folder',
+    'contrib_state',
+    'contrib_file_id',
+    'contrib_file_type',
+    'contrib_resubmit_id',
+    'contrib_resubmit_file_id',
+    'contrib_resubmit_file_type',
+  ],
+  ai_chat: ['ai_mode'],
 });
 
 /**
