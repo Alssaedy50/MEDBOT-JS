@@ -7,7 +7,6 @@
  */
 
 import * as db from '../db/index.js';
-import * as archive from '../archive.js';
 import * as newsDelivery from '../newsDelivery.js';
 import * as ai from '../ai/index.js';
 import * as messages from '../ui/messages.js';
@@ -312,11 +311,6 @@ export async function runBot({ token = process.env.BOT_TOKEN } = {}) {
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
-
-  // Fire-and-forget archive sync when enabled (never blocks polling).
-  if (archive.archiveEnabled()) {
-    archive.syncAllResources(bot).catch(() => {});
-  }
 
   await pollUpdates(bot, {
     shouldStop: () => stopping,

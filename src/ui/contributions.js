@@ -726,6 +726,15 @@ export async function approveContribution(ctx, contributionId) {
     // News generation is best-effort.
   }
 
+  // Mirror the newly approved resource to the Emergency Archive. Best-effort:
+  // a publication problem never fails the approval.
+  try {
+    const { publishResource } = await import('../archive.js');
+    await publishResource(ctx.getBot(), contentId, true);
+  } catch {
+    // Archive mirroring is best-effort.
+  }
+
   // Tell the contributor.
   try {
     const bot = ctx.getBot();

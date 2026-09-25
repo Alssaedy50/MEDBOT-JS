@@ -478,7 +478,7 @@ export async function showRuntime(ctx) {
 // Archive mirror
 // ---------------------------------------------------------------------------
 
-/** Archive mirror status + the resync action. */
+/** Archive mirror status + the resync/retry actions. */
 export async function showArchive(ctx) {
   if (!has(ctx.from.id, 'can_archive')) {
     await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
@@ -486,71 +486,156 @@ export async function showArchive(ctx) {
   }
 
   let counts = {};
-  let failed = [];
   try {
     counts = db.getArchiveSyncCounts();
-    failed = db.getArchiveSyncRows('failed', 5);
   } catch {
     counts = {};
-    failed = [];
   }
 
-  const runtime = archive.runtimeStatus();
-
-  const lines = [
-    '🗄 <b>أرشيف الطوارئ</b>',
-    '',
-    'نسخة مستقلة من موارد المنصة في قناة Telegram منفصلة، للاستخدام عند تعطّل المنصة الأساسية.',
-    '',
-    `⚙️ الحالة: ${runtime.enabled ? '✅ مُفعّل' : '⛔ غير مُفعّل'}`,
-    `🔌 القناة: ${runtime.channelConfigured ? '✅ مضبوطة' : '⛔ غير مضبوطة'}`,
-    '',
-    `✅ منشور: ${counts.published ?? 0} · ⏳ معلّق: ${counts.pending ?? 0} · ⚠️ فشل: ${counts.failed ?? 0}`,
-  ];
-
-  if (failed.length) {
-    lines.push('', '⚠️ <b>أحدث الإخفاقات:</b>');
-    for (const row of failed) {
-      lines.push(`• #${row[0]} ${esc(String(row[11] ?? '').slice(0, 60))}`);
+  let configLine;
+  let channelLine = '';
+  if (archive.isConfigured()) {
+    const channel = esc(archive.resolveChannel());
+    channelLine = `📡 القناة: <code>${channel}</code>`;
+    if (String(archive.resolveChannel()).startsWith('@')) {
+      channelLine += `\n🔗 https://t.me/${esc(String(archive.resolveChannel()).replace(/^@/, ''))}`;
     }
+    configLine = '🟢 الأرشيف مُهيّأ.';
+  } else {
+    configLine =
+      '🔴 <b>الأرشيف غير مُهيّأ.</b>\n' +
+      'حدّد متغير البيئة <code>MEDBOT_ARCHIVE_CHANNEL</code> ' +
+      'في منصة الاستضافة (معرّف القناة أو @username)، ' +
+      'وتأكد أن البوت مشرف فيها.';
   }
 
-  await ctx.editMessageText(lines.join('\n'), {
-    reply_markup: keyboard([
-      [btn('🔄 مزامنة الموارد', 'archive_sync')],
-      [btn('⬅️ إدارة المنصة', 'admin')],
-      [btn('🏠 الرئيسية', 'home')],
-    ]),
-  });
+  const text =
+    '🗄 <b>أرشيف الطوارئ للموارد</b>\n\n' +
+    'نسخة وصول احتياطية للموارد في قناة Telegram مستقلة، تبقى متاحة ' +
+    'حتى إذا توقف MEDBOT. السجل في MEDBOT يظل المصدر الأساسي.\n\n' +
+    `${configLine}\n` +
+    (channelLine ? `${channelLine}\n\n` : '\n') +
+    '📊 <b>حالة المزامنة</b>\n' +
+    `✅ منشور: ${counts.published ?? 0} | ` +
+    `⏳ معلّق: ${counts.pending ?? 0} | ` +
+    `⚠️ فشل: ${counts.failed ?? 0}`;
+
+  await ctx.editMessageText(text, { reply_markup: archiveMenu() });
 }
 
-/** Run an archive resync pass over the registered resources. */
-export async function runArchiveSync(ctx) {
+function archiveMenu() {
+  return keyboard([
+    [btn('🔄 إعادة مزامنة الموارد', 'archive_resync')],
+    [btn('♻️ إعادة محاولة الفاشلة', 'archive_retry')],
+    [btn('📊 حالة المزامنة', 'archive_status')],
+    [btn('⬅️ إدارة المنصة', 'admin')],
+    [btn('🏠 الرئيسية', 'home')],
+  ]);
+}
+
+/** Detailed mirror rows: status, object type, attempts and last error. */
+export async function showArchiveStatus(ctx) {
   if (!has(ctx.from.id, 'can_archive')) {
     await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
     return;
   }
 
-  await ctx.editMessageText('⏳ جارٍ مزامنة الموارد مع الأرشيف...');
-
-  let summary = { registered: 0, published: 0, failed: 0 };
+  let rows = [];
   try {
-    summary = await archive.syncAllResources(ctx.getBot());
+    rows = db.getArchiveSyncRows(null, 15);
   } catch {
-    summary = { registered: 0, published: 0, failed: 0 };
+    rows = [];
   }
 
+  const icons = { published: '✅', pending: '⏳', failed: '⚠️', skipped: '⏭' };
+  const lines = ['📊 <b>حالة مزامنة الأرشيف</b>', ''];
+
+  if (!rows.length) {
+    lines.push('لا توجد سجلات مزامنة بعد.');
+  } else {
+    for (const row of rows) {
+      const [, objectType, , , contentIds, , , status, attempts, error, , updatedAt] = row;
+      const icon = icons[String(status)] ?? '•';
+      const detail = error ? ` — ${esc(String(error).slice(0, 60))}` : '';
+      lines.push(
+        `${icon} <b>${esc(status)}</b> · ${esc(objectType)} ` +
+          `· id=${esc(contentIds || '-')} · ${esc(attempts)} محاولة${detail}\n` +
+          `   <i>${esc(updatedAt)}</i>`,
+      );
+    }
+  }
+
+  await ctx.editMessageText(lines.join('\n'), { reply_markup: archiveMenu() });
+}
+
+/** Re-mirror every resource that is not yet published. */
+export async function runArchiveResync(ctx) {
+  if (!has(ctx.from.id, 'can_archive')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+  if (!archive.isConfigured()) {
+    await showArchive(ctx);
+    return;
+  }
+
+  await ctx.editMessageText('🔄 <i>جارٍ إعادة المزامنة...</i>', {
+    reply_markup: keyboard([[btn('🏠 الرئيسية', 'home')]]),
+  });
+
+  let stats = { total: 0, published: 0, failed: 0, skipped: 0 };
+  try {
+    stats = await archive.resync(ctx.getBot());
+  } catch {
+    // Fall through with the zeroed stats.
+  }
+
+  await audit.logAction(ctx.from.id, 'archive_resync', {
+    targetType: 'archive',
+    details:
+      `published=${stats.published}, failed=${stats.failed}, ` +
+      `skipped=${stats.skipped}, total=${stats.total}`,
+  });
+
   await ctx.editMessageText(
-    '✅ <b>اكتملت المزامنة</b>\n\n' +
-      `📦 تم فحص: ${summary.registered}\n` +
-      `✅ تم نشر: ${summary.published}\n` +
-      `⚠️ فشل: ${summary.failed}`,
-    {
-      reply_markup: keyboard([
-        [btn('⬅️ الأرشيف', 'admin_archive')],
-        [btn('🏠 الرئيسية', 'home')],
-      ]),
-    },
+    '✅ <b>اكتملت إعادة المزامنة</b>\n\n' +
+      `📦 الإجمالي: ${stats.total}\n` +
+      `✅ منشور: ${stats.published}\n` +
+      `⚠️ فشل: ${stats.failed}\n` +
+      `⏭ تم تخطّيه (منشور مسبقاً): ${stats.skipped}`,
+    { reply_markup: archiveMenu() },
+  );
+}
+
+/** Retry only the rows recorded as failed. */
+export async function runArchiveRetry(ctx) {
+  if (!has(ctx.from.id, 'can_archive')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+  if (!archive.isConfigured()) {
+    await showArchive(ctx);
+    return;
+  }
+
+  let stats = { total: 0, published: 0, failed: 0 };
+  try {
+    stats = await archive.retryFailed(ctx.getBot());
+  } catch {
+    // Fall through with the zeroed stats.
+  }
+
+  await audit.logAction(ctx.from.id, 'archive_retry', {
+    targetType: 'archive',
+    details: `published=${stats.published}, failed=${stats.failed}, total=${stats.total}`,
+  });
+
+  await ctx.editMessageText(
+    '♻️ <b>إعادة محاولة النشر الفاشل</b>\n\n' +
+      `📦 الإجمالي: ${stats.total}\n` +
+      `✅ نجح: ${stats.published}\n` +
+      `⚠️ ما زال فاشلاً: ${stats.failed}`,
+    { reply_markup: archiveMenu() },
   );
 }
 
@@ -598,8 +683,16 @@ export async function adminSettingsCallbackHandler(ctx) {
     await showArchive(ctx);
     return;
   }
-  if (data === 'archive_sync') {
-    await runArchiveSync(ctx);
+  if (data === 'archive_resync') {
+    await runArchiveResync(ctx);
+    return;
+  }
+  if (data === 'archive_retry') {
+    await runArchiveRetry(ctx);
+    return;
+  }
+  if (data === 'archive_status') {
+    await showArchiveStatus(ctx);
     return;
   }
 
@@ -616,5 +709,7 @@ export const ADMIN_SETTINGS_PREFIXES = [
   'admin_ai',
   'admin_runtime',
   'admin_archive',
-  'archive_sync',
+  'archive_resync',
+  'archive_retry',
+  'archive_status',
 ];

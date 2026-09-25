@@ -888,6 +888,15 @@ export async function handleUploadText(ctx) {
     // News generation is best-effort.
   }
 
+  // Best-effort mirror to the Emergency Resource Archive. Isolation is the
+  // point: an archive problem must never fail or delay the registration.
+  try {
+    const { publishResource } = await import('../archive.js');
+    await publishResource(ctx.bot, contentId, true);
+  } catch {
+    // Archive mirroring is best-effort.
+  }
+
   await ctx.reply(`✅ تم إضافة المورد: <b>${esc(text)}</b>`, {
     reply_markup: keyboard([
       [btn('🔧 إدارة المورد', `admin_file:${contentId}`)],
