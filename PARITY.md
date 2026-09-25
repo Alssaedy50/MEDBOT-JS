@@ -151,6 +151,7 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 85c | `/whoami` never auto-promotes the first caller | ✅ | `commands.test.js` |
 | 85d | `/search` and the search button both arm the pending-query marker | ✅ | `commands.test.js` |
 | 85e | `/ask <q>` answers in chat mode and charges one allowance unit | ✅ | `commands.test.js` |
+| 85f | Callback taps carry the query id and message id through the context (the tap is acknowledged and the screen edits in place) | ✅ | `telegram.test.js` |
 | 86 | Media (document/photo) routing | ✅ | `telegram.test.js` |
 | 87 | Keyboard builders for each screen | ✅ | `admin.test.js`, `news.test.js` |
 | 87b | Library `folder:` / `file:` drill-down lists only real rows | ✅ | `telegram.test.js` |
