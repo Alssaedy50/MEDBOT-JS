@@ -25,6 +25,7 @@
 import { createHash } from 'node:crypto';
 
 import * as db from './db/index.js';
+import { logFailure } from './log.js';
 
 /** Environment variables that may carry the archive channel. */
 export const ARCHIVE_CHANNEL_ENV_VARS = ['MEDBOT_ARCHIVE_CHANNEL', 'ARCHIVE_CHANNEL_ID'];
@@ -57,7 +58,7 @@ const inFlight = new Set();
 export function resolveChannel() {
   for (const name of ARCHIVE_CHANNEL_ENV_VARS) {
     const raw = String(process.env[name] ?? '').trim();
-    if (raw) return raw;
+    if (raw) return normalizeChannelValue(raw);
   }
   return '';
 }
@@ -70,6 +71,63 @@ function intOrNull(value) {
   const text = String(value ?? '').trim();
   if (!/^[+-]?\d+$/.test(text)) return null;
   return Number.parseInt(text, 10);
+}
+
+/**
+ * Canonicalise the configured channel value.
+ *
+ * A host operator pastes this value into a dashboard, so the raw string
+ * routinely carries a stray pair of quotes, a `https://t.me/...` link or a
+ * space inside a numeric id. Those are the value *as typed*, not a different
+ * channel, so they are normalised away. A value that is already correct is
+ * returned unchanged.
+ */
+export function normalizeChannelValue(raw) {
+  let value = String(raw ?? '').trim();
+  if (!value) return '';
+
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.endsWith(quote) && value.length > 1) {
+    value = value.slice(1, -1).trim();
+  }
+
+  const link = /^(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.me\/(.+)$/i.exec(value);
+  if (link) value = link[1].split(/[/?#]/)[0].trim();
+
+  // A numeric id pasted with grouping spaces ("-100 1234 5678") is still an id.
+  if (/^[-+]?[\d\s]+$/.test(value)) value = value.replace(/\s+/g, '');
+
+  // A bare public username is accepted and made explicit.
+  if (
+    value &&
+    !value.startsWith('@') &&
+    !/^[-+]?\d+$/.test(value) &&
+    /^[A-Za-z0-9_]{4,}$/.test(value)
+  ) {
+    value = `@${value}`;
+  }
+
+  return value;
+}
+
+/**
+ * Classify a normalised channel value.
+ *
+ * Returns `{ valid, kind }` where kind is `numeric` | `username` | `unknown`.
+ * A numeric id must be negative: Telegram channel/supergroup ids are `-100…`,
+ * and a positive number is a user id, not a channel.
+ */
+export function validateChannelValue(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return { valid: false, kind: 'unknown', reason: 'empty' };
+  if (text.startsWith('@')) {
+    return /^@[A-Za-z0-9_]{4,31}$/.test(text)
+      ? { valid: true, kind: 'username' }
+      : { valid: false, kind: 'username', reason: 'malformed_username' };
+  }
+  if (/^-\d+$/.test(text)) return { valid: true, kind: 'numeric' };
+  if (/^\d+$/.test(text)) return { valid: false, kind: 'numeric', reason: 'positive_id' };
+  return { valid: false, kind: 'unknown', reason: 'unrecognised' };
 }
 
 /**
@@ -96,6 +154,175 @@ export function runtimeStatus() {
     channelConfigured: isConfigured(),
     aiProviders: providers.length ? providers.join(', ') : 'لا يوجد',
   };
+}
+
+// ---------------------------------------------------------------------------
+// Health diagnostics
+// ---------------------------------------------------------------------------
+// "Is the archive configured?" is not the same question as "can the bot
+// actually post to it?". A wrong id, a private channel the bot was never added
+// to, and a channel where the bot is a plain member all look identical to a
+// binary configured/unconfigured flag — and all three silently fail at send
+// time. `getArchiveHealth` answers the real question so the admin screen can
+// state the true reason instead of a generic "غير مهيأ".
+
+/** The canonical archive health states. */
+export const ARCHIVE_HEALTH = Object.freeze({
+  NOT_CONFIGURED: 'ARCHIVE_NOT_CONFIGURED',
+  INVALID_CHANNEL: 'ARCHIVE_INVALID_CHANNEL',
+  UNREACHABLE: 'ARCHIVE_UNREACHABLE',
+  PERMISSION_DENIED: 'ARCHIVE_PERMISSION_DENIED',
+  READY: 'ARCHIVE_READY',
+  // Configuration is valid but Telegram could not be consulted (no transport,
+  // e.g. a diagnostic run without a bot). Never reported as READY, because
+  // reachability is unproven.
+  UNVERIFIED: 'ARCHIVE_UNVERIFIED',
+});
+
+/** User-safe Arabic explanation for a health state (never a secret). */
+export function healthMessage(state) {
+  switch (state) {
+    case ARCHIVE_HEALTH.NOT_CONFIGURED:
+      return 'لم يُضبط متغير القناة. حدّد MEDBOT_ARCHIVE_CHANNEL لتفعيل الأرشيف.';
+    case ARCHIVE_HEALTH.INVALID_CHANNEL:
+      return 'قيمة القناة غير صالحة. استخدم معرّفاً رقمياً سالباً مثل -100… أو @username.';
+    case ARCHIVE_HEALTH.UNREACHABLE:
+      return 'تعذّر الوصول إلى القناة. تحقق من المعرّف وأن البوت مضاف إلى القناة.';
+    case ARCHIVE_HEALTH.PERMISSION_DENIED:
+      return 'البوت ليس مشرفاً في القناة أو لا يملك صلاحية النشر.';
+    case ARCHIVE_HEALTH.READY:
+      return 'الأرشيف جاهز والبوت قادر على النشر.';
+    case ARCHIVE_HEALTH.UNVERIFIED:
+      return 'الإعداد صالح لكن لم يتم التحقق من الوصول عبر Telegram.';
+    default:
+      return 'حالة غير معروفة.';
+  }
+}
+
+function healthResult(state, extra = {}) {
+  return {
+    state,
+    ok: state === ARCHIVE_HEALTH.READY,
+    message: healthMessage(state),
+    ...extra,
+  };
+}
+
+/**
+ * Full archive health: configuration, Telegram reachability, bot membership and
+ * the post permission.
+ *
+ * Never throws: every Telegram call is isolated, so a health check can never
+ * block or fail MEDBOT itself. Pass a bot transport to get the Telegram-verified
+ * answer; without one the result is configuration-only (`UNVERIFIED`).
+ */
+export async function getArchiveHealth(bot = null) {
+  const channel = resolveChannel();
+  const configured = Boolean(channel);
+
+  if (!configured) {
+    return healthResult(ARCHIVE_HEALTH.NOT_CONFIGURED, {
+      channel: '',
+      configured: false,
+      valid: false,
+      verified: false,
+      botStatus: null,
+      canPost: false,
+    });
+  }
+
+  const validation = validateChannelValue(channel);
+  if (!validation.valid) {
+    return healthResult(ARCHIVE_HEALTH.INVALID_CHANNEL, {
+      channel,
+      configured: true,
+      valid: false,
+      verified: false,
+      botStatus: null,
+      canPost: false,
+      reason: validation.reason,
+    });
+  }
+
+  const target = channelForSend();
+  const base = { channel, configured: true, valid: true, target };
+
+  if (!bot || typeof bot.getChat !== 'function') {
+    return healthResult(ARCHIVE_HEALTH.UNVERIFIED, {
+      ...base,
+      verified: false,
+      botStatus: null,
+      canPost: false,
+    });
+  }
+
+  let chat;
+  try {
+    chat = await bot.getChat(target);
+  } catch (error) {
+    logFailure('archive health getChat', error);
+    return healthResult(ARCHIVE_HEALTH.UNREACHABLE, {
+      ...base,
+      verified: true,
+      botStatus: null,
+      canPost: false,
+    });
+  }
+
+  let botId = null;
+  try {
+    const me = typeof bot.getMe === 'function' ? await bot.getMe() : null;
+    botId = me?.id ?? null;
+  } catch {
+    botId = null;
+  }
+
+  if (botId === null || typeof bot.getChatMember !== 'function') {
+    // We reached the channel but cannot prove membership/post rights.
+    return healthResult(ARCHIVE_HEALTH.UNVERIFIED, {
+      ...base,
+      verified: true,
+      chatType: chat?.type ?? null,
+      botStatus: null,
+      canPost: false,
+    });
+  }
+
+  let member;
+  try {
+    member = await bot.getChatMember(target, botId);
+  } catch (error) {
+    logFailure('archive health getChatMember', error);
+    return healthResult(ARCHIVE_HEALTH.PERMISSION_DENIED, {
+      ...base,
+      verified: true,
+      chatType: chat?.type ?? null,
+      botStatus: null,
+      canPost: false,
+    });
+  }
+
+  const status = String(member?.status ?? '').toLowerCase();
+  const canPost =
+    status === 'creator' || (status === 'administrator' && member?.can_post_messages !== false);
+
+  if (!canPost) {
+    return healthResult(ARCHIVE_HEALTH.PERMISSION_DENIED, {
+      ...base,
+      verified: true,
+      chatType: chat?.type ?? null,
+      botStatus: status || null,
+      canPost: false,
+    });
+  }
+
+  return healthResult(ARCHIVE_HEALTH.READY, {
+    ...base,
+    verified: true,
+    chatType: chat?.type ?? null,
+    botStatus: status || null,
+    canPost: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +450,7 @@ export async function publishFolderHeader(bot, folder, path) {
     db.markArchivePublished(fingerprint, channel, sent?.message_id ?? null);
     return sent;
   } catch (error) {
+    logFailure('archive folder header publish', error);
     try {
       db.markArchiveFailed(fingerprint, error.message ?? String(error));
     } catch {
@@ -313,6 +541,7 @@ export async function publishResource(bot, contentId, withHeader = false) {
     } catch (error) {
       result.status = 'failed';
       result.error = error.message ?? String(error);
+      logFailure(`archive publish content=${contentId}`, error);
       try {
         db.markArchiveFailed(fingerprint, result.error);
       } catch {

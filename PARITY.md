@@ -195,12 +195,36 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 106 | Resync/retry are authorized and audited | ✅ | `archive.test.js` |
 | 107 | Upload/approved contribution mirror with the header, best-effort | ✅ | `archive.test.js` |
 | 108 | No startup resync (matches Python; the mirror is registration-driven) | ✅ | `startup.test.js` |
+| 109 | Channel value is normalised (quotes/link/whitespace) and validated (numeric or `@username`) | ✅ | `archive.test.js` |
+| 110 | `getArchiveHealth` distinguishes not-configured / invalid / unreachable / permission-denied / ready | ✅ | `archive.test.js` |
+| 111 | The admin archive screen states the real reason and never a secret | ✅ | `archive.test.js` |
+
+## News presentation and reliability
+
+| # | Feature | Status | Test |
+|---|---|---|---|
+| 112 | One shared news layout for the News Center, admin preview and private delivery | ✅ | `newsFormat.test.js` |
+| 113 | `event_at` is the authored 📅 time; `published_at`/`created_at` are never shown as it | ✅ | `newsFormat.test.js` |
+| 114 | Optional doctor/event lines appear only when supplied; the body is never dropped | ✅ | `newsFormat.test.js` |
+| 115 | Every rendered field is HTML-escaped | ✅ | `newsFormat.test.js` |
+| 116 | The publish wizard states its steps and treats the time as its own optional field | ✅ | `news.test.js`, `settingsFlow.test.js` |
+| 117 | A draft previews the rendered item and is never auto-published | ✅ | `news.test.js` |
+| 118 | `settings_edit:contact_text` saves and immediately re-renders the new value | ✅ | `settingsFlow.test.js` |
+| 119 | Settings and news workflows never consume each other's message | ✅ | `settingsFlow.test.js` |
+| 120 | A settings DB write failure is reported as a failure, not as "invalid text" | ✅ | `settingsFlow.test.js` |
+| 121 | Platform settings survive a fresh connection and a re-run of the migration chain | ✅ | `persistence.test.js` |
+| 122 | `MEDBOT_DB_PATH` is honoured; the effective path is reported at boot without secrets | ✅ | `persistence.test.js` |
+| 123 | Long lists pack into a compact two-column keyboard, long/home/destructive rows stay full width | ✅ | `keyboard.test.js` |
 
 ## Deliberate divergences
 
 | Item | Divergence | Reason |
 |---|---|---|
 | `/help` | Registered in JS, absent in Python | Convenience alias that replies with the platform `help_text` setting and the home keyboard. It is additive: the Python command set (`/start`, `/quota`, `/whoami`, `/search`, `/cancel`, `/ask`, `/contact`) is fully preserved, so no Python behaviour is lost. |
+| Archive health diagnostic | JS adds `getArchiveHealth` and the state names (`ARCHIVE_*`) | Python's binary configured/unconfigured flag cannot tell a wrong id from a channel the bot cannot post in. This is a read-only diagnostic on top of the same mirror behaviour; the send path is unchanged and a failed probe never blocks MEDBOT. |
+| Two-column keyboards | JS packs long lists two per row | Telegram readability; labels, callbacks and screen contents are unchanged, and home/cancel/destructive rows stay full width. |
+| News event time | JS shows the authored `event_at` once and never the publish stamp | The Python delivery/detail views printed a technical `published_at`/`created_at` as if it were the news time, which misleads the reader. |
+| Startup DB diagnostic | JS prints `MEDBOT db: <path>` at boot | Makes an ephemeral-filesystem deployment diagnosable from the log. It prints a path and an archive state only — never a token, id or value. |
 
 ## Deliberately out of scope
 

@@ -57,6 +57,10 @@ export class FakeBot {
     this.failFor = new Set();
     this.retryAfterFor = new Map();
     this._messageId = 1000;
+    // Archive health probe state (set by tests).
+    this.me = { id: 424242, username: 'medbot_test_bot' };
+    this.chat = { id: -1001234567890, type: 'channel', title: 'Archive' };
+    this.chatMember = { status: 'administrator', can_post_messages: true };
   }
 
   _record(method, args) {
@@ -113,6 +117,25 @@ export class FakeBot {
 
   async setMyCommands() {
     this.calls.push({ method: 'setMyCommands', args: {} });
+  }
+
+  // ---- Archive health probe surface --------------------------------
+  async getMe() {
+    this._maybeFail('getMe', null);
+    this._record('getMe', {});
+    return this.me;
+  }
+
+  async getChat(chatId) {
+    this._maybeFail('getChat', chatId);
+    this._record('getChat', { chatId });
+    return this.chat;
+  }
+
+  async getChatMember(chatId, userId) {
+    this._maybeFail('getChatMember', chatId);
+    this._record('getChatMember', { chatId, userId });
+    return this.chatMember;
   }
 
   /** Messages sent to one chat (records only sendMessage). */

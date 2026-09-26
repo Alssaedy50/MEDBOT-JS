@@ -12,7 +12,8 @@ import * as audit from '../audit.js';
 import * as archive from '../archive.js';
 import * as notifications from '../notifications.js';
 import * as workflow from '../workflow.js';
-import { btn, escHtml, keyboard } from '../telegram/ui.js';
+import { logFailure } from '../log.js';
+import { btn, chunkButtons, escHtml, keyboard } from '../telegram/ui.js';
 
 export const SETTINGS_WORKFLOW = 'settings_edit';
 export const NOTIFICATION_WORKFLOW = 'notification_body';
@@ -37,13 +38,15 @@ function has(userId, key) {
 // Platform settings
 // ---------------------------------------------------------------------------
 
-/** Editor for the admin-editable platform identity / interface text. */
-export async function showSettings(ctx) {
-  if (!has(ctx.from.id, 'can_settings')) {
-    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
-    return;
-  }
-
+/**
+ * Build the platform-settings screen (text + keyboard) once.
+ *
+ * `showSettings` edits it into the current message and `handleSettingText`
+ * replies with it after a save, so the admin always sees the *current* value
+ * without a second navigation step. One builder means the two paths cannot
+ * disagree about what the screen contains.
+ */
+function settingsScreen() {
   const settings = db.getPlatformSettings();
 
   const lines = [
@@ -53,18 +56,30 @@ export async function showSettings(ctx) {
     '',
   ];
 
-  const rows = [];
+  const settingButtons = [];
   for (const key of db.PLATFORM_SETTING_KEYS) {
     const label = db.PLATFORM_SETTING_LABELS[key] ?? key;
     const value = settings[key] ?? '';
     lines.push(`• ${label}: ${esc(String(value).slice(0, 60))}`);
-    rows.push([btn(label, `settings_edit:${key}`)]);
+    settingButtons.push(btn(label, `settings_edit:${key}`));
   }
 
+  const rows = [...chunkButtons(settingButtons)];
   rows.push([btn('⬅️ إدارة المنصة', 'admin')]);
   rows.push([btn('🏠 الرئيسية', 'home')]);
 
-  await ctx.editMessageText(lines.join('\n'), { reply_markup: keyboard(rows) });
+  return { text: lines.join('\n'), markup: keyboard(rows) };
+}
+
+/** Editor for the admin-editable platform identity / interface text. */
+export async function showSettings(ctx) {
+  if (!has(ctx.from.id, 'can_settings')) {
+    await ctx.editMessageText('🔒 غير مصرح.', { reply_markup: homeKeyboard() });
+    return;
+  }
+
+  const screen = settingsScreen();
+  await ctx.editMessageText(screen.text, { reply_markup: screen.markup });
 }
 
 /** Arm editing of one setting: the next typed message is the new value. */
@@ -113,7 +128,12 @@ export async function handleSettingText(ctx) {
     await ctx.reply('❌ تم إلغاء العملية.', { reply_markup: homeKeyboard() });
     return true;
   }
-  if (!text) return false;
+  if (!text) {
+    await ctx.reply('⚠️ لم ترسل أي نص. أرسل النص الجديد، أو /cancel للإلغاء.', {
+      reply_markup: keyboard([[btn('⬅️ الإعدادات', 'admin_settings')]]),
+    });
+    return true;
+  }
 
   if (!has(ctx.from.id, 'can_settings')) {
     workflow.clear(ctx);
@@ -122,9 +142,27 @@ export async function handleSettingText(ctx) {
     return true;
   }
 
-  const ok = db.setPlatformSetting(key, text);
+  // Distinguish a rejected value from a real persistence failure: a DB error
+  // must never be reported to the admin as "invalid text", because that hides
+  // the failure and makes the setting look saved-but-wrong.
+  let ok = false;
+  let writeError = null;
+  try {
+    ok = db.setPlatformSetting(key, text);
+  } catch (error) {
+    writeError = error;
+  }
+
   workflow.clear(ctx);
   delete ctx.userData.settings_edit_key;
+
+  if (writeError) {
+    logFailure(`platform setting save (${key})`, writeError);
+    await ctx.reply('⚠️ تعذّر حفظ الإعداد بسبب خطأ في قاعدة البيانات. لم يتم تغيير القيمة.', {
+      reply_markup: keyboard([[btn('⬅️ الإعدادات', 'admin_settings')]]),
+    });
+    return true;
+  }
 
   if (ok) {
     await audit.logAction(ctx.from.id, 'platform_setting', {
@@ -132,14 +170,19 @@ export async function handleSettingText(ctx) {
       targetId: key,
       details: text.slice(0, 200),
     });
-    await ctx.reply('✅ تم حفظ الإعداد.', {
-      reply_markup: keyboard([[btn('⬅️ الإعدادات', 'admin_settings')], [btn('🏠 الرئيسية', 'home')]]),
+    // Re-render the settings screen so the admin immediately sees the new
+    // value, instead of a bare "saved" acknowledgement they must navigate away
+    // from and back to verify.
+    const screen = settingsScreen();
+    await ctx.reply(`✅ تم حفظ الإعداد: ${esc(db.PLATFORM_SETTING_LABELS[key] ?? key)}\n\n${screen.text}`, {
+      reply_markup: screen.markup,
     });
-  } else {
-    await ctx.reply(`⚠️ نص غير صالح (فارغ أو يتجاوز ${db.SETTINGS_MAX_LENGTH} حرفاً).`, {
-      reply_markup: keyboard([[btn('⬅️ الإعدادات', 'admin_settings')]]),
-    });
+    return true;
   }
+
+  await ctx.reply(`⚠️ نص غير صالح (فارغ أو يتجاوز ${db.SETTINGS_MAX_LENGTH} حرفاً).`, {
+    reply_markup: keyboard([[btn('⬅️ الإعدادات', 'admin_settings')]]),
+  });
   return true;
 }
 
@@ -344,16 +387,13 @@ export async function showAudit(ctx, action = null) {
     }
   }
 
-  const actionRows = [];
-  let currentRow = [];
-  for (const key of audit.AUDIT_ACTIONS) {
-    currentRow.push(btn((audit.ACTION_LABELS[key] ?? key).slice(0, 26), `audit_act:${key}`));
-    if (currentRow.length === 2) {
-      actionRows.push(currentRow);
-      currentRow = [];
-    }
-  }
-  if (currentRow.length) actionRows.push(currentRow);
+  const actionRows = chunkButtons(
+    audit.AUDIT_ACTIONS.map((key) =>
+      btn((audit.ACTION_LABELS[key] ?? key).slice(0, 20), `audit_act:${key}`),
+    ),
+    2,
+    { maxLabelLength: 24 },
+  );
 
   await ctx.editMessageText(lines.join('\n'), {
     reply_markup: keyboard([
@@ -465,13 +505,25 @@ export async function showRuntime(ctx) {
 
   const runtime = archive.runtimeStatus();
 
+  // The effective DB path (never a secret) is the one fact that explains a
+  // "settings vanished after deploy" report: on an ephemeral filesystem the
+  // file lives only for the container's lifetime.
+  let dbPath = '';
+  try {
+    dbPath = db.currentDbPath();
+  } catch {
+    dbPath = '';
+  }
+
   await ctx.editMessageText(
     '📊 <b>حالة التشغيل</b>\n\n' +
       `🗂 الأقسام: ${folderCount}\n` +
       `📄 الموارد: ${contentCount}\n` +
       `👥 المشرفون: ${adminCount}\n` +
       `📥 مساهمات بانتظار المراجعة: ${pending}\n` +
-      `📜 أحداث التدقيق: ${auditCount}\n\n` +
+      `📜 أحداث التدقيق: ${auditCount}\n` +
+      (dbPath ? `🗃 قاعدة البيانات: <code>${esc(dbPath)}</code>\n` : '') +
+      '\n' +
       '🗄 <b>أرشيف الطوارئ:</b>\n' +
       `• ✅ منشور: ${archiveCounts.published ?? 0}\n` +
       `• ⏳ معلّق: ${archiveCounts.pending ?? 0}\n` +
@@ -509,42 +561,82 @@ export async function showArchive(ctx) {
     counts = {};
   }
 
-  let configLine;
-  let channelLine = '';
-  if (archive.isConfigured()) {
-    const channel = esc(archive.resolveChannel());
-    channelLine = `📡 القناة: <code>${channel}</code>`;
-    if (String(archive.resolveChannel()).startsWith('@')) {
-      channelLine += `\n🔗 https://t.me/${esc(String(archive.resolveChannel()).replace(/^@/, ''))}`;
-    }
-    configLine = '🟢 الأرشيف مُهيّأ.';
-  } else {
-    configLine =
-      '🔴 <b>الأرشيف غير مُهيّأ.</b>\n' +
-      'حدّد متغير البيئة <code>MEDBOT_ARCHIVE_CHANNEL</code> ' +
-      'في منصة الاستضافة (معرّف القناة أو @username)، ' +
-      'وتأكد أن البوت مشرف فيها.';
+  // Ask the real question ("can the bot post?") rather than only "is a value
+  // set?". The check is isolated from the send path, so an unreachable channel
+  // reports a reason instead of silently failing later.
+  let health;
+  try {
+    health = await archive.getArchiveHealth(ctx.bot);
+  } catch {
+    health = { state: archive.ARCHIVE_HEALTH.UNVERIFIED, message: '', configured: archive.isConfigured() };
   }
 
-  const text =
-    '🗄 <b>أرشيف الطوارئ للموارد</b>\n\n' +
-    'نسخة وصول احتياطية للموارد في قناة Telegram مستقلة، تبقى متاحة ' +
-    'حتى إذا توقف MEDBOT. السجل في MEDBOT يظل المصدر الأساسي.\n\n' +
-    `${configLine}\n` +
-    (channelLine ? `${channelLine}\n\n` : '\n') +
-    '📊 <b>حالة المزامنة</b>\n' +
-    `✅ منشور: ${counts.published ?? 0} | ` +
-    `⏳ معلّق: ${counts.pending ?? 0} | ` +
-    `⚠️ فشل: ${counts.failed ?? 0}`;
+  const stateLabel = {
+    [archive.ARCHIVE_HEALTH.READY]: '🟢 جاهز',
+    [archive.ARCHIVE_HEALTH.NOT_CONFIGURED]: '⚪ غير مضبوط',
+    [archive.ARCHIVE_HEALTH.INVALID_CHANNEL]: '🔴 قيمة غير صالحة',
+    [archive.ARCHIVE_HEALTH.UNREACHABLE]: '🔴 غير قابل للوصول',
+    [archive.ARCHIVE_HEALTH.PERMISSION_DENIED]: '🔴 صلاحية ناقصة',
+    [archive.ARCHIVE_HEALTH.UNVERIFIED]: '🟡 غير متحقق',
+  }[health.state] ?? '⚪ غير معروف';
 
-  await ctx.editMessageText(text, { reply_markup: archiveMenu() });
+  const botStatusLabel = {
+    creator: 'المنشئ',
+    administrator: 'مشرف',
+    member: 'عضو فقط',
+    restricted: 'مقيّد',
+    left: 'غادر',
+    kicked: 'مطرود',
+  }[String(health.botStatus ?? '').toLowerCase()] ?? '—';
+
+  const lines = [
+    '🗄 <b>أرشيف الطوارئ للموارد</b>',
+    '',
+    'نسخة وصول احتياطية للموارد في قناة Telegram مستقلة، تبقى متاحة ' +
+      'حتى إذا توقف MEDBOT. السجل في MEDBOT يظل المصدر الأساسي.',
+    '',
+    `${health.configured ? '✅' : '⛔'} المتغير مضبوط: ${health.configured ? 'نعم' : 'لا'}`,
+  ];
+
+  if (health.channel) {
+    lines.push(`📡 القناة: <code>${esc(health.channel)}</code>`);
+    if (String(health.channel).startsWith('@')) {
+      lines.push(`🔗 https://t.me/${esc(String(health.channel).replace(/^@/, ''))}`);
+    }
+  }
+
+  if (health.verified) {
+    lines.push(`🤖 حالة البوت: ${botStatusLabel}`);
+    lines.push(`📤 الإرسال: ${health.canPost ? 'متاح' : 'غير متاح'}`);
+  }
+
+  lines.push(`الحالة: ${stateLabel}`);
+  if (health.state !== archive.ARCHIVE_HEALTH.READY) {
+    lines.push(`السبب: ${esc(health.message)}`);
+  }
+
+  lines.push(
+    '',
+    '📊 <b>حالة المزامنة</b>',
+    `✅ منشور: ${counts.published ?? 0} | ` +
+      `⏳ معلّق: ${counts.pending ?? 0} | ` +
+      `⚠️ فشل: ${counts.failed ?? 0}`,
+  );
+
+  await ctx.editMessageText(lines.join('\n'), { reply_markup: archiveMenu() });
 }
 
 function archiveMenu() {
   return keyboard([
-    [btn('🔄 إعادة مزامنة الموارد', 'archive_resync')],
-    [btn('♻️ إعادة محاولة الفاشلة', 'archive_retry')],
-    [btn('📊 حالة المزامنة', 'archive_status')],
+    ...chunkButtons(
+      [
+        btn('🔄 إعادة مزامنة الموارد', 'archive_resync'),
+        btn('♻️ إعادة محاولة الفاشلة', 'archive_retry'),
+        btn('📊 حالة المزامنة', 'archive_status'),
+      ],
+      2,
+      { maxLabelLength: 22 },
+    ),
     [btn('⬅️ إدارة المنصة', 'admin')],
     [btn('🏠 الرئيسية', 'home')],
   ]);

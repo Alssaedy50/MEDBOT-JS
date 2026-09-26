@@ -31,6 +31,8 @@
  */
 
 import * as db from './db/index.js';
+import { newsBodyLines } from './newsFormat.js';
+import { logFailure } from './log.js';
 import { btn } from './telegram/ui.js';
 
 // Recipients up to this count are delivered inline so the admin's publish reply
@@ -96,33 +98,14 @@ export function deliveryKind(news) {
 /**
  * The private Telegram message body for one news item.
  *
- * Mirrors the News Center detail (type, title, real section, timestamp) so a
- * student sees the same facts wherever the item appears, plus a pointer to the
- * News Center where it stays unread until opened.
+ * Reuses the shared news layout (`newsFormat`) so the private message and the
+ * News Center detail show the same facts in the same order — including the
+ * author's 📅 event time and never a technical publish stamp. The body is
+ * truncated for the inbox, and the footer points at the News Center where the
+ * item stays unread until opened.
  */
 export function buildDeliveryText(news) {
-  const lines = [
-    '📰 <b>خبر جديد</b>',
-    '',
-    `${db.NEWS_TYPE_ICONS[news.news_type] ?? '📰'} <b>${esc(news.title)}</b>`,
-    `🏷 ${esc(db.NEWS_TYPE_LABELS[news.news_type] ?? '')}`,
-  ];
-
-  if (news.subject_name) lines.push(`🧪 المادة: ${esc(news.subject_name)}`);
-  if (news.section_name) lines.push(`🗂 القسم: ${esc(news.section_name)}`);
-  if (news.doctor) lines.push(`👨‍⚕️ ${esc(news.doctor)}`);
-  if (news.event_at) lines.push(`📅 ${esc(news.event_at)}`);
-
-  const stamp = news.published_at || news.created_at;
-  if (stamp) lines.push(`🕒 ${esc(stamp)}`);
-
-  const body = String(news.body ?? '').trim();
-  if (body) lines.push('', esc(body.slice(0, 600)));
-
-  if (news.resource_present && news.resource_id) {
-    lines.push('', `📄 ${esc(news.resource_title ?? '')}`);
-  }
-
+  const lines = ['📰 <b>خبر جديد</b>', '', ...newsBodyLines(news, { maxBodyLength: 600 })];
   lines.push('', 'افتحه من 📰 مركز الأخبار للاطلاع الكامل.');
   return lines.join('\n');
 }
@@ -210,7 +193,8 @@ export async function sendOne(bot, news, userId, text, markup) {
   let claimed;
   try {
     claimed = db.claimNewsDelivery(news.id, userId);
-  } catch {
+  } catch (error) {
+    logFailure(`news delivery claim (news=${news.id}, user=${userId})`, error);
     return 'failed';
   }
 
@@ -236,17 +220,18 @@ export async function sendOne(bot, news, userId, text, markup) {
       }
       try {
         db.markNewsDelivery(news.id, userId, 'failed', { error: String(error.message ?? error) });
-      } catch {
-        // Recording the failure must never mask the original error.
+      } catch (recordError) {
+        logFailure(`news delivery record failure (news=${news.id}, user=${userId})`, recordError);
       }
+      logFailure(`news delivery send (news=${news.id}, user=${userId})`, error);
       return 'failed';
     }
   }
 
   try {
     db.markNewsDelivery(news.id, userId, 'failed', { error: 'RetryAfter exhausted' });
-  } catch {
-    // Best-effort.
+  } catch (recordError) {
+    logFailure(`news delivery record retry-exhausted (news=${news.id}, user=${userId})`, recordError);
   }
   return 'failed';
 }

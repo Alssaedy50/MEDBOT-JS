@@ -186,6 +186,17 @@ resync, so no test asserts one. Enablement is environment-only
 hardcoded, and publication identity is the normalised (title, type, file_id)
 triple so a rename or a move cannot republish the same file.
 
+The configured value is normalised before use (a pasted quote pair, a `t.me`
+link or grouping whitespace in a numeric id are the value *as typed*, not a
+different channel) and validated as either a negative numeric id or an
+`@username`. `getArchiveHealth(bot)` reports the real state —
+`ARCHIVE_NOT_CONFIGURED`, `ARCHIVE_INVALID_CHANNEL`, `ARCHIVE_UNREACHABLE`,
+`ARCHIVE_PERMISSION_DENIED`, `ARCHIVE_READY` (and `ARCHIVE_UNVERIFIED` when
+Telegram cannot be consulted) — so the admin screen states the actual reason
+instead of a generic "not configured". The check is isolated: a failed health
+probe never blocks MEDBOT. This is a diagnostic addition over Python, not a
+behaviour change to the mirror.
+
 `ai_architect.py` is **dead code** in Python (nothing imports it; the only
 matches are the unrelated word "architecture"), so no equivalent was written —
 reimplementing it would add a feature the Python bot never runs.

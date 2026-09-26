@@ -7,6 +7,7 @@
  */
 
 import * as db from '../db/index.js';
+import * as archive from '../archive.js';
 import * as newsDelivery from '../newsDelivery.js';
 import * as ai from '../ai/index.js';
 import * as messages from '../ui/messages.js';
@@ -440,6 +441,19 @@ export async function createBot({ token = null, transport = null } = {}) {
   db.initDb();
 
   registerHandlers();
+
+  // One non-secret line so a deploy can be diagnosed from the log: where the
+  // SQLite file actually lives (an ephemeral path explains lost settings) and
+  // whether the archive is wired up. No token, id or value is ever printed.
+  try {
+    console.log(
+      `MEDBOT db: ${db.currentDbPath()} | archive: ${
+        archive.isConfigured() ? 'configured' : 'not configured'
+      }`,
+    );
+  } catch {
+    // Diagnostics must never block startup.
+  }
 
   const bot = transport ?? (token ? new TelegramTransport(token) : null);
 
