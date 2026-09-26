@@ -1,0 +1,36 @@
+# Build context exclusions for the production image.
+
+# Dependencies are installed inside the image from the lockfile.
+node_modules
+
+# Version control and local history.
+.git
+.gitignore
+
+# Secrets and local configuration.
+.env
+.env.*
+
+# npm logs and caches.
+npm-debug.log*
+.npm
+.eslintcache
+
+# Runtime artefacts (SQLite database and WAL sidecars, backups).
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+backups/
+
+# Test and coverage output.
+coverage/
+test/
+
+# Markdown documentation is not needed at runtime.
+*.md
+LICENSE
+
+# Editor / agent scratch files.
+.agent_tmp/
+.vscode/
+.idea/

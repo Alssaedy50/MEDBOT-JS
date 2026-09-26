@@ -31,12 +31,33 @@ export function btn(text, callbackData = null, extra = {}) {
 
 /** Wrap a list of button rows into a markup object. */
 export function keyboard(rows) {
-  return { inline_keyboard: rows };
+  return { inline_keyboard: Array.isArray(rows) ? rows : [] };
 }
 
 /** Convenience: build a markup from a list of `[label, callback]` tuples. */
 export function keyboardFrom(tuples) {
   return keyboard(tuples.map(([label, callback]) => [btn(label, callback)]));
+}
+
+/**
+ * Coerce any `reply_markup` value into a valid Bot API object, or `undefined`.
+ *
+ * Telegram rejects a call whose `reply_markup` is present but is not a JSON
+ * object with `"Bad Request: object expected as reply markup"`. Two shapes
+ * reach the transport and must be handled here:
+ *
+ *   * a bare row array of inline rows — wrapped into `{ inline_keyboard }`;
+ *   * a `null`/`undefined` value — dropped entirely, because a serialized
+ *     `null` is exactly what Telegram refuses.
+ *
+ * An already-shaped object is passed through untouched, so this is safe to call
+ * on every outgoing payload.
+ */
+export function normalizeReplyMarkup(markup) {
+  if (markup === null || markup === undefined) return undefined;
+  if (Array.isArray(markup)) return keyboard(markup);
+  if (typeof markup !== 'object') return undefined;
+  return markup;
 }
 
 export function escHtml(value) {

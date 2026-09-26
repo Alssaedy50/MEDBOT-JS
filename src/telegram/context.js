@@ -28,7 +28,7 @@
  * test harness builds it directly.
  */
 
-import { ParseMode } from './ui.js';
+import { normalizeReplyMarkup, ParseMode } from './ui.js';
 
 /** Bot transport contract every implementation (Telegraf, test double) meets. */
 export const BOT_METHODS = Object.freeze([
@@ -112,7 +112,9 @@ export function buildCallbackContext({
             chat_id: this.chatId,
             message_id: options.message_id ?? this.messageId,
             parse_mode: options.parse_mode ?? ParseMode.HTML,
-            reply_markup: options.reply_markup ?? null,
+            // Never a `null` markup: Telegram rejects it outright. Omitting the
+            // key keeps the previous keyboard, which is the intended behaviour.
+            reply_markup: normalizeReplyMarkup(options.reply_markup),
           });
         } catch {
           // An edit can fail if the text is unchanged; never fatal.
@@ -126,7 +128,7 @@ export function buildCallbackContext({
       if (bot?.sendMessage) {
         return bot.sendMessage(this.chatId, text, {
           parse_mode: options.parse_mode ?? ParseMode.HTML,
-          reply_markup: options.reply_markup ?? null,
+          reply_markup: normalizeReplyMarkup(options.reply_markup),
         });
       }
       return null;
@@ -178,7 +180,7 @@ export function buildMessageContext({
       if (bot?.sendMessage) {
         return bot.sendMessage(this.chatId, text2, {
           parse_mode: options.parse_mode ?? ParseMode.HTML,
-          reply_markup: options.reply_markup ?? null,
+          reply_markup: normalizeReplyMarkup(options.reply_markup),
         });
       }
       return null;

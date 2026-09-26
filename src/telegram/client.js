@@ -10,7 +10,25 @@
  * (so the delivery engine can honour a 429).
  */
 
+import { normalizeReplyMarkup } from './ui.js';
+
 export const TELEGRAM_API = 'https://api.telegram.org';
+
+/**
+ * Prepare one Bot API payload for serialization.
+ *
+ * `undefined` fields are dropped (JSON.stringify already does this) and
+ * `reply_markup` is normalised to a valid object or removed. Telegram rejects
+ * a present-but-null `reply_markup` with "object expected as reply markup", so
+ * this is the last line of defence for every send/edit method.
+ */
+function sanitizePayload(payload) {
+  const clean = { ...payload };
+  const markup = normalizeReplyMarkup(clean.reply_markup);
+  if (markup === undefined) delete clean.reply_markup;
+  else clean.reply_markup = markup;
+  return clean;
+}
 
 /**
  * Update types the bot subscribes to on every long-poll.
@@ -89,7 +107,7 @@ export class TelegramTransport {
       response = await this.fetchImpl(this.url(method), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(sanitizePayload(payload)),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
