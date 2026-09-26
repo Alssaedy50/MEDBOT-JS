@@ -356,12 +356,26 @@ describe('trusted sources footer', () => {
     assert.match(merged, /PMID: 333/);
   });
 
-  it('does not duplicate a footer the model already produced', () => {
+  it('always appends the application-owned footer, even when the body mentions PubMed', () => {
+    // V2 source integrity: the model never authors a citation, so a residual
+    // "PubMed" mention in prose must not suppress the verified footer. Any real
+    // inline identifier is stripped from the body before this point.
     const footer = medicalSources.buildSourcesFooter([
       { pmid: '222', title: 'T', url: 'https://x/222' },
     ]);
-    const answer = 'Conclusion based on PubMed PMID: 222.';
-    assert.equal(medicalSources.ensureSourcesFooter(answer, footer), answer);
+    const answer = 'The literature indexed in PubMed broadly supports this.';
+    const merged = medicalSources.ensureSourcesFooter(answer, footer);
+    assert.match(merged, /The literature indexed in PubMed broadly supports this\./);
+    assert.match(merged, /PMID: 222/);
+  });
+
+  it('does not duplicate the footer when it is already present', () => {
+    const footer = medicalSources.buildSourcesFooter([
+      { pmid: '222', title: 'T', url: 'https://x/222' },
+    ]);
+    const once = medicalSources.ensureSourcesFooter('A grounded answer.', footer);
+    const twice = medicalSources.ensureSourcesFooter(once, footer);
+    assert.equal(twice, once);
   });
 
   it('omits the footer entirely when nothing is verifiable', () => {

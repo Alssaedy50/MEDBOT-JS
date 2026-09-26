@@ -13,7 +13,7 @@
 import { randomInt } from 'node:crypto';
 
 import * as db from '../db/index.js';
-import { ensureSourcesFooter } from '../medicalSources.js';
+import { ensureSourcesFooter, stripSourceIdentifiers } from '../medicalSources.js';
 import * as providers from './providers.js';
 import { GroundingValidator } from './intent.js';
 import { guardAnswer, hasRepetition, sanitizeModelAnswer } from './guard.js';
@@ -538,6 +538,12 @@ export async function providerFailover({
         }
         answer = guarded;
       }
+
+      // The application owns every citation. Any inline PMID/DOI/URL or
+      // self-authored source block is stripped from the body before the
+      // verified footer is appended, so the model can never present a
+      // fabricated identifier as a real one.
+      answer = stripSourceIdentifiers(answer);
 
       const latencyMs = Math.round(Date.now() - started);
 

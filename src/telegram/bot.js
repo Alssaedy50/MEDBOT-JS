@@ -484,9 +484,32 @@ export async function createBot({ token = null, transport = null } = {}) {
   return { bot, ready: true };
 }
 
-/** Run the bot: migrate, register and long-poll until stopped. */
-export async function runBot({ token = process.env.BOT_TOKEN } = {}) {
-  const { bot } = await createBot({ token });
+// The single in-flight polling loop, so `runBot` cannot start a second one.
+let activePolling = null;
+
+/** How long a graceful shutdown may wait for the in-flight poll before exiting. */
+export const SHUTDOWN_DRAIN_GRACE_MS = 8000;
+
+/**
+ * Run the bot: migrate, register and long-poll until stopped.
+ *
+ * Polling starts exactly once. A second call returns the in-flight loop instead
+ * of starting a competing one: two long-poll loops would double-process updates
+ * and race each other's offset. The function is intentionally not `async` so the
+ * identity of the single loop is observable (and testable); it still returns a
+ * promise callers can `await`/`catch`.
+ */
+export function runBot({ token = process.env.BOT_TOKEN, transport = null, shouldStop = null } = {}) {
+  if (activePolling) return activePolling;
+
+  activePolling = runPollingLoop({ token, transport, shouldStop }).finally(() => {
+    activePolling = null;
+  });
+  return activePolling;
+}
+
+async function runPollingLoop({ token, transport, shouldStop = null }) {
+  const { bot } = await createBot({ token, transport });
   if (!bot) throw new Error('BOT_TOKEN is required to run MEDBOT.');
 
   const me = await bot.getMe().catch(() => null);
@@ -495,21 +518,66 @@ export async function runBot({ token = process.env.BOT_TOKEN } = {}) {
   }
 
   let stopping = false;
+  let drainTimer = null;
   const stop = () => {
+    if (stopping) return;
     stopping = true;
+    console.log('[MEDBOT] SHUTDOWN requested');
+    // An in-flight long poll can take up to its 40s transport timeout to return,
+    // but a host sends SIGKILL well before that (Render allows ~30s). Bound the
+    // drain so the process always exits within the grace window instead of being
+    // killed mid-write. The timer is cleared when the loop returns normally.
+    drainTimer = setTimeout(() => {
+      console.log('[MEDBOT] SHUTDOWN drain grace elapsed; exiting');
+      process.exit(0);
+    }, SHUTDOWN_DRAIN_GRACE_MS);
+    drainTimer.unref?.();
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
 
-  await pollUpdates(bot, {
-    shouldStop: () => stopping,
-    onError: (error) => console.error('Polling error:', error.message ?? error),
-  });
+  console.log('[MEDBOT] TELEGRAM_POLLING_STARTED');
+
+  try {
+    await pollUpdates(bot, {
+      // An extra predicate lets a caller (a test, or a supervisor) end the loop
+      // without a signal; the signal flag remains the production path.
+      shouldStop: () => stopping || (typeof shouldStop === 'function' ? shouldStop() : false),
+      // A polling failure is logged with a non-secret message and retried by the
+      // loop's own backoff; it must never be swallowed into silence.
+      onError: (error) => console.error(`[MEDBOT] TELEGRAM_POLLING_ERROR: ${safeErrorMessage(error)}`),
+      onRetry: (error, waitSeconds) =>
+        console.warn(
+          `[MEDBOT] TELEGRAM_POLLING_RETRY in ${waitSeconds}s after: ${safeErrorMessage(error)}`,
+        ),
+    });
+  } finally {
+    if (drainTimer) clearTimeout(drainTimer);
+    process.removeListener('SIGINT', stop);
+    process.removeListener('SIGTERM', stop);
+    console.log('[MEDBOT] TELEGRAM_POLLING_STOPPED');
+  }
+}
+
+/**
+ * A log-safe rendering of an error.
+ *
+ * The transport embeds the bot token in the request URL, so an error message
+ * that echoes a URL could leak it. Any `bot<token>` segment is masked before the
+ * message reaches a log line; no environment value is ever printed.
+ */
+export function safeErrorMessage(error) {
+  const detail = error?.message ?? String(error ?? 'unknown error');
+  // Telegram bot tokens look like `<digits>:<alphanumeric>` and are embedded in
+  // the request URL, so an error echoing that URL would otherwise leak the token.
+  return detail
+    .replace(/bot\d{4,}:[A-Za-z0-9_-]{5,}/g, 'bot<redacted>')
+    .replace(/bot[0-9A-Za-z_-]{10,}/g, 'bot<redacted>');
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   runBot().catch((error) => {
-    console.error('Fatal startup error:', error);
+    console.error('Fatal startup error:', safeErrorMessage(error));
     process.exit(1);
   });
 }

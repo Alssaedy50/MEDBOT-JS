@@ -14,6 +14,7 @@ import * as notifications from '../notifications.js';
 import * as workflow from '../workflow.js';
 import { logFailure } from '../log.js';
 import { btn, chunkButtons, escHtml, keyboard } from '../telegram/ui.js';
+import { safeTruncate } from '../truncate.js';
 
 export const SETTINGS_WORKFLOW = 'settings_edit';
 export const NOTIFICATION_WORKFLOW = 'notification_body';
@@ -60,7 +61,7 @@ function settingsScreen() {
   for (const key of db.PLATFORM_SETTING_KEYS) {
     const label = db.PLATFORM_SETTING_LABELS[key] ?? key;
     const value = settings[key] ?? '';
-    lines.push(`• ${label}: ${esc(String(value).slice(0, 60))}`);
+    lines.push(`• ${label}: ${esc(safeTruncate(String(value), 60))}`);
     settingButtons.push(btn(label, `settings_edit:${key}`));
   }
 
@@ -100,7 +101,7 @@ export async function armSettingEdit(ctx, key) {
   const current = db.getPlatformSetting(key);
   await ctx.editMessageText(
     `⚙️ <b>${esc(db.PLATFORM_SETTING_LABELS[key] ?? key)}</b>\n\n` +
-      `القيمة الحالية:\n<code>${esc(String(current).slice(0, 800))}</code>\n\n` +
+      `القيمة الحالية:\n<code>${esc(safeTruncate(String(current), 800))}</code>\n\n` +
       `أرسل النص الجديد في رسالة، أو اضغط ❌ إلغاء.\n` +
       `ℹ️ الحد الأقصى ${db.SETTINGS_MAX_LENGTH} حرفاً.\n\n` +
       'لإلغاء العملية أرسل /cancel.',
@@ -168,7 +169,7 @@ export async function handleSettingText(ctx) {
     await audit.logAction(ctx.from.id, 'platform_setting', {
       targetType: 'setting',
       targetId: key,
-      details: text.slice(0, 200),
+      details: safeTruncate(text, 200),
     });
     // Re-render the settings screen so the admin immediately sees the new
     // value, instead of a bare "saved" acknowledgement they must navigate away
@@ -218,7 +219,7 @@ export async function showNotifications(ctx) {
       lines.push(
         `• #${notificationId} ${esc(title ?? '')} — ✅ ${delivered}/${recipients}`,
       );
-      lines.push(`   ${esc(String(body).slice(0, 70))}`);
+      lines.push(`   ${esc(safeTruncate(String(body), 70))}`);
     }
   }
 
@@ -328,7 +329,7 @@ export async function showNotificationHistory(ctx) {
       lines.push(
         `• #${notificationId} ${esc(title ?? '')}\n` +
           `   👤 <code>${senderId}</code> · 🎯 ${esc(audience)} · ✅ ${delivered}/${recipients}\n` +
-          `   🕒 ${esc(createdAt)}\n   ${esc(String(body).slice(0, 90))}`,
+          `   🕒 ${esc(createdAt)}\n   ${esc(safeTruncate(String(body), 90))}`,
       );
     }
   }
@@ -382,7 +383,7 @@ export async function showAudit(ctx, action = null) {
           `   👤 <code>${actorId ?? '—'}</code> · 👑 ${esc(actorRole ?? '—')}\n` +
           `   🎯 ${esc(targetType ?? '—')}: ${esc(targetId ?? '—')}\n` +
           `   🕒 ${esc(createdAt)}` +
-          (details ? `\n   📝 ${esc(String(details).slice(0, 80))}` : ''),
+          (details ? `\n   📝 ${esc(safeTruncate(String(details), 80))}` : ''),
       );
     }
   }
@@ -530,7 +531,12 @@ export async function showRuntime(ctx) {
       `• ⚠️ فشل: ${archiveCounts.failed ?? 0}\n` +
       `• 📊 الإجمالي: ${archiveCounts.total ?? 0}\n\n` +
       `⚙️ حالة الأرشيف: ${runtime.enabled ? '✅ مُفعّل' : '⛔ غير مُفعّل'}\n` +
-      `🔌 القناة: ${runtime.channelConfigured ? '✅ مضبوطة' : '⛔ غير مضبوطة'}\n` +
+      // Report the validation verdict, not mere presence: a set-but-invalid value
+      // (e.g. a positive id) used to read "configured" here while the archive
+      // screen called it invalid. The value itself is never shown.
+      `🔌 القناة: ${
+        runtime.channelValid ? '✅ مضبوطة' : runtime.channelConfigured ? '⚠️ قيمة غير صالحة' : '⛔ غير مضبوطة'
+      }\n` +
       `🤖 مزودو الذكاء الاصطناعي: ${runtime.aiProviders}`,
     {
       reply_markup: keyboard([
@@ -665,7 +671,7 @@ export async function showArchiveStatus(ctx) {
     for (const row of rows) {
       const [, objectType, , , contentIds, , , status, attempts, error, , updatedAt] = row;
       const icon = icons[String(status)] ?? '•';
-      const detail = error ? ` — ${esc(String(error).slice(0, 60))}` : '';
+      const detail = error ? ` — ${esc(safeTruncate(String(error), 60))}` : '';
       lines.push(
         `${icon} <b>${esc(status)}</b> · ${esc(objectType)} ` +
           `· id=${esc(contentIds || '-')} · ${esc(attempts)} محاولة${detail}\n` +

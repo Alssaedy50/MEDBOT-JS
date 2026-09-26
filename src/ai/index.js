@@ -33,6 +33,7 @@ import {
   INTENT_OVERVIEW,
   INTENT_RESOURCE,
 } from './intent.js';
+import { classifyQuestionType, depthContractFor, isPersonalClinicalQuestion } from './questionType.js';
 import {
   CATALOG_MAX_CHARS,
   CHAT_NO_PROVIDER_ANSWER,
@@ -389,6 +390,41 @@ export function isMedicalQuestion(userPrompt, intent) {
 }
 
 /**
+ * Build the grounded prompt for one medical question.
+ *
+ * The depth contract comes from the deterministic question-type classifier, so
+ * a definition question is instructed to stay a definition instead of drifting
+ * into the research/immunotherapy territory the student did not ask about. The
+ * source block is the ONLY permitted basis for a citation claim.
+ */
+export function buildMedicalGroundedPrompt(userPrompt, sources) {
+  const questionType = classifyQuestionType(userPrompt);
+  const sourceContext = sources.length ? medicalSources.buildSourceContext(sources) : '';
+  const sourceBlock = sourceContext
+    ? 'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:\n' +
+      `${sourceContext}\n\n`
+    : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ لا تذكر أي مصدر أو PMID أو DOI.\n\n';
+
+  const personalNote = isPersonalClinicalQuestion(userPrompt)
+    ? '\n\nتنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.'
+    : '';
+
+  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}\n\nسؤال الطالب:\n${userPrompt}`;
+}
+
+/**
+ * The application-owned source footer for one medical answer.
+ *
+ * When no genuinely relevant record survived the relevance filter the footer
+ * says so explicitly rather than attaching an unrelated paper, and the
+ * educational body is still delivered.
+ */
+export function buildMedicalSourcesFooter(sources) {
+  if (!sources?.length) return medicalSources.NO_RELEVANT_SOURCE_NOTE;
+  return medicalSources.buildSourcesFooter(sources) || medicalSources.NO_RELEVANT_SOURCE_NOTE;
+}
+
+/**
  * MODE 2: conversational AI, separate from platform navigation.
  *
  * Actions are always empty: chat never produces platform navigation, so it can
@@ -431,34 +467,26 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
   // Deliberately no registry search: AI Chat must not surface MEDBOT structure.
   const [candidatesResult, sourcesResult] = await Promise.allSettled([
     getCandidates(fetchImpl),
-    medicalSources.searchPubmed(prompt, 3),
+    medicalSources.searchRelevantPubmed(prompt, 3),
   ]);
 
   const candidates = orderCandidatesForQuestion(
     candidatesResult.status === 'fulfilled' ? candidatesResult.value : [],
     { complex: isComplexQuestion(prompt) },
   );
+  // Only records genuinely about the asked topic survive; an empty list is an
+  // honest outcome, not a reason to attach an unrelated paper.
   const sources = sourcesResult.status === 'fulfilled' ? sourcesResult.value : [];
 
   if (!candidates.length) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
 
-  const sourceContext =
-    sources.length && medicalSources.buildSourceContext(sources)
-      ? medicalSources.buildSourceContext(sources)
-      : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ إن لم تكن متأكداً فاذكر ذلك.';
-
-  const groundedPrompt =
-    'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:\n' +
-    `${sourceContext}\n\n` +
-    `سؤال الطالب:\n${prompt}`;
-
   const answer = await providerFailover({
-    groundedPrompt,
+    groundedPrompt: buildMedicalGroundedPrompt(prompt, sources),
     systemPrompt: UNIFIED_ASSISTANT_PROMPT,
     candidates,
     userId,
     label: 'Medical assistant',
-    sourcesFooter: medicalSources.buildSourcesFooter(sources),
+    sourcesFooter: buildMedicalSourcesFooter(sources),
     fetchImpl,
   });
 

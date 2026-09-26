@@ -215,6 +215,13 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | 121 | Platform settings survive a fresh connection and a re-run of the migration chain | ✅ | `persistence.test.js` |
 | 122 | `MEDBOT_DB_PATH` is honoured; the effective path is reported at boot without secrets | ✅ | `persistence.test.js` |
 | 123 | Long lists pack into a compact two-column keyboard, long/home/destructive rows stay full width | ✅ | `keyboard.test.js` |
+| 124 | A question is classified into a depth contract without an LLM call (definition/mechanism/comparison/pathophysiology/clinical/diagnosis/treatment/exam/complex) | ✅ | `aiQuality.test.js` |
+| 125 | A PubMed record is attached only when it is genuinely about the asked topic; an unrelated paper is never used to populate the source section | ✅ | `aiQuality.test.js` |
+| 126 | The model never authors a citation: inline PMID/DOI/PubMed URL and self-authored source blocks are stripped, and the app-owned footer is the only citation | ✅ | `aiQuality.test.js` |
+| 127 | Truncation ends on a sentence then word boundary, never mid-word/mid-term/mid-tag; Arabic and English both covered | ✅ | `aiQuality.test.js` |
+| 128 | Every rendered `reply_markup` is a two-dimensional keyboard and every `callback_data` is ≤ 64 BYTES and routable | ✅ | `telegramSafety.test.js` |
+| 129 | `GET /health` returns 200 on `$PORT` without exposing a secret, and starts independently of Telegram polling | ✅ | `renderLifecycle.test.js` |
+| 130 | Polling starts once, retries a recoverable failure with backoff, never logs the token, and shuts down gracefully | ✅ | `renderLifecycle.test.js` |
 
 ## Deliberate divergences
 
@@ -225,6 +232,7 @@ Status legend: ✅ implemented + tested · ⚠️ implemented, test is partial �
 | Two-column keyboards | JS packs long lists two per row | Telegram readability; labels, callbacks and screen contents are unchanged, and home/cancel/destructive rows stay full width. |
 | News event time | JS shows the authored `event_at` once and never the publish stamp | The Python delivery/detail views printed a technical `published_at`/`created_at` as if it were the news time, which misleads the reader. |
 | Startup DB diagnostic | JS prints `MEDBOT db: <path>` at boot | Makes an ephemeral-filesystem deployment diagnosable from the log. It prints a path and an archive state only — never a token, id or value. |
+| Health server + `render.yaml` | JS adds a native `http` listener answering `GET /health` on `$PORT`, and a Render blueprint pointing `healthCheckPath` at it | A Telegram long-poll bot has no inbound HTTP, so a host that requires a health endpoint (Render Web Service) would otherwise report the container unhealthy. The listener is independent of polling and holds no state. It does NOT defeat Render Free's 15-minute idle spin-down, which is a platform rule; see the note in `render.yaml` for the two real options (paid always-on plan, or an external uptime monitor). |
 
 ## Deliberately out of scope
 

@@ -20,6 +20,7 @@
  */
 
 import { NEWS_TYPE_ICONS, NEWS_TYPE_LABELS } from './constants.js';
+import { safeTruncate } from './truncate.js';
 
 /** Escape the three characters Telegram HTML mode treats specially. */
 export function esc(value) {
@@ -62,7 +63,7 @@ export function newsBodyLines(news, { maxBodyLength = null } = {}) {
 
   const body = String(news.body ?? '').trim();
   if (body) {
-    const shown = maxBodyLength ? body.slice(0, maxBodyLength) : body;
+    const shown = maxBodyLength ? safeTruncate(body, maxBodyLength) : body;
     lines.push('', `📝 ${esc(shown)}`);
   }
 

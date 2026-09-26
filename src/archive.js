@@ -26,6 +26,7 @@ import { createHash } from 'node:crypto';
 
 import * as db from './db/index.js';
 import { logFailure } from './log.js';
+import { safeTruncate } from './truncate.js';
 
 /** Environment variables that may carry the archive channel. */
 export const ARCHIVE_CHANNEL_ENV_VARS = ['MEDBOT_ARCHIVE_CHANNEL', 'ARCHIVE_CHANNEL_ID'];
@@ -148,10 +149,19 @@ export function runtimeStatus() {
     Boolean(String(process.env[key] ?? '').trim()),
   );
 
+  const channel = resolveChannel();
+  const validation = validateChannelValue(channel);
+
   return {
     enabled: isConfigured(),
-    channel: resolveChannel(),
+    channel,
     channelConfigured: isConfigured(),
+    // A value can be present yet invalid (a positive id, a malformed username).
+    // Reporting only "configured" made the runtime screen say "enabled" while the
+    // archive screen said "invalid value" for the same state, so the validation
+    // verdict is surfaced here too.
+    channelValid: validation.valid,
+    channelKind: validation.kind,
     aiProviders: providers.length ? providers.join(', ') : 'لا يوجد',
   };
 }
@@ -364,7 +374,7 @@ export function buildCaption(snapshot) {
   const kind = String(fileType ?? '').trim();
   if (kind) lines.push(`🏷 <b>النوع:</b> <code>${esc(kind)}</code>`);
 
-  return lines.join('\n').slice(0, MAX_CAPTION);
+  return safeTruncate(lines.join('\n'), MAX_CAPTION);
 }
 
 export function buildFolderCaption(folderName, path) {
@@ -374,7 +384,7 @@ export function buildFolderCaption(folderName, path) {
     `📁 <b>${esc(folderName)}</b>`,
     `🧭 <b>المسار:</b> ${esc(path)}`,
   ];
-  return lines.join('\n').slice(0, MAX_CAPTION);
+  return safeTruncate(lines.join('\n'), MAX_CAPTION);
 }
 
 function escapeHtml(value) {
