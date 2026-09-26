@@ -416,6 +416,24 @@ describe('archive: health diagnostics', () => {
     assert.equal(archive.validateChannelValue('@medbot_archive').kind, 'username');
   });
 
+  it('reports validity and configuration consistently from runtimeStatus', () => {
+    // A set-but-invalid value (a positive id) must not read as configured-and-valid.
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '123456789';
+    const invalid = archive.runtimeStatus();
+    assert.equal(invalid.channelConfigured, true, 'a value is present');
+    assert.equal(invalid.channelValid, false, 'but it is not valid');
+
+    // A real channel id is both configured and valid.
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    const valid = archive.runtimeStatus();
+    assert.equal(valid.channelConfigured, true);
+    assert.equal(valid.channelValid, true);
+    assert.equal(valid.channelKind, 'numeric');
+
+    // Never leak the raw value through the status object's own fields.
+    assert.equal(typeof valid.channel, 'string');
+  });
+
   it('resolves a normalised channel through the environment', () => {
     process.env.MEDBOT_ARCHIVE_CHANNEL = 'https://t.me/medbot_archive';
     assert.equal(archive.resolveChannel(), '@medbot_archive');

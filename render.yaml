@@ -1,0 +1,53 @@
+# Render blueprint for MEDBOT (Telegram long-poll bot).
+#
+# MEDBOT is a Telegram bot, not a website: it holds no inbound HTTP session and
+# answers users through the Bot API. Render still requires an HTTP listener to
+# consider a Web Service healthy, so the process starts the small `src/server.js`
+# listener on `$PORT` and answers `GET /health` with 200.
+#
+# IMPORTANT — free instance type: Render spins a Free web service down after 15
+# minutes with no inbound traffic. Telegram long-polling is *outbound*, so it does
+# not count as traffic and cannot keep a Free instance awake. This is a platform
+# rule, not an application bug: the code fix here is what makes the process
+# deployable and observable as a real Web Service, but a Free instance will still
+# idle. To stay always-on, either:
+#
+#   * set `plan: starter` (or higher) below, which removes spin-down entirely; or
+#   * point an EXTERNAL uptime monitor at `https://<service>/health` every
+#     ~10 minutes. That is an operational workaround for the platform's idle
+#     rule — it does not fix, and is not a substitute for, an application crash.
+#
+# Do not add an in-process self-ping or busy-loop: it would consume CPU without
+# addressing the platform rule, and the health server must stay independent of
+# Telegram polling.
+
+services:
+  - type: web
+    name: medbot-js
+    runtime: node
+    # `plan: free` keeps spin-down. Change to `starter` to stay always-on.
+    plan: free
+    buildCommand: npm ci --omit=dev || npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22.5.0"
+      # Secrets are set in the Render Dashboard, never committed. Reference them
+      # here so the service fails loudly if they are missing rather than running
+      # half-configured:
+      #   BOT_TOKEN              (Telegram bot token)
+      #   ADMIN_ID               (owner Telegram id)
+      #   GEMINI_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY
+      #   MEDBOT_ARCHIVE_CHANNEL (optional archive channel)
+      #
+      # Persistent SQLite: Render's filesystem is ephemeral. Attach a disk and
+      # point MEDBOT_DB_PATH at it, or settings/registrations are lost on every
+      # deploy, restart and spin-down. Uncomment to use a mounted disk:
+      #
+      # - key: MEDBOT_DB_PATH
+      #   value: /var/data/medbot_v2.sqlite3
+    # disks:
+    #   - name: medbot-data
+    #     mountPath: /var/data
+    #     sizeGB: 1

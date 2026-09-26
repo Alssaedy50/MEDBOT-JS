@@ -94,14 +94,93 @@ export function keyboardFrom(tuples) {
  *   * a `null`/`undefined` value — dropped entirely, because a serialized
  *     `null` is exactly what Telegram refuses.
  *
- * An already-shaped object is passed through untouched, so this is safe to call
- * on every outgoing payload.
+ * An already-shaped, *structurally valid* object is passed through untouched. A
+ * malformed one — an `inline_keyboard` that is not a two-dimensional array, or
+ * that carries an invalid callback — is dropped rather than sent: Telegram
+ * would reject the whole call, which for a callback edit means a dead button.
  */
 export function normalizeReplyMarkup(markup) {
   if (markup === null || markup === undefined) return undefined;
-  if (Array.isArray(markup)) return keyboard(markup);
+  if (Array.isArray(markup)) return isInlineKeyboard(markup) ? keyboard(markup) : undefined;
   if (typeof markup !== 'object') return undefined;
+  if ('inline_keyboard' in markup && !isInlineKeyboard(markup.inline_keyboard)) return undefined;
   return markup;
+}
+
+/** Telegram's hard limit on `callback_data`, in BYTES (not JS characters). */
+export const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
+
+/** UTF-8 byte length of a string, as Telegram measures it. */
+export function byteLength(value) {
+  return Buffer.byteLength(String(value ?? ''), 'utf8');
+}
+
+/**
+ * Whether one `callback_data` value is usable.
+ *
+ * The limit is 64 *bytes*: an Arabic or emoji payload can exceed it while its
+ * `String.length` looks short, so byte length is what is checked. A payload is
+ * never truncated to fit — that would silently re-point the button — it is
+ * rejected so the bug surfaces in tests instead of as a dead button.
+ */
+export function isValidCallbackData(value) {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== 'string') return false;
+  if (value.length === 0) return false;
+  return byteLength(value) <= TELEGRAM_CALLBACK_DATA_MAX_BYTES;
+}
+
+/**
+ * Whether a value is a valid inline keyboard: a two-dimensional array of button
+ * objects, each carrying a valid `callback_data` or a `url`.
+ */
+export function isInlineKeyboard(rows) {
+  if (!Array.isArray(rows)) return false;
+  for (const row of rows) {
+    if (!Array.isArray(row)) return false;
+    for (const button of row) {
+      if (!button || typeof button !== 'object') return false;
+      if (button.url) continue;
+      if (!isValidCallbackData(button.callback_data)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Validate a markup and return the list of problems found (empty when valid).
+ *
+ * Used by the regression tests and by `btn` for a development-time warning; it
+ * never mutates the markup.
+ */
+export function validateReplyMarkup(markup) {
+  const problems = [];
+  if (markup === null || markup === undefined) return problems;
+  const rows = Array.isArray(markup) ? markup : markup.inline_keyboard;
+  if (!Array.isArray(rows)) {
+    problems.push('inline_keyboard is not an array');
+    return problems;
+  }
+  rows.forEach((row, rowIndex) => {
+    if (!Array.isArray(row)) {
+      problems.push(`row ${rowIndex} is not an array`);
+      return;
+    }
+    row.forEach((button, buttonIndex) => {
+      if (!button || typeof button !== 'object') {
+        problems.push(`button ${rowIndex}:${buttonIndex} is not an object`);
+        return;
+      }
+      if (button.url) return;
+      if (!isValidCallbackData(button.callback_data)) {
+        problems.push(
+          `button ${rowIndex}:${buttonIndex} has invalid callback_data ` +
+            `(${byteLength(button.callback_data)} bytes)`,
+        );
+      }
+    });
+  });
+  return problems;
 }
 
 export function escHtml(value) {

@@ -14,6 +14,7 @@ import * as db from '../db/index.js';
 import * as audit from '../audit.js';
 import * as workflow from '../workflow.js';
 import { btn, escHtml, keyboard } from '../telegram/ui.js';
+import { safeTruncate } from '../truncate.js';
 
 export const CONTACT_WORKFLOW = 'contact_message';
 export const REPLY_WORKFLOW = 'admin_reply';
@@ -156,7 +157,7 @@ async function notifyAdminsNewMessage(bot, messageId, category, body, sender) {
     `🆔 <code>${messageId}</code>\n` +
     `🏷 النوع: ${esc(categoryLabel(category))}\n` +
     `👤 من: ${esc(sender || 'طالب')}\n\n` +
-    `📝 ${esc(String(body).slice(0, 400))}\n\n` +
+    `📝 ${esc(safeTruncate(String(body), 400))}\n\n` +
     'افتح لوحة الإدارة للرد.';
 
   let delivered = 0;
@@ -266,8 +267,8 @@ export async function showMyMessages(ctx) {
     const [messageId, category, body, status, reply] = item;
     lines.push(`🆔 <code>${messageId}</code> — ${esc(statusLabel(status))}`);
     lines.push(`🏷 ${esc(categoryLabel(category))}`);
-    lines.push(`📝 ${esc(String(body).slice(0, 200))}`);
-    if (reply) lines.push(`↩️ <b>الرد:</b> ${esc(String(reply).slice(0, 300))}`);
+    lines.push(`📝 ${esc(safeTruncate(String(body), 200))}`);
+    if (reply) lines.push(`↩️ <b>الرد:</b> ${esc(safeTruncate(String(reply), 300))}`);
     lines.push('');
   }
 

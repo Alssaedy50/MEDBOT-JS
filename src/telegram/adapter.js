@@ -164,13 +164,19 @@ export async function dispatchUpdate(update, bot, options = {}) {
  * Long-polling loop.
  *
  * Runs until `shouldStop()` returns true. Transport errors back off
- * exponentially (capped) so a transient network failure cannot spin the loop.
- * A malformed entry in an otherwise valid batch is skipped and logged, never
- * dereferenced: a single bad update must not end the process.
+ * exponentially (capped) so a transient network failure cannot spin the loop,
+ * and each retry is reported through `onRetry` (with the wait) so the operator
+ * can see a recovering poll instead of silence. A malformed entry in an
+ * otherwise valid batch is skipped and logged, never dereferenced: a single bad
+ * update must not end the process.
+ *
+ * The loop is the single owner of its `offset`; nothing else may call
+ * `getUpdates` for this bot while it runs.
  */
 export async function pollUpdates(bot, options = {}) {
   const onError = options.onError ?? ((error) => console.error('Update error:', error));
   const shouldStop = options.shouldStop ?? (() => false);
+  const onRetry = options.onRetry ?? (() => {});
   let offset = options.offset ?? 0;
   let backoff = 1;
 
@@ -181,7 +187,9 @@ export async function pollUpdates(bot, options = {}) {
       backoff = 1;
     } catch (error) {
       onError(error);
-      await new Promise((resolve) => setTimeout(resolve, backoff * 1000));
+      const waitSeconds = backoff;
+      onRetry(error, waitSeconds);
+      await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
       backoff = Math.min(backoff * 2, 30);
       continue;
     }

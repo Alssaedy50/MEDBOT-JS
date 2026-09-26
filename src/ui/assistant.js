@@ -15,7 +15,10 @@ import * as ai from '../ai/index.js';
 import * as workflow from '../workflow.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { btn, escHtml, keyboard } from '../telegram/ui.js';
+import { safeTruncate } from '../truncate.js';
 
+/** Telegram's hard limit on one message body. */
+export const TELEGRAM_MESSAGE_MAX = 4096;
 
 export const ASSISTANT_WORKFLOW = 'ai_chat';
 
@@ -158,7 +161,12 @@ export async function handleAssistantText(ctx) {
   rows.push([btn('🏠 الرئيسية', 'home')]);
 
   const footer = `\n\n────────\n🤖 المتبقي اليوم: ${Math.max(0, remaining)}`;
-  await ctx.reply(`${result.text ?? ''}${footer}`, { reply_markup: keyboard(rows) });
+  const body = String(result.text ?? '').trim() || '⚠️ لم يتم إنتاج إجابة.';
+  // The answer is truncated on a boundary (never mid-word / mid-term / mid-tag)
+  // so it cannot end like "أسيتيل-Co" or inside an HTML entity, while the quota
+  // footer is always appended whole.
+  const budget = TELEGRAM_MESSAGE_MAX - footer.length;
+  await ctx.reply(`${safeTruncate(body, budget)}${footer}`, { reply_markup: keyboard(rows) });
 
   // Re-arm so a follow-up message hits the same mode.
   workflow.begin(ctx, ASSISTANT_WORKFLOW);
