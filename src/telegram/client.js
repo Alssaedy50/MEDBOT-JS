@@ -232,4 +232,14 @@ export class TelegramTransport {
   getMe() {
     return this.call('getMe');
   }
+
+  /** Chat metadata (type, title). Used by the archive health diagnostic. */
+  getChat(chatId) {
+    return this.call('getChat', { chat_id: chatId });
+  }
+
+  /** One member's status/permissions. Used by the archive health diagnostic. */
+  getChatMember(chatId, userId) {
+    return this.call('getChatMember', { chat_id: chatId, user_id: userId });
+  }
 }

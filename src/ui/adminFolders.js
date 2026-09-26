@@ -12,7 +12,7 @@ import * as db from '../db/index.js';
 import * as audit from '../audit.js';
 import * as authorization from '../authorization.js';
 import * as workflow from '../workflow.js';
-import { btn, contentIcon, escHtml, keyboard, resourceIcon } from '../telegram/ui.js';
+import { btn, chunkButtons, contentIcon, escHtml, keyboard, resourceIcon } from '../telegram/ui.js';
 
 export const ADMIN_UPLOAD_WORKFLOW = 'admin_upload';
 export const ADMIN_FILE_RENAME_WORKFLOW = 'admin_file_rename';
@@ -85,47 +85,48 @@ export async function showAdminPanel(ctx) {
   }
 
   const lines = ['🛠 <b>إدارة المنصة</b>', ''];
-  const rows = [];
+  const capabilityButtons = [];
 
   if (has(userId, 'can_folders')) {
-    rows.push([btn('🗂 إدارة الأقسام والفروع', 'admin_folders')]);
+    capabilityButtons.push(btn('🗂 إدارة الأقسام والفروع', 'admin_folders'));
   }
   if (has(userId, 'can_content')) {
-    rows.push([btn('📄 إدارة المحتوى', 'admin_content')]);
+    capabilityButtons.push(btn('📄 إدارة المحتوى', 'admin_content'));
   }
   if (has(userId, 'can_contributions')) {
-    rows.push([btn(`📥 مراجعة المساهمات${pending ? ` (${pending})` : ''}`, 'admin_pending')]);
+    capabilityButtons.push(btn(`📥 مراجعة المساهمات${pending ? ` (${pending})` : ''}`, 'admin_pending'));
   }
   if (has(userId, 'can_messages')) {
-    rows.push([btn(`📬 رسائل الطلاب${messages ? ` (${messages})` : ''}`, 'admin_messages')]);
+    capabilityButtons.push(btn(`📬 رسائل الطلاب${messages ? ` (${messages})` : ''}`, 'admin_messages'));
   }
   if (has(userId, 'can_news')) {
-    rows.push([btn('📰 الأخبار', 'admin_news')]);
+    capabilityButtons.push(btn('📰 الأخبار', 'admin_news'));
   }
   if (has(userId, 'can_topics')) {
-    rows.push([btn('🧭 مواضيع البحث', 'admin_topics')]);
+    capabilityButtons.push(btn('🧭 مواضيع البحث', 'admin_topics'));
   }
   if (has(userId, 'can_notifications')) {
-    rows.push([btn('🔔 الإشعارات', 'admin_notifications')]);
+    capabilityButtons.push(btn('🔔 الإشعارات', 'admin_notifications'));
   }
   if (has(userId, 'can_ai')) {
-    rows.push([btn('🤖 سجل الذكاء الاصطناعي', 'admin_ai')]);
+    capabilityButtons.push(btn('🤖 سجل الذكاء الاصطناعي', 'admin_ai'));
   }
   if (has(userId, 'can_archive')) {
-    rows.push([btn('🗄 أرشيف الطوارئ', 'admin_archive')]);
+    capabilityButtons.push(btn('🗄 أرشيف الطوارئ', 'admin_archive'));
   }
   if (has(userId, 'can_settings')) {
-    rows.push([btn('⚙️ إعدادات المنصة', 'admin_settings')]);
+    capabilityButtons.push(btn('⚙️ إعدادات المنصة', 'admin_settings'));
   }
   if (has(userId, 'can_visibility')) {
-    rows.push([btn('🙈 إظهار/إخفاء الأقسام', 'vis_list')]);
+    capabilityButtons.push(btn('🙈 إظهار/إخفاء الأقسام', 'vis_list'));
   }
   if (has(userId, 'can_admins')) {
-    rows.push([btn('👥 إدارة المشرفين', 'admin_admins')]);
-    rows.push([btn('👑 نقل الملكية', 'admin_transfer')]);
-    rows.push([btn('📜 سجل التدقيق', 'admin_audit')]);
+    capabilityButtons.push(btn('👥 إدارة المشرفين', 'admin_admins'));
+    capabilityButtons.push(btn('👑 نقل الملكية', 'admin_transfer'));
+    capabilityButtons.push(btn('📜 سجل التدقيق', 'admin_audit'));
   }
 
+  const rows = [...chunkButtons(capabilityButtons, 2, { maxLabelLength: 20 })];
   rows.push([btn('📊 حالة التشغيل', 'admin_runtime')]);
   rows.push([btn('🏠 الرئيسية', 'home')]);
 

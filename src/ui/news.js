@@ -30,7 +30,8 @@ import * as authorization from '../authorization.js';
 import * as i18n from '../i18n.js';
 import * as newsDelivery from '../newsDelivery.js';
 import * as workflow from '../workflow.js';
-import { btn, escHtml, keyboard, resourceIcon, tailInt, threeParts } from '../telegram/ui.js';
+import { newsBodyLines } from '../newsFormat.js';
+import { btn, chunkButtons, escHtml, keyboard, resourceIcon, tailInt, threeParts } from '../telegram/ui.js';
 
 // Callback data prefixes owned by this module.
 export const NEWS_CALLBACKS = [
@@ -104,10 +105,6 @@ export function esc(value) {
 
 function homeKeyboard() {
   return keyboard([[btn('🏠 الرئيسية', 'home')]]);
-}
-
-function typeLabel(newsType) {
-  return db.NEWS_TYPE_LABELS[newsType] ?? db.NEWS_TYPE_ICONS[newsType] ?? '📰';
 }
 
 function toIntOrNull(value) {
@@ -236,10 +233,11 @@ export async function showNewsFeed(ctx, { page = 0, newsType = null } = {}) {
   // Explicit, self-describing type filters: the two real kinds plus "all".
   // No icon-only chips and no "resource" filter — a linked resource lives
   // inside a Section News item, it is not a kind of its own.
-  rows.push([btn('📋 كل الأخبار', 'news_filter:all')]);
+  const filterButtons = [btn('📋 كل الأخبار', 'news_filter:all')];
   for (const key of db.NEWS_TYPES) {
-    rows.push([btn(db.NEWS_TYPE_LABELS[key], `news_filter:${key}`)]);
+    filterButtons.push(btn(db.NEWS_TYPE_LABELS[key], `news_filter:${key}`));
   }
+  rows.push(...chunkButtons(filterButtons, 2, { maxLabelLength: 18 }));
 
   if (safePage + 1 < Math.ceil(total / Math.max(pageSize, 1))) {
     rows.push([btn(i18n.t('news_more', language), `news_more:${safePage + 1}`)]);
@@ -259,32 +257,11 @@ export async function showNewsFeed(ctx, { page = 0, newsType = null } = {}) {
  * The student-facing detail body for one resolved news row.
  *
  * Shared by the student reader and the admin preview so both always show the
- * same real registry context (current names/breadcrumb, not a copy).
+ * same real registry context (current names/breadcrumb, not a copy). The layout
+ * itself lives in `newsFormat` so the private delivery message cannot drift.
  */
 export function detailLines(news, _language) {
-  const lines = [
-    `${db.NEWS_TYPE_ICONS[news.news_type] ?? '📰'} <b>${esc(news.title)}</b>`,
-    `🏷 ${typeLabel(news.news_type)}`,
-  ];
-
-  if (news.subject_name) lines.push(`🧪 المادة: ${esc(news.subject_name)}`);
-  if (news.section_name) lines.push(`🗂 القسم: ${esc(news.section_name)}`);
-  if (news.folder_path) lines.push(`📍 ${esc(news.folder_path)}`);
-  if (news.doctor) lines.push(`👨‍⚕️ ${esc(news.doctor)}`);
-  if (news.event_at) lines.push(`📅 ${esc(news.event_at)}`);
-
-  const listed = news.published_at || news.created_at;
-  if (listed) lines.push(`🕒 ${esc(listed)}`);
-
-  lines.push('');
-  if (news.body) lines.push(esc(news.body));
-
-  // A linked resource/announcement is part of the item, never a kind itself.
-  if (news.resource_present) {
-    lines.push('', `📄 ${esc(news.resource_title ?? '')}`);
-  }
-
-  return lines;
+  return newsBodyLines(news);
 }
 
 /**
@@ -410,14 +387,14 @@ export async function showSubscriptions(ctx) {
   ];
 
   const rows = [];
+  const kindButtons = [];
   for (const newsType of db.NEWS_TYPES) {
     const on = typeSubs.has(newsType);
-    rows.push([
-      btn(labelFor[newsType] ?? newsType, `news_sub:${newsType}`),
-      btn(on ? 'مشترك ✓' : 'غير مشترك', `news_sub:${newsType}`),
-    ]);
+    kindButtons.push(btn(labelFor[newsType] ?? newsType, `news_sub:${newsType}`));
+    kindButtons.push(btn(on ? 'مشترك ✓' : 'غير مشترك', `news_sub:${newsType}`));
     lines.push(`${labelFor[newsType] ?? newsType} — ${on ? 'مشترك ✓' : 'غير مشترك'}`);
   }
+  rows.push(...chunkButtons(kindButtons, 2, { maxLabelLength: 22 }));
 
   const sectionsLabel = sectionIds.size
     ? `📚 إدارة الأقسام المتابَعة (${sectionIds.size})`
@@ -555,8 +532,9 @@ export async function toggleSectionSubscription(ctx, rawFolderId) {
 /** The 📰 News admin entry: Publish / Published / Archive. */
 function adminMenu() {
   return keyboard([
-    [btn('➕ نشر خبر', 'news_new')],
-    [btn('📋 الأخبار المنشورة', 'news_admin_published')],
+    ...chunkButtons([btn('➕ نشر خبر', 'news_new'), btn('📋 الأخبار المنشورة', 'news_admin_published')], 2, {
+      maxLabelLength: 20,
+    }),
     [btn('🗄 الأرشيف', 'news_admin_archived')],
     [btn('⬅️ إدارة المنصة', 'admin')],
     [btn('🏠 الرئيسية', 'home')],
@@ -699,9 +677,12 @@ export async function showAdminNews(ctx, view = 'menu') {
 
   // The three required entries, always reachable; a contextual "all" filter is
   // added only inside a listing so the entry screen stays unambiguous.
-  buttons.push([btn('➕ نشر خبر', 'news_new')]);
-  buttons.push([btn('📋 الأخبار المنشورة', 'news_admin_published')]);
-  buttons.push([btn('🗄 الأرشيف', 'news_admin_archived')]);
+  const navButtons = [
+    btn('➕ نشر خبر', 'news_new'),
+    btn('📋 الأخبار المنشورة', 'news_admin_published'),
+    btn('🗄 الأرشيف', 'news_admin_archived'),
+  ];
+  buttons.push(...chunkButtons(navButtons, 2, { maxLabelLength: 20 }));
   if (['all', 'archived', 'published'].includes(view)) {
     buttons.push([btn('↩️ عرض العمل', 'admin_news')]);
   }
@@ -858,8 +839,7 @@ export async function startCreateNews(ctx, newsType = null) {
   if (!newsType) {
     const scoped = isScopeRestricted(ctx.from.id);
     const rows = [
-      [btn('🚨 هام / عاجل', 'news_new:notify')],
-      [btn('📚 أخبار الأقسام', 'news_new:section')],
+      ...chunkButtons([btn('🚨 هام / عاجل', 'news_new:notify'), btn('📚 أخبار الأقسام', 'news_new:section')]),
       [btn('❌ إلغاء', 'admin_news')],
       [btn('🏠 الرئيسية', 'home')],
     ];
@@ -903,12 +883,17 @@ export async function startCreateNews(ctx, newsType = null) {
   const label = db.NEWS_TYPE_LABELS[newsType] ?? newsType;
   const hint =
     {
-      notify: 'مثال: محاضرة اليوم — 10:00 بقاعة 3.',
+      notify: 'مثال: تغيير موعد اختبار الأحد.',
       section: 'اكتب عنوان خبر القسم، ثم اختر القسم الحقيقي من الشجرة.',
     }[newsType] ?? '';
 
+  // The wizard order, stated once so the author knows what is coming and which
+  // fields are optional. The time is its own optional step — it must not be
+  // smuggled into the title or the body.
   await ctx.editMessageText(
     `${db.NEWS_TYPE_ICONS[newsType] ?? '📰'} <b>خبر جديد — ${esc(label)}</b>\n\n` +
+      'الخطوات: عنوان الخبر ← نص الخبر ← الدكتور (اختياري) ← الموعد (اختياري) ← مراجعة ← نشر.\n' +
+      'أرسل /skip لتخطّي أي حقل اختياري.\n\n' +
       '📋 <b>عنوان الخبر</b>\nأرسل عنوان الخبر في رسالة واحدة.\n' +
       (hint ? `\n${hint}\n` : '') +
       '\nلإلغاء العملية أرسل /cancel.',
@@ -954,7 +939,7 @@ export async function handleNewsText(ctx) {
     ctx.userData[STATE_STEP] = 'body';
     workflow.begin(ctx, NEWS_WORKFLOW);
     await ctx.reply(
-      '📝 أرسل الآن نص الخبر كما سيظهر للطالب، أو أرسل /skip لتجاهله.\n\n' +
+      '📝 <b>نص الخبر</b>\nأرسل النص كما سيظهر للطالب، أو /skip لتجاهله.\n\n' +
         'لإلغاء العملية أرسل /cancel.',
       { reply_markup: cancelMarkup },
     );
@@ -965,9 +950,11 @@ export async function handleNewsText(ctx) {
   if (step === 'body') {
     ctx.userData[STATE_BODY] = text === '/skip' ? null : text;
     ctx.userData[STATE_STEP] = 'doctor';
-    await ctx.reply('👨‍⚕️ اذكر اسم الطبيب/المُرسل إن أردت، أو أرسل /skip.\n\nلإلغاء العملية أرسل /cancel.', {
-      reply_markup: cancelMarkup,
-    });
+    await ctx.reply(
+      '👨‍⚕️ <b>الدكتور/المُرسل</b> (اختياري)\nأرسل الاسم إن أردت عرضه، أو /skip.\n\n' +
+        'لإلغاء العملية أرسل /cancel.',
+      { reply_markup: cancelMarkup },
+    );
     return true;
   }
 
@@ -975,9 +962,12 @@ export async function handleNewsText(ctx) {
   if (step === 'doctor') {
     ctx.userData[STATE_DOCTOR] = text === '/skip' ? null : text;
     ctx.userData[STATE_STEP] = 'event';
-    await ctx.reply('📅 اذكر موعد الحدث/الاختبار إن وُجد، أو أرسل /skip.\n\nلإلغاء العملية أرسل /cancel.', {
-      reply_markup: cancelMarkup,
-    });
+    await ctx.reply(
+      '📅 <b>الموعد/التوقيت</b> (اختياري)\nأرسل موعد الحدث/الاختبار (مثال: الأحد 10:00) ' +
+        'ليُعرض كسطر «📅 الموعد»، أو /skip.\nلا تضعه داخل نص الخبر.\n\n' +
+        'لإلغاء العملية أرسل /cancel.',
+      { reply_markup: cancelMarkup },
+    );
     return true;
   }
 
@@ -988,12 +978,8 @@ export async function handleNewsText(ctx) {
   const body = ctx.userData[STATE_BODY];
   const doctor = ctx.userData[STATE_DOCTOR];
   const eventAt = ctx.userData[STATE_EVENT];
-  delete ctx.userData[STATE_TITLE];
-  delete ctx.userData[STATE_BODY];
-  delete ctx.userData[STATE_DOCTOR];
-  delete ctx.userData[STATE_EVENT];
-  delete ctx.userData[STATE_TYPE];
-  delete ctx.userData[STATE_STEP];
+  // The wizard is done either way, so release the claim as well as the keys.
+  clearState(ctx);
 
   if (!title) {
     await ctx.reply('⚠️ تعذّر إنشاء الخبر (عنوان مفقود).', { reply_markup: cancelMarkup });
@@ -1025,21 +1011,39 @@ export async function handleNewsText(ctx) {
   // route straight to the picker so a bogus id can never be typed.
   const nextHint =
     newsType === 'section'
-      ? 'اختر القسم الحقيقي من الشجرة أدناه.'
-      : 'راجعها ثم اضغط 📢 نشر لإظهارها للطلاب.';
+      ? 'اختر القسم الحقيقي من الشجرة، ثم راجع الخبر وانشره.'
+      : 'راجع الخبر ثم اضغط 📢 نشر لإظهاره للطلاب.';
 
-  await ctx.reply(`✅ تم إنشاء مسودة: <b>${esc(title)}</b>\n\n${nextHint}`, {
-    reply_markup: keyboard([
-      [btn('🔎 مراجعة الخبر', `news_admin_view:${newsId}`)],
-      [btn('📰 الأخبار', 'admin_news')],
-      [btn('🏠 الرئيسية', 'home')],
-    ]),
-  });
+  // Show the draft exactly as it will read, so the author reviews the rendered
+  // item — not just the title — before publishing. Nothing is published here.
+  const draft = db.getNewsDetail(newsId);
+  const preview = draft ? newsBodyLines(draft).join('\n') : `📰 <b>${esc(title)}</b>`;
+
+  await ctx.reply(
+    `✅ <b>تم إنشاء مسودة</b>\n\n${preview}\n\n${nextHint}`,
+    {
+      reply_markup: keyboard([
+        [btn('🔎 مراجعة ونشر', `news_admin_view:${newsId}`)],
+        [btn('📰 الأخبار', 'admin_news')],
+        [btn('🏠 الرئيسية', 'home')],
+      ]),
+    },
+  );
   return true;
 }
 
+/**
+ * Drop every wizard key *and* release the workflow claim.
+ *
+ * Deleting the keys alone is not enough: the `active_workflow` marker is what
+ * makes `workflow.owns` return false for every other flow, so a marker left
+ * behind by a cancelled or completed wizard would make the next typed message
+ * — for any flow that armed itself without calling `begin` — be ignored.
+ */
 function clearState(ctx) {
+  if (!ctx.userData) return;
   for (const key of ALL_STATE_KEYS) delete ctx.userData[key];
+  if (ctx.userData[workflow.ACTIVE_KEY] === NEWS_WORKFLOW) workflow.clear(ctx);
 }
 
 /**

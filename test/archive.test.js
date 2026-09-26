@@ -276,8 +276,11 @@ describe('archive: admin surface', () => {
   it('explains how to enable the archive when it is not configured', async () => {
     await adminSettingsCallbackHandler(callbackCtx(bot, admin, 'admin_archive'));
     const text = lastEdit(bot);
-    assert.match(text, /الأرشيف غير مُهيّأ/);
+    // The screen states the real reason (not merely "unconfigured"): the state
+    // is ARCHIVE_NOT_CONFIGURED and the variable to set is named.
+    assert.match(text, /غير مضبوط/);
     assert.match(text, /MEDBOT_ARCHIVE_CHANNEL/);
+    assert.match(text, /المتغير مضبوط: لا/);
   });
 
   it('offers the resync, retry and status actions', async () => {
@@ -313,11 +316,131 @@ describe('archive: admin surface', () => {
 
   it('falls back to the archive screen when resync runs unconfigured', async () => {
     await adminSettingsCallbackHandler(callbackCtx(bot, admin, 'archive_resync'));
-    assert.match(lastEdit(bot), /الأرشيف غير مُهيّأ/);
+    assert.match(lastEdit(bot), /غير مضبوط/);
   });
 
   it('rejects an unknown archive action rather than guessing', async () => {
     await adminSettingsCallbackHandler(callbackCtx(bot, admin, 'archive_bogus'));
     assert.match(lastEdit(bot), /إجراء غير معروف/);
+  });
+});
+
+/**
+ * Archive health: configuration -> validation -> Telegram reachability ->
+ * bot membership -> post permission. Each state is distinct because each has a
+ * different fix, and a binary configured flag hides all of them behind one
+ * unhelpful message.
+ */
+describe('archive: health diagnostics', () => {
+  it('reports ARCHIVE_NOT_CONFIGURED when the variable is unset', async () => {
+    const health = await archive.getArchiveHealth(bot);
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.NOT_CONFIGURED);
+    assert.equal(health.ok, false);
+    assert.equal(health.configured, false);
+  });
+
+  it('reports ARCHIVE_INVALID_CHANNEL for a value Telegram cannot accept', async () => {
+    // A positive number is a user id, not a channel.
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '123456789';
+    const health = await archive.getArchiveHealth(bot);
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.INVALID_CHANNEL);
+    assert.equal(health.valid, false);
+    assert.equal(health.reason, 'positive_id');
+    assert.equal(bot.calls.filter((c) => c.method === 'getChat').length, 0, 'no Telegram call');
+  });
+
+  it('reports ARCHIVE_UNREACHABLE when getChat fails', async () => {
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    bot.failFor.add('getChat');
+    const health = await archive.getArchiveHealth(bot);
+    bot.failFor.clear();
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.UNREACHABLE);
+    assert.equal(health.verified, true);
+  });
+
+  it('reports ARCHIVE_PERMISSION_DENIED when the bot is only a member', async () => {
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    bot.chatMember = { status: 'member' };
+    const health = await archive.getArchiveHealth(bot);
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.PERMISSION_DENIED);
+    assert.equal(health.botStatus, 'member');
+    assert.equal(health.canPost, false);
+  });
+
+  it('reports ARCHIVE_PERMISSION_DENIED when an admin lacks post rights', async () => {
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    bot.chatMember = { status: 'administrator', can_post_messages: false };
+    const health = await archive.getArchiveHealth(bot);
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.PERMISSION_DENIED);
+  });
+
+  it('reports ARCHIVE_READY for an administrator that can post', async () => {
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    bot.chatMember = { status: 'administrator', can_post_messages: true };
+    const health = await archive.getArchiveHealth(bot);
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.READY);
+    assert.equal(health.ok, true);
+    assert.equal(health.canPost, true);
+  });
+
+  it('reports ARCHIVE_READY for the channel creator', async () => {
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '@medbot_archive';
+    bot.chatMember = { status: 'creator' };
+    const health = await archive.getArchiveHealth(bot);
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.READY);
+  });
+
+  it('never reports READY without Telegram verification', async () => {
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    const health = await archive.getArchiveHealth(null);
+    assert.equal(health.state, archive.ARCHIVE_HEALTH.UNVERIFIED);
+    assert.notEqual(health.state, archive.ARCHIVE_HEALTH.READY);
+  });
+
+  it('normalises a quoted, linked or spaced channel value without changing a good one', () => {
+    assert.equal(archive.normalizeChannelValue('"-1001234567890"'), '-1001234567890');
+    assert.equal(archive.normalizeChannelValue("'@medbot_archive'"), '@medbot_archive');
+    assert.equal(archive.normalizeChannelValue('https://t.me/medbot_archive'), '@medbot_archive');
+    assert.equal(archive.normalizeChannelValue('t.me/medbot_archive'), '@medbot_archive');
+    assert.equal(archive.normalizeChannelValue('-100 1234 5678'), '-10012345678');
+    assert.equal(archive.normalizeChannelValue('medbot_archive'), '@medbot_archive');
+    // Already-correct values pass through untouched.
+    assert.equal(archive.normalizeChannelValue('-1001234567890'), '-1001234567890');
+    assert.equal(archive.normalizeChannelValue('@medbot_archive'), '@medbot_archive');
+  });
+
+  it('accepts a numeric id and a public username', () => {
+    assert.equal(archive.validateChannelValue('-1001234567890').valid, true);
+    assert.equal(archive.validateChannelValue('-1001234567890').kind, 'numeric');
+    assert.equal(archive.validateChannelValue('@medbot_archive').valid, true);
+    assert.equal(archive.validateChannelValue('@medbot_archive').kind, 'username');
+  });
+
+  it('resolves a normalised channel through the environment', () => {
+    process.env.MEDBOT_ARCHIVE_CHANNEL = 'https://t.me/medbot_archive';
+    assert.equal(archive.resolveChannel(), '@medbot_archive');
+    assert.equal(archive.channelForSend(), '@medbot_archive');
+  });
+
+  it('shows the real reason on the admin screen for each state', async () => {
+    // Not configured.
+    await adminSettingsCallbackHandler(callbackCtx(bot, admin, 'admin_archive'));
+    assert.match(lastEdit(bot), /المتغير مضبوط: لا/);
+
+    // Ready.
+    process.env.MEDBOT_ARCHIVE_CHANNEL = '-1001234567890';
+    bot.chatMember = { status: 'administrator', can_post_messages: true };
+    await adminSettingsCallbackHandler(callbackCtx(bot, admin, 'admin_archive'));
+    const ready = lastEdit(bot);
+    assert.match(ready, /الحالة: 🟢 جاهز/);
+    assert.match(ready, /حالة البوت: مشرف/);
+    assert.match(ready, /الإرسال: متاح/);
+
+    // Permission denied.
+    bot.chatMember = { status: 'member' };
+    await adminSettingsCallbackHandler(callbackCtx(bot, admin, 'admin_archive'));
+    const denied = lastEdit(bot);
+    assert.match(denied, /الحالة: 🔴 صلاحية ناقصة/);
+    assert.match(denied, /ليس مشرفاً/);
   });
 });

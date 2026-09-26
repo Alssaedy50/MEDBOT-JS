@@ -34,6 +34,50 @@ export function keyboard(rows) {
   return { inline_keyboard: Array.isArray(rows) ? rows : [] };
 }
 
+/**
+ * Pack a flat list of buttons into rows of at most `columns`.
+ *
+ * A long single-column list (settings, filters, archive actions) forces the
+ * reader to scroll a wall of full-width buttons. Packing short buttons two per
+ * row halves that scroll while keeping each label readable.
+ *
+ * Guardrails, because a compact keyboard is worthless if it is unreadable:
+ *
+ *  * a button whose text is longer than `maxLabelLength` gets its own row, so a
+ *    long label is never squeezed into a half-width cell;
+ *  * a `fullWidth` predicate (e.g. home / cancel / destructive) also forces its
+ *    own row, so navigation and destructive actions stay visually distinct;
+ *  * a single trailing button is left on its own row rather than paired with an
+ *    unrelated one.
+ */
+export function chunkButtons(buttons, columns = 2, options = {}) {
+  const { maxLabelLength = 24, fullWidth = null } = options;
+  const width = Math.max(1, Number.parseInt(columns, 10) || 1);
+  const list = Array.isArray(buttons) ? buttons.filter(Boolean) : [];
+
+  const rows = [];
+  let current = [];
+  const flush = () => {
+    if (current.length) rows.push(current);
+    current = [];
+  };
+
+  for (const button of list) {
+    const label = String(button?.text ?? '');
+    const wide = label.length > maxLabelLength || (fullWidth ? fullWidth(button) : false);
+    if (wide) {
+      flush();
+      rows.push([button]);
+      continue;
+    }
+    current.push(button);
+    if (current.length >= width) flush();
+  }
+  flush();
+
+  return rows;
+}
+
 /** Convenience: build a markup from a list of `[label, callback]` tuples. */
 export function keyboardFrom(tuples) {
   return keyboard(tuples.map(([label, callback]) => [btn(label, callback)]));
