@@ -16,8 +16,12 @@ import * as db from '../db/index.js';
 import { ensureSourcesFooter } from '../medicalSources.js';
 import * as providers from './providers.js';
 import { GroundingValidator } from './intent.js';
-import { guardAnswer, hasRepetition } from './guard.js';
-import { REPETITION_RETRY_INSTRUCTION, SYSTEM_PROMPT } from './prompts.js';
+import { guardAnswer, hasRepetition, sanitizeModelAnswer } from './guard.js';
+import {
+  FINAL_ANSWER_ONLY_INSTRUCTION,
+  REPETITION_RETRY_INSTRUCTION,
+  SYSTEM_PROMPT,
+} from './prompts.js';
 
 export const ACTIVE_POOL_SIZE = 12;
 export const CANDIDATE_TTL_SECONDS = 300;
@@ -311,6 +315,42 @@ export async function refreshDiscoveredModels(candidates, fetchImpl = fetch) {
   return candidates;
 }
 
+// Model-name hints for "stronger" reasoning models, used only to order an
+// already-VERIFIED pool. Nothing here changes which models are eligible.
+const STRONG_MODEL_HINTS = ['70b', '72b', '110b', '123b', '235b', '405b', 'pro', 'large', 'sonnet', 'opus', 'gpt-4', 'r1', 'reasoning'];
+const LIGHT_MODEL_HINTS = ['8b', '7b', '3b', '1b', 'mini', 'small', 'flash', 'lite', 'nano', 'turbo'];
+
+function modelStrength(item) {
+  const model = String(item?.model ?? '').toLowerCase();
+  let score = 0;
+  if (STRONG_MODEL_HINTS.some((hint) => model.includes(hint))) score += 1;
+  if (LIGHT_MODEL_HINTS.some((hint) => model.includes(hint))) score -= 1;
+  return score;
+}
+
+/**
+ * Order a VERIFIED candidate pool for one question.
+ *
+ * Simple questions prefer the fastest healthy model (lowest measured latency);
+ * complex questions prefer the stronger model first. Ordering never adds or
+ * removes candidates, so failover behaviour is unchanged — it only decides who
+ * is tried first, avoiding a blind call to every provider.
+ */
+export function orderCandidatesForQuestion(candidates, { complex = false } = {}) {
+  const list = [...(candidates ?? [])];
+  if (complex) {
+    return list.sort((a, b) => {
+      const strength = modelStrength(b) - modelStrength(a);
+      if (strength !== 0) return strength;
+      return (a.latency_ms ?? Number.MAX_SAFE_INTEGER) - (b.latency_ms ?? Number.MAX_SAFE_INTEGER);
+    });
+  }
+  return list.sort(
+    (a, b) =>
+      (a.latency_ms ?? Number.MAX_SAFE_INTEGER) - (b.latency_ms ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
 /** Discover, register, verify, then build the active pool (uncached). */
 export async function buildCandidatesUncached(fetchImpl = fetch) {
   const candidates = [];
@@ -355,7 +395,16 @@ export async function buildCandidatesUncached(fetchImpl = fetch) {
       const identity = modelKey(item);
       if (seen.has(identity)) {
         const existing = candidates.find((candidate) => modelKey(candidate) === identity);
-        if (existing) Object.assign(existing, item);
+        if (existing) {
+          // Carry the registry identity and health metadata across, but keep the
+          // freshly discovered availability: overwriting it with a persisted
+          // AVAILABLE would skip the probe and silently empty the pool on a
+          // rebuild (e.g. after a restart).
+          existing.id = item.id ?? existing.id;
+          existing.latency_ms = item.latency_ms ?? existing.latency_ms;
+          existing.success_rate = item.success_rate ?? existing.success_rate;
+          existing.auth_status = item.auth_status ?? existing.auth_status;
+        }
         continue;
       }
 
@@ -463,6 +512,31 @@ export async function providerFailover({
         } catch {
           // A failed regeneration keeps the repaired original.
         }
+      }
+
+      // A student must only ever receive the final answer. Meta/reasoning
+      // leakage is repaired locally when a final section is recoverable, then
+      // regenerated once with a strict final-answer-only instruction, and only
+      // then treated as a failed candidate (so failover/fallback takes over).
+      const sanitized = sanitizeModelAnswer(answer);
+
+      if (sanitized.recovered) {
+        answer = sanitized.text;
+      } else if (sanitized.leaked) {
+        const retry = await providers.request({
+          item,
+          prompt: `${groundedPrompt}${FINAL_ANSWER_ONLY_INSTRUCTION}`,
+          systemPrompt,
+          fetchImpl,
+        });
+        const guarded = guardAnswer(retry);
+        const cleanRetry = sanitizeModelAnswer(guarded);
+        // A malformed regeneration is a candidate failure: never forward the
+        // bad output, let the next candidate or the caller's fallback answer.
+        if (!validator.allows(guarded) || cleanRetry.leaked) {
+          throw new Error('Provider leaked internal reasoning');
+        }
+        answer = guarded;
       }
 
       const latencyMs = Math.round(Date.now() - started);
