@@ -26,11 +26,12 @@ import {
   classifyIntent,
   buildRegistryOverview,
   genuineRegistryMatches,
+  isMedicalText,
+  matchTokens,
   searchSubjectTokens,
   INTENT_MEDICAL,
   INTENT_OVERVIEW,
   INTENT_RESOURCE,
-  MEDICAL_CONCEPT_KEYS,
 } from './intent.js';
 import {
   CATALOG_MAX_CHARS,
@@ -41,10 +42,86 @@ import {
   PLATFORM_SEARCH_PROMPT,
   UNIFIED_ASSISTANT_PROMPT,
 } from './prompts.js';
-import { getCandidates, providerFailover, warmAiPool } from './router.js';
+import {
+  getCandidates,
+  orderCandidatesForQuestion,
+  providerFailover,
+  warmAiPool,
+} from './router.js';
 
 // Re-exported so the bot can warm the provider pool during startup.
 export { warmAiPool };
+
+// ---------------------------------------------------------------------------
+// Generic educational answer cache
+// ---------------------------------------------------------------------------
+// Repeated *generic educational* questions are academically safe to cache: the
+// answer is not personalized advice. Clinical/personal questions are never
+// cached, so "I have chest pain" always reaches a fresh generation.
+const GENERIC_CACHE_TTL_MS = 10 * 60 * 1000;
+const GENERIC_CACHE_MAX = 100;
+const genericAnswerCache = new Map();
+
+/** Test hook: drop the generic answer cache. */
+export function resetGenericAnswerCache() {
+  genericAnswerCache.clear();
+}
+
+// Personal/clinical cues that disqualify an answer from caching.
+const PERSONAL_CLINICAL_RE = new RegExp(
+  [
+    "\\bi\\s+(?:have|had|am|feel|felt|take|took|get|got|notice|noticed)\\b",
+    "\\bmy\\s+(?:pain|symptom|symptoms|doctor|medication|dose|result|results|report|test)\\b",
+    '\\b(?:should|shall)\\s+i\\b',
+    '\\bdo\\s+i\\s+(?:need|have)\\b',
+    '\\bis\\s+it\\s+(?:safe|normal|serious)\\b',
+    '\\bfor\\s+me\\b',
+    '\\b(?:diagnose|prescribe)\\s+me\\b',
+    '\\bأعاني\\b',
+    '\\bعندي\\s+(?:ألم|الم|أعراض|اعراض|مرض|سكر|ضغط)\\b',
+    '\\bماذا\\s+أفعل\\b',
+    '\\bهل\\s+هذا\\s+خطير\\b',
+    '\\bوصفة\\s+ل?ي\\b',
+    '\\bعلاجي\\b',
+    '\\bحالتي\\b',
+    '\\bطفلي\\b',
+    '\\bابني\\b',
+    '\\bزوجتي\\b',
+    '\\bوالدتي\\b',
+    '\\bوالدي\\b',
+  ].join('|'),
+  'i',
+);
+
+/**
+ * Whether an answer for this prompt may be cached.
+ *
+ * Only short, generic, non-personal questions qualify. Anything that reads as a
+ * personal clinical situation is excluded so it always gets a fresh answer.
+ */
+export function isCacheableGeneralQuestion(prompt) {
+  const text = String(prompt ?? '').trim();
+  if (!text || text.length > 400) return false;
+  return !PERSONAL_CLINICAL_RE.test(text);
+}
+
+function genericCacheGet(key) {
+  const entry = genericAnswerCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > GENERIC_CACHE_TTL_MS) {
+    genericAnswerCache.delete(key);
+    return null;
+  }
+  return entry.answer;
+}
+
+function genericCacheSet(key, answer) {
+  if (genericAnswerCache.size >= GENERIC_CACHE_MAX) {
+    const oldest = genericAnswerCache.keys().next().value;
+    genericAnswerCache.delete(oldest);
+  }
+  genericAnswerCache.set(key, { at: Date.now(), answer });
+}
 
 const NODE_LABELS = {
   book: '📚 كتاب', books: '📚 كتب', video: '🎥 فيديو', audio: '🎧 صوتي',
@@ -268,6 +345,34 @@ export async function generatePlatformSearchResult(userPrompt, _userId = null, f
   return { text: buildPlatformSearchAnswer(matches), actions: buildResultActions(matches) };
 }
 
+// Cues that a question asks for reasoning rather than a one-line fact.
+const COMPLEX_QUESTION_RE = new RegExp(
+  [
+    '\\b(?:compare|contrast|difference|differences|differential)\\b',
+    '\\b(?:mechanism|pathogenesis|pathophysiology|pathway|steps|stages)\\b',
+    '\\b(?:why|explain in detail|discuss|elaborate|analyze|evaluate)\\b',
+    '\\b(?:how does|how do|how is|how are)\\b',
+    '\\b(?:classify|classification|types of|list the causes)\\b',
+    '\\bقارن\\b', '\\bالفرق\\b', '\\bفسر\\b', '\\bاشرح\\b', '\\bلماذا\\b',
+    '\\bاليه\\b', '\\bآلية\\b', '\\bمراحل\\b', '\\bخطوات\\b', '\\bتصنيف\\b',
+  ].join('|'),
+  'i',
+);
+
+/**
+ * Whether a question is complex enough to prefer the stronger model first.
+ *
+ * Long or multi-part questions and "explain/compare/why" framing count; a short
+ * definitional question does not, so simple questions still take the fast path.
+ */
+export function isComplexQuestion(prompt) {
+  const text = String(prompt ?? '').trim();
+  if (!text) return false;
+  if (text.length > 160) return true;
+  if (COMPLEX_QUESTION_RE.test(text)) return true;
+  return (text.match(/[?؟]/g) ?? []).length > 1;
+}
+
 /**
  * Whether an AI-Chat message is a medical/scientific question.
  *
@@ -277,11 +382,10 @@ export async function generatePlatformSearchResult(userPrompt, _userId = null, f
  */
 export function isMedicalQuestion(userPrompt, intent) {
   if (intent === INTENT_MEDICAL) return true;
-  const concepts = searchEngine.impliedConcepts(userPrompt);
-  for (const concept of concepts) {
-    if (MEDICAL_CONCEPT_KEYS.has(concept)) return true;
-  }
-  return false;
+  const raw = String(userPrompt ?? '').trim();
+  if (!raw) return false;
+  const norm = searchEngine.normalizeText(raw).replace(/β/g, 'beta');
+  return isMedicalText(raw, norm, matchTokens(raw));
 }
 
 /**
@@ -297,7 +401,16 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
   const intent = classifyIntent(prompt);
 
   if (!isMedicalQuestion(prompt, intent)) {
-    const candidates = await getCandidates(fetchImpl);
+    const cacheable = isCacheableGeneralQuestion(prompt);
+    const cacheKey = cacheable ? searchEngine.normalizeText(prompt) : '';
+    if (cacheKey) {
+      const cached = genericCacheGet(cacheKey);
+      if (cached) return { text: cached, actions: [] };
+    }
+
+    const candidates = orderCandidatesForQuestion(await getCandidates(fetchImpl), {
+      complex: isComplexQuestion(prompt),
+    });
     if (!candidates.length) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
 
     const answer = await providerFailover({
@@ -310,6 +423,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
     });
 
     if (!answer) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
+    if (cacheKey) genericCacheSet(cacheKey, answer);
     return { text: answer, actions: [] };
   }
 
@@ -320,7 +434,10 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
     medicalSources.searchPubmed(prompt, 3),
   ]);
 
-  const candidates = candidatesResult.status === 'fulfilled' ? candidatesResult.value : [];
+  const candidates = orderCandidatesForQuestion(
+    candidatesResult.status === 'fulfilled' ? candidatesResult.value : [],
+    { complex: isComplexQuestion(prompt) },
+  );
   const sources = sourcesResult.status === 'fulfilled' ? sourcesResult.value : [];
 
   if (!candidates.length) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };

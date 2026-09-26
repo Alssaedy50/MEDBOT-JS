@@ -28,6 +28,10 @@ export const MEDICAL_CONCEPT_KEYS = new Set([
   'histology',
 ]);
 
+// Whole-word clinical/diagnostic vocabulary. Deliberately excludes words that
+// are ambiguous outside medicine ("organ", "cell", "potential", "blood", …):
+// those are covered by the stem rules or the co-occurrence rules below, which
+// keeps "organs of government" or "cell phone" out of the medical path.
 const MEDICAL_KEYWORDS = new Set([
   'دواء', 'ادويه', 'علاج', 'مرض', 'امراض', 'اعراض', 'عرض', 'تشخيص',
   'فيروس', 'عدوى', 'التهاب', 'سرطان', 'لقاح', 'جرعه', 'مضاعفات',
@@ -35,11 +39,91 @@ const MEDICAL_KEYWORDS = new Set([
   'هرمون', 'هرمونات', 'مناعه', 'بكتيريا', 'سكر', 'ضغط', 'تنفس',
   'جهاز', 'خليه', 'خلايا', 'انزيم', 'بروتين', 'فيتامين', 'دوره',
   'دورة', 'حيض', 'حمل', 'ورم', 'تضخم', 'قصور', 'انسداد', 'جراحه',
+  'fever', 'sore', 'throat', 'cough', 'pain', 'rash', 'nausea', 'vomiting',
   'disease', 'treatment', 'symptom', 'symptoms', 'diagnosis', 'infection',
-  'cancer', 'vaccine', 'drug', 'drugs', 'dose', 'therapy', 'organ',
-  'cell', 'cells', 'enzyme', 'protein', 'vitamin', 'hormone', 'cardiac',
+  'cancer', 'vaccine', 'drug', 'drugs', 'dose', 'therapy',
   'clinical', 'physiological', 'pathological', 'syndrome', 'disorder',
-  'potential', 'receptor', 'neuron', 'muscle', 'nerve', 'blood',
+  'receptor', 'neuron', 'muscle', 'nerve',
+  'heart', 'lung', 'lungs', 'kidney', 'kidneys', 'liver', 'brain', 'bone',
+  'skin', 'stomach', 'intestine', 'pancreas', 'spleen', 'bladder', 'artery',
+  'vein', 'arteries', 'veins', 'embryo', 'fetus', 'placenta',
+  'urine', 'urea', 'creatinine', 'bilirubin', 'sodium', 'potassium', 'calcium',
+  'albumin', 'electrolyte', 'electrolytes', 'thyroid', 'hormone', 'hormones',
+  'glucose', 'cholesterol', 'triglycerides', 'hemoglobin', 'haemoglobin',
+  'cbc', 'hb', 'hgb', 'esr', 'crp', 'tsh', 'bun', 'gfr', 'ldl', 'hdl',
+  'hba1c', 'fbg', 'alt', 'ast', 'lft', 'lfts', 'ecg', 'ekg', 'wbc', 'rbc',
+]);
+
+// Unambiguous multi-word collocations whose individual tokens are ambiguous
+// outside medicine ("action potential", "blood pressure", "stem cell"). Matched
+// against the normalized text, so a phrase counts even when no single token does.
+const MEDICAL_PHRASES = [
+  'action potential', 'resting membrane potential', 'membrane potential',
+  'blood pressure', 'blood vessel', 'blood vessels', 'blood flow',
+  'blood cell', 'blood cells', 'red blood cell', 'white blood cell',
+  'cell membrane', 'cell cycle', 'cell division', 'stem cell', 'stem cells',
+  'heart rate', 'cardiac cycle', 'cardiac output', 'glomerular filtration',
+  'myocardial infarction', 'diabetes mellitus', 'nervous system',
+  'immune system', 'skeletal muscle', 'smooth muscle', 'beta oxidation',
+  'oxidative phosphorylation', 'krebs cycle', 'citric acid cycle',
+  'electron transport chain', 'sodium potassium pump', 'gene expression',
+  'dna replication', 'protein synthesis', 'nerve impulse', 'spinal cord',
+  'endocrine system', 'digestive system', 'respiratory system',
+];
+
+// Latin/Greek morphology. A large share of medical English is built from a
+// closed set of stems and suffixes ("osteosarcoma", "hypertension",
+// "myocardial", "nephritis", "β-oxidation"), so matching these is far broader
+// than a word list while staying precise. Stem prefixes match at a word start;
+// suffixes match at a word end.
+const MEDICAL_STEM_PREFIXES = [
+  'cardi', 'myocard', 'myo', 'neuro', 'nephro', 'hepato', 'hepat', 'gastro',
+  'enter', 'derma', 'dermato', 'osteo', 'arthro', 'arthr', 'myel', 'haemo',
+  'hemo', 'hemato', 'lymph', 'cyt', 'cyto', 'histo', 'patho', 'physio',
+  'pharma', 'microbio', 'immuno', 'onc', 'carcin', 'sarcom', 'adeno', 'lip',
+  'glyc', 'gluc', 'proteo', 'enzym', 'thromb', 'vascul', 'angio', 'bronch',
+  'pulmon', 'ren', 'ureter', 'cyst', 'ovari', 'uter', 'endocrin', 'thyroid',
+  'adren', 'insulin', 'diabet', 'hyper', 'hypo', 'tachy', 'brady', 'anemi',
+  'ischem', 'infarct', 'necro', 'septic', 'tox', 'antibio', 'analges',
+  'anesth', 'epidemi', 'etiol', 'prognos', 'metabol', 'respirat', 'circulat',
+  'skelet', 'muscul', 'neur', 'gland', 'hormon', 'vitamin', 'alveol',
+  'glomerul', 'nephron', 'mitochond', 'ribosom', 'chromosom', 'genom',
+  'allele', 'antigen', 'antibod', 'vaccin', 'bacteri', 'viral', 'fungal',
+  'parasit', 'neoplas', 'metasta', 'biopsy', 'serolog', 'hematolog',
+];
+
+const MEDICAL_SUFFIXES = [
+  'itis', 'osis', 'emia', 'aemia', 'uria', 'pathy', 'pathy', 'ology',
+  'ologist', 'oma', 'oma', 'genic', 'trophic', 'trophy', 'plasia', 'plasm',
+  'cyte', 'philia', 'penia', 'megaly', 'ectomy', 'ostomy', 'otomy', 'oscopy',
+  'rrhea', 'rrheal', 'rrhagia', 'stenosis', 'sclerosis', 'dysplasia',
+  'algia', 'dynia', 'toxic', 'toxin', 'edema', 'emesis', 'stasis', 'lysis',
+  'genesis', 'genous', 'gram', 'graphy', 'meter', 'metry', 'scope', 'therapy',
+  'trophic', 'static', 'kinetic',
+];
+
+// Words whose Latin form is genuinely ambiguous with non-medical usage; they
+// only count as medical alongside another medical signal.
+const AMBIGUOUS_MEDICAL_WORDS = new Set([
+  'cell', 'cells', 'organ', 'organs', 'potential', 'blood', 'tissue', 'tissues',
+  'culture', 'cultures', 'resistance', 'stress', 'dose', 'doses', 'shock',
+  'transplant', 'screening', 'lesion', 'lesions', 'graft', 'culture',
+]);
+
+// Educational/explanatory framing that turns a bare ambiguous term into a
+// study question ("explain cell division", "ما هو الجهاز العصبي").
+const MEDICAL_STUDY_VERBS = new Set([
+  'explain', 'describe', 'define', 'definition', 'mechanism', 'pathogenesis',
+  'pathophysiology', 'physiology', 'anatomy', 'histology', 'etiology',
+  'aetiology', 'symptoms', 'signs', 'treatment', 'management', 'diagnosis',
+  'function', 'functions', 'role', 'structure', 'classification', 'types',
+  'causes', 'complications', 'prognosis', 'prevention', 'difference',
+  'compare', 'summarize', 'summary', 'overview', 'pathway', 'cycle',
+  'process', 'effect', 'effects', 'regulation', 'control',
+  'اشرح', 'فسر', 'عرّف', 'عرف', 'تعريف', 'وظيفه', 'وظائف', 'تركيب',
+  'مكونات', 'انواع', 'اسباب', 'اعراض', 'علامات', 'علاج', 'تشخيص',
+  'مضاعفات', 'وقايه', 'فرق', 'مقارنه', 'ملخص', 'مسار', 'دوره', 'دورة',
+  'عمليه', 'تاثير', 'تنظيم', 'تصنيف', 'اليه', 'آليه', 'مراحل',
 ]);
 
 const GENERIC_TOKENS = new Set([
@@ -98,6 +182,87 @@ export function bareTokens(text) {
   return new Set(searchEngine.meaningfulTerms(text).map(bareToken));
 }
 
+/** Latin/Greek morphology match for one English token. */
+function hasMedicalMorphology(token) {
+  if (!token || token.length < 5 || !/^[a-z]+$/.test(token)) return false;
+  if (MEDICAL_SUFFIXES.some((suffix) => token.endsWith(suffix))) return true;
+  return MEDICAL_STEM_PREFIXES.some(
+    (prefix) => token.startsWith(prefix) && token.length >= prefix.length + 2,
+  );
+}
+
+/**
+ * Strong medical signal: a canonical concept, a whole clinical word, or
+ * unambiguous Latin/Greek morphology.
+ */
+function hasStrongMedicalSignal(tokens, normalizedText) {
+  if (normalizedText && MEDICAL_PHRASES.some((phrase) => normalizedText.includes(phrase))) {
+    return true;
+  }
+  for (const token of tokens) {
+    if (MEDICAL_KEYWORDS.has(token)) return true;
+    if (hasMedicalMorphology(token)) return true;
+  }
+  return false;
+}
+
+// Surface tokens the concept table shares with everyday language ("blood work"
+// -> cbc, "blood sugar" -> glucose). The search table is recall-oriented, so
+// these are stripped before the concept lookup: "how does a car engine work"
+// must not become medical because of the bare token "work".
+const NON_SPECIFIC_CONCEPT_TOKENS = new Set([
+  'work', 'works', 'test', 'tests', 'count', 'counts', 'blood', 'sugar',
+  'alt', 'ast', 'number', 'numbers', 'level', 'levels', 'result', 'results',
+  'report', 'reports', 'panel', 'value', 'values', 'high', 'low', 'normal',
+]);
+
+/**
+ * True when the query resolves to a canonical medical concept through a token
+ * that is specific enough to mean medicine.
+ */
+function hasMedicalConcept(normalizedText) {
+  const specific = normalizedText
+    .split(' ')
+    .filter((token) => token && !NON_SPECIFIC_CONCEPT_TOKENS.has(token))
+    .join(' ');
+  if (!specific) return false;
+  return [...searchEngine.impliedConcepts(specific)].some((concept) =>
+    MEDICAL_CONCEPT_KEYS.has(concept),
+  );
+}
+
+/**
+ * Whether a message is a medical/scientific question.
+ *
+ * Combines independent signals so classification is robust rather than a word
+ * list: canonical concepts, unambiguous clinical vocabulary, Latin/Greek
+ * morphology, and multi-word collocations — plus a guarded rule that lets an
+ * ambiguous term count only with an educational framing word.
+ *
+ * `normalizedText` must already have Greek letters spelled out.
+ */
+export function isMedicalText(rawText, normalizedText, tokens) {
+  if (hasStrongMedicalSignal(tokens, normalizedText)) return true;
+  if (hasMedicalConcept(normalizedText)) return true;
+
+  // An ambiguous term (cell/organ/potential/blood/…) needs a study-framing word
+  // to count, so "explain cell division" is medical but "cell phone plans" is not.
+  return hasAmbiguousMedicalSignal(tokens) && hasStudyFraming(matchTokens(rawText));
+}
+
+/**
+ * Weak signal: an ambiguous term (cell/organ/potential/blood/…). Only counts
+ * alongside another medical signal or an educational framing word, so
+ * "cell phone plans" and "organs of government" stay general.
+ */
+function hasAmbiguousMedicalSignal(tokens) {
+  return [...tokens].some((token) => AMBIGUOUS_MEDICAL_WORDS.has(token));
+}
+
+function hasStudyFraming(tokens) {
+  return [...tokens].some((token) => MEDICAL_STUDY_VERBS.has(token));
+}
+
 /**
  * Classify a student message into one of the four MEDBOT intents.
  *
@@ -108,14 +273,12 @@ export function classifyIntent(userPrompt) {
   const raw = String(userPrompt ?? '').trim();
   if (!raw) return INTENT_GENERAL;
 
-  const norm = searchEngine.normalizeText(raw);
+  // Spell out Greek letters so "β-oxidation" is read the same as "beta oxidation".
+  const norm = searchEngine.normalizeText(raw).replace(/β/g, 'beta');
   const tokens = matchTokens(raw);
   const allTokens = new Set(norm.split(' '));
-  const concepts = searchEngine.impliedConcepts(raw);
 
-  const isMedical =
-    [...concepts].some((concept) => MEDICAL_CONCEPT_KEYS.has(concept)) ||
-    [...tokens].some((token) => MEDICAL_KEYWORDS.has(token));
+  const isMedical = isMedicalText(raw, norm, tokens);
   const hasPlatformNoun = [...tokens].some((token) => PLATFORM_NOUNS.has(token));
 
   if (

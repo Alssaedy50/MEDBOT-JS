@@ -379,12 +379,12 @@ describe('trusted sources footer', () => {
 describe('bilingual medical answer contract', () => {
   it('requires English academic prose before the Arabic summary', () => {
     const prompt = prompts.UNIFIED_ASSISTANT_PROMPT;
-    assert.match(prompt, /English \(academic\)/);
-    assert.match(prompt, /العربية/);
+    assert.match(prompt, /English — Academic/);
+    assert.match(prompt, /العربية — شرح مختصر/);
     assert.match(prompt, /مشوّه للمعنى/);
     assert.match(prompt, /شرحاً أميناً/);
     assert.ok(
-      prompt.indexOf('English (academic)') < prompt.indexOf('**العربية'),
+      prompt.indexOf('English — Academic') < prompt.indexOf('العربية — شرح مختصر'),
       'the English block must precede the Arabic block',
     );
   });

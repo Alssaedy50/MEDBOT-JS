@@ -13,6 +13,35 @@ const NCBI_ESEARCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi
 const NCBI_EFETCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi';
 const SOURCE_TIMEOUT_MS = 12000;
 
+// Identical normalized queries repeat across students; caching the records is
+// academically safe (the result is a fixed PubMed lookup, not advice).
+const PUBMED_CACHE_TTL_MS = 15 * 60 * 1000;
+const PUBMED_CACHE_MAX = 200;
+const pubmedCache = new Map();
+
+/** Test hook: drop the PubMed result cache. */
+export function resetPubmedCache() {
+  pubmedCache.clear();
+}
+
+function pubmedCacheGet(key) {
+  const entry = pubmedCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > PUBMED_CACHE_TTL_MS) {
+    pubmedCache.delete(key);
+    return null;
+  }
+  return entry.records;
+}
+
+function pubmedCacheSet(key, records) {
+  if (pubmedCache.size >= PUBMED_CACHE_MAX) {
+    const oldest = pubmedCache.keys().next().value;
+    pubmedCache.delete(oldest);
+  }
+  pubmedCache.set(key, { at: Date.now(), records });
+}
+
 const STOP_WORDS = new Set([
   'what', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'of', 'to', 'in',
   'on', 'for', 'and', 'or', 'how', 'why', 'when', 'where', 'which', 'who',
@@ -66,9 +95,13 @@ export async function searchPubmed(query, limit = 3) {
   const trimmed = String(query ?? '').trim();
   if (!trimmed) return [];
 
+  const focused = buildFocusedQuery(trimmed);
+  const cacheKey = `${limit}|${focused}`;
+  const cached = pubmedCacheGet(cacheKey);
+  if (cached) return cached;
+
   let xml;
   try {
-    const focused = buildFocusedQuery(trimmed);
 
     const searchResponse = await fetch(
       `${NCBI_ESEARCH}?${new URLSearchParams({
@@ -126,7 +159,9 @@ export async function searchPubmed(query, limit = 3) {
     });
   }
 
-  return records.slice(0, limit);
+  const result = records.slice(0, limit);
+  if (result.length) pubmedCacheSet(cacheKey, result);
+  return result;
 }
 
 /**
@@ -167,7 +202,7 @@ export function buildSourcesFooter(sources) {
   const usable = (sources ?? []).filter((source) => source?.url && source?.pmid);
   if (!usable.length) return '';
 
-  const lines = ['', '—', '🔬 *مصادر موثوقة (NCBI PubMed):*'];
+  const lines = ['', '—', '🔬 *Sources — مصادر موثوقة (NCBI PubMed):*'];
 
   for (const source of usable.slice(0, 3)) {
     let title = escapeMarkdownLinkText(source.title || 'PubMed record');

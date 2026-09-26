@@ -127,3 +127,127 @@ export function guardAnswer(text) {
   const [cleaned] = collapseRepeatedUnits(String(text ?? '').trim());
   return cleaned;
 }
+
+// ---------------------------------------------------------------------------
+// Output safety: meta / reasoning leakage
+// ---------------------------------------------------------------------------
+// A model can narrate its own process ("Internal Monologue", "Draft 1",
+// "Refining based on constraints", "Final Answer Construction") or echo the
+// system/developer/tool instructions. A student must only ever receive the final
+// answer, so this pass detects that leakage before delivery. It never tries to
+// expose or reconstruct hidden chain-of-thought: it either recovers the clearly
+// delimited final-answer section, or reports the answer as unusable so the
+// caller can regenerate or fall back.
+
+// Phrases that are unambiguously process/meta narration wherever they appear.
+const META_PHRASES = [
+  'internal monologue',
+  'final answer construction',
+  'refining based on constraints',
+  'chain of thought',
+  'chain-of-thought',
+  'thought process',
+  'scratchpad',
+  'system prompt',
+  'system instruction',
+  'developer instruction',
+  'tool instruction',
+  'provider prompt',
+  'hidden instruction',
+  'prompt instruction',
+  'debug trace',
+  'internal reasoning',
+  'internal notes',
+  'my reasoning',
+  'let me think',
+];
+
+// A line that *labels* a section as process output, e.g. "Analysis:", "**Draft 2**",
+// "Reasoning —", "Internal Monologue:". Anchored to a heading shape so ordinary
+// prose that merely contains the word "analysis" is untouched.
+const META_HEADING_RE = new RegExp(
+  '(^|\\n)\\s*(?:[*_#>\\-\\s]*)(?:' +
+    'internal monologue|draft\\s*\\d+|final answer construction|' +
+    'refining based on constraints|reasoning|analysis|chain[- ]of[- ]thought|' +
+    'thought process|self[- ]correction|scratchpad|system prompt|' +
+    'system instructions?|developer instructions?|tool instructions?|' +
+    'provider (?:prompt|instructions?)|hidden instructions?|prompt instructions?|' +
+    'debug(?:ging)? (?:trace|output|info|details)|internal (?:notes?|reasoning|thoughts?)' +
+    ')\\s*(?:[*_#]*)\\s*[:\\-–—]',
+  'i',
+);
+
+// XML/JSON-ish process tags some providers emit.
+const META_TAG_RE = /<\s*\/?\s*(analysis|reasoning|thinking|thought|scratchpad|internal)\s*>/i;
+
+// A bare "Draft N" anywhere in the text.
+const DRAFT_RE = /\bdraft\s*\d+\b/i;
+
+/** True when the text contains an obvious meta/reasoning leakage marker. */
+export function containsMetaLeak(text) {
+  const value = String(text ?? '');
+  if (!value.trim()) return false;
+  if (DRAFT_RE.test(value)) return true;
+  if (META_TAG_RE.test(value)) return true;
+  if (META_HEADING_RE.test(value)) return true;
+
+  const lowered = value.toLowerCase();
+  return META_PHRASES.some((phrase) => lowered.includes(phrase));
+}
+
+// Markers that delimit an explicit final-answer section. When a leaking answer
+// still carries one, the clean text after the LAST marker is recoverable.
+const FINAL_SECTION_MARKERS = [
+  /\bfinal answer\s*[:\-–—]/gi,
+  /الإجابة\s*(?:النهائية|الصحيحة)\s*[:\-–—]/g,
+  /\bfinal\s+response\s*[:\-–—]/gi,
+  /\bالإجابة\s*[:\-–—]/g,
+];
+
+/**
+ * Extract the text after the last explicit final-answer marker, if any.
+ *
+ * Returns '' when there is no such marker or the extracted block is empty.
+ */
+export function extractFinalSection(text) {
+  const value = String(text ?? '');
+  let bestIndex = -1;
+  let bestLength = 0;
+
+  for (const pattern of FINAL_SECTION_MARKERS) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(value)) !== null) {
+      if (match.index >= bestIndex) {
+        bestIndex = match.index;
+        bestLength = match[0].length;
+      }
+      if (pattern.lastIndex === match.index) pattern.lastIndex += 1;
+    }
+  }
+
+  if (bestIndex < 0) return '';
+  return value.slice(bestIndex + bestLength).trim();
+}
+
+/**
+ * Validate and sanitize a model answer before it can reach a student.
+ *
+ * Returns `{ text, leaked, recovered }`:
+ *   leaked=false            -> `text` is the clean answer, unchanged
+ *   leaked=true, recovered  -> a clean final-answer section was recovered
+ *   leaked=true, recovered=false -> `text` is '' and the answer must not be sent
+ *
+ * Never exposes or reconstructs hidden reasoning.
+ */
+export function sanitizeModelAnswer(text) {
+  const value = String(text ?? '').trim();
+  if (!containsMetaLeak(value)) return { text: value, leaked: false, recovered: false };
+
+  const candidate = extractFinalSection(value);
+  if (candidate && !containsMetaLeak(candidate)) {
+    return { text: candidate, leaked: true, recovered: true };
+  }
+
+  return { text: '', leaked: true, recovered: false };
+}
