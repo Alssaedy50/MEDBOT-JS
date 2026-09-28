@@ -41,7 +41,7 @@ import {
   MAX_RESULT_ACTIONS,
   PLATFORM_SEARCH_NO_MATCH,
   PLATFORM_SEARCH_PROMPT,
-  UNIFIED_ASSISTANT_PROMPT,
+  UNIFIED_ASSISTANT_PROMPT,\n  assistantSystemPrompt,\n  generalAssistantSystemPrompt,\n  platformSearchSystemPrompt,
 } from './prompts.js';
 import {
   getCandidates,
@@ -252,7 +252,7 @@ export function verifyCatalogAnswer(answer, folders, contents, paths) {
  * reachable, or the model names nothing that maps back to a registered row, the
  * result is empty and the caller answers with the honest no-match message.
  */
-export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch) {
+export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch, language = 'ar') {
   const [folders, contents, paths] = loadRegistry();
   if (!folders.length && !contents.length) return [];
 
@@ -272,7 +272,7 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch) {
 
   const answer = await providerFailover({
     groundedPrompt,
-    systemPrompt: PLATFORM_SEARCH_PROMPT,
+    systemPrompt: platformSearchSystemPrompt(language),
     candidates,
     userId: null,
     label: 'Platform search',
@@ -288,11 +288,11 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch) {
  *
  * Returns only real search-engine result rows.
  */
-export async function platformSearchResults(userPrompt, fetchImpl = fetch) {
+export async function platformSearchResults(userPrompt, fetchImpl = fetch, language = 'ar') {
   const results = searchMedbot(userPrompt);
   const matches = genuineRegistryMatches(userPrompt, results);
   if (matches.length) return matches;
-  return catalogFallbackMatches(userPrompt, fetchImpl);
+  return catalogFallbackMatches(userPrompt, fetchImpl, language);
 }
 
 function platformSearchLine(item) {
@@ -340,7 +340,7 @@ export async function generatePlatformSearchResult(userPrompt, _userId = null, f
     return { text: buildRegistryOverview(folders), actions: [] };
   }
 
-  const matches = await platformSearchResults(prompt, fetchImpl);
+  let language = 'ar';\n  try { language = db.getUserLanguage(_userId); } catch {}\n  const matches = await platformSearchResults(prompt, fetchImpl, language);
   if (!matches.length) return { text: PLATFORM_SEARCH_NO_MATCH, actions: [] };
 
   return { text: buildPlatformSearchAnswer(matches), actions: buildResultActions(matches) };
@@ -438,7 +438,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
 
   if (!isMedicalQuestion(prompt, intent)) {
     const cacheable = isCacheableGeneralQuestion(prompt);
-    const cacheKey = cacheable ? searchEngine.normalizeText(prompt) : '';
+    const cacheKey = cacheable ? `${language}:${searchEngine.normalizeText(prompt)}` : '';
     if (cacheKey) {
       const cached = genericCacheGet(cacheKey);
       if (cached) return { text: cached, actions: [] };
@@ -451,7 +451,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
 
     const answer = await providerFailover({
       groundedPrompt: `سؤال الطالب:\n${prompt}`,
-      systemPrompt: GENERAL_ASSISTANT_PROMPT,
+      systemPrompt: generalAssistantSystemPrompt(language),
       candidates,
       userId,
       label: 'General assistant',
@@ -482,7 +482,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
 
   const answer = await providerFailover({
     groundedPrompt: buildMedicalGroundedPrompt(prompt, sources),
-    systemPrompt: UNIFIED_ASSISTANT_PROMPT,
+    systemPrompt: assistantSystemPrompt(language),
     candidates,
     userId,
     label: 'Medical assistant',
