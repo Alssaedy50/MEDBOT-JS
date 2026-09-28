@@ -154,7 +154,47 @@ export function buildCallbackContext({
       if (!bot) {
         throw new Error('This handler needs a bot transport but none was provided.');
       }
-      return bot;
+
+      const language = userLanguage(this.from.id);
+      const localizeOptions = (options = {}) => {
+        const localized = localizeOutgoing({
+          text: options.text,
+          markup: options.reply_markup,
+          targetLanguage: language,
+        });
+        const next = { ...options };
+        if (localized.text !== null && localized.text !== undefined) next.text = localized.text;
+        if (options.caption !== undefined) next.caption = localizeOutgoing({
+          text: options.caption,
+          targetLanguage: language,
+        }).text;
+        if (localized.markup !== null && localized.markup !== undefined) {
+          next.reply_markup = normalizeReplyMarkup(localized.markup);
+        }
+        return next;
+      };
+
+      return {
+        ...bot,
+        sendMessage: (chatId, text, options = {}) =>
+          bot.sendMessage(chatId, localizeOutgoing({
+            text,
+            markup: options.reply_markup,
+            targetLanguage: language,
+          }).text, localizeOptions(options)),
+        sendDocument: (chatId, document, options = {}) =>
+          bot.sendDocument(chatId, document, localizeOptions(options)),
+        sendPhoto: (chatId, photo, options = {}) =>
+          bot.sendPhoto(chatId, photo, localizeOptions(options)),
+        sendAudio: (chatId, audio, options = {}) =>
+          bot.sendAudio(chatId, audio, localizeOptions(options)),
+        sendVideo: (chatId, video, options = {}) =>
+          bot.sendVideo(chatId, video, localizeOptions(options)),
+        sendVoice: (chatId, voice, options = {}) =>
+          bot.sendVoice(chatId, voice, localizeOptions(options)),
+        editMessageText: (text, options = {}) =>
+          bot.editMessageText(text, localizeOptions(options)),
+      };
     },
   };
 
