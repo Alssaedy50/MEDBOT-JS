@@ -44,7 +44,23 @@ export const BOT_METHODS = Object.freeze([
   'answerCallbackQuery',
 ]);
 
-function userLanguage(userId) {\n  try {\n    return db.getUserLanguage(userId);\n  } catch {\n    return 'ar';\n  }\n}\n\nfunction localizeForUser(userId, text, markup) {\n  return localizeOutgoing({\n    text,\n    markup,\n    targetLanguage: userLanguage(userId),\n  });\n}\n\nfunction normaliseUser(user) {
+function userLanguage(userId) {
+  try {
+    return db.getUserLanguage(userId);
+  } catch {
+    return 'ar';
+  }
+}
+
+function localizeForUser(userId, text, markup) {
+  return localizeOutgoing({
+    text,
+    markup,
+    targetLanguage: userLanguage(userId),
+  });
+}
+
+function normaliseUser(user) {
   if (!user) return null;
   return {
     id: user.id,
