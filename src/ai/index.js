@@ -37,11 +37,11 @@ import { classifyQuestionType, depthContractFor, isPersonalClinicalQuestion } fr
 import {
   CATALOG_MAX_CHARS,
   CHAT_NO_PROVIDER_ANSWER,
+  GENERAL_ASSISTANT_PROMPT,
   MAX_RESULT_ACTIONS,
   PLATFORM_SEARCH_NO_MATCH,
-  assistantSystemPrompt,
-  generalAssistantSystemPrompt,
-  platformSearchSystemPrompt,
+  PLATFORM_SEARCH_PROMPT,
+  UNIFIED_ASSISTANT_PROMPT,
 } from './prompts.js';
 import {
   getCandidates,
@@ -179,14 +179,10 @@ export function buildPlatformCatalog(folders, contents, paths) {
 
   if (!lines.length) return 'قاعدة البيانات لا تحتوي أي أقسام أو موارد مسجلة بعد.';
 
-  let catalog = lines.join('
-');
+  let catalog = lines.join('\n');
   if (catalog.length > CATALOG_MAX_CHARS) {
-    catalog = catalog.slice(0, CATALOG_MAX_CHARS).split('
-').slice(0, -1).join('
-');
-    catalog += '
-… (تم اختصار دليل المنصة لطوله)';
+    catalog = catalog.slice(0, CATALOG_MAX_CHARS).split('\n').slice(0, -1).join('\n');
+    catalog += '\n… (تم اختصار دليل المنصة لطوله)';
   }
   return catalog;
 }
@@ -256,7 +252,7 @@ export function verifyCatalogAnswer(answer, folders, contents, paths) {
  * reachable, or the model names nothing that maps back to a registered row, the
  * result is empty and the caller answers with the honest no-match message.
  */
-export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch, language = 'ar') {
+export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch) {
   const [folders, contents, paths] = loadRegistry();
   if (!folders.length && !contents.length) return [];
 
@@ -268,21 +264,15 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch, lang
 
   const catalog = buildPlatformCatalog(folders, contents, paths);
   const groundedPrompt =
-    'دليل المنصة (المصدر الوحيد المسموح لمعرفة ما هو مسجّل):
-' +
-    `${catalog}
-
-` +
-    `طلب الطالب:
-${userPrompt}
-
-` +
+    'دليل المنصة (المصدر الوحيد المسموح لمعرفة ما هو مسجّل):\n' +
+    `${catalog}\n\n` +
+    `طلب الطالب:\n${userPrompt}\n\n` +
     'اذكر فقط الموارد/الأقسام المطابقة لطلب الطالب من الدليل أعلاه، مع ' +
     'مسار كل منها. لا تذكر أي شيء غير موجود في الدليل.';
 
   const answer = await providerFailover({
     groundedPrompt,
-    systemPrompt: platformSearchSystemPrompt(language),
+    systemPrompt: PLATFORM_SEARCH_PROMPT,
     candidates,
     userId: null,
     label: 'Platform search',
@@ -298,53 +288,35 @@ ${userPrompt}
  *
  * Returns only real search-engine result rows.
  */
-export async function platformSearchResults(userPrompt, fetchImpl = fetch, language = 'ar') {
+export async function platformSearchResults(userPrompt, fetchImpl = fetch) {
   const results = searchMedbot(userPrompt);
   const matches = genuineRegistryMatches(userPrompt, results);
   if (matches.length) return matches;
-  return catalogFallbackMatches(userPrompt, fetchImpl, language);
+  return catalogFallbackMatches(userPrompt, fetchImpl);
 }
 
-function platformSearchLine(item, language = 'ar') {
+function platformSearchLine(item) {
   const isFolder = item.result_type === 'FOLDER' || item.result_type === 'EMPTY_FOLDER';
   const icon = isFolder ? '📂' : '📄';
   const title = item.title || item.name || 'بدون عنوان';
   const path = item.path || 'الرئيسية 🏠';
-  const label = language === 'en' ? (isFolder ? 'Path' : 'Inside') : (isFolder ? 'المسار' : 'داخل');
-  return `${icon} *${title}*
-   ${label}: ${path}`;
+  const label = isFolder ? 'المسار' : 'داخل';
+  return `${icon} *${title}*\n   ${label}: ${path}`;
 }
 
 /** Short, discovery-oriented answer rendered only from verified rows. */
-export function buildPlatformSearchAnswer(results, language = 'ar') {
+export function buildPlatformSearchAnswer(results) {
   if (!results?.length) return PLATFORM_SEARCH_NO_MATCH;
 
-  if (language === 'en') {
-    if (results.length === 1) {
-      return `I found a resource related to your request:
-
-${platformSearchLine(results[0], 'en')}`;
-    }
-    const lines = ['I found several resources related to your request:', ''];
-    for (const item of results.slice(0, MAX_RESULT_ACTIONS)) {
-      lines.push(platformSearchLine(item, 'en'));
-    }
-    return lines.join('
-');
-  }
-
   if (results.length === 1) {
-    return `وجدت لك مورداً مرتبطاً بطلبك:
-
-${platformSearchLine(results[0], 'ar')}`;
+    return `وجدت لك مورداً مرتبطاً بطلبك:\n\n${platformSearchLine(results[0])}`;
   }
 
   const lines = ['وجدت عدة موارد مرتبطة بطلبك:', ''];
   for (const item of results.slice(0, MAX_RESULT_ACTIONS)) {
-    lines.push(platformSearchLine(item, 'ar'));
+    lines.push(platformSearchLine(item));
   }
-  return lines.join('
-');
+  return lines.join('\n');
 }
 
 /**
@@ -368,12 +340,10 @@ export async function generatePlatformSearchResult(userPrompt, _userId = null, f
     return { text: buildRegistryOverview(folders), actions: [] };
   }
 
-  let language = 'ar';
-  try { language = db.getUserLanguage(_userId); } catch {}
-  const matches = await platformSearchResults(prompt, fetchImpl, language);
+  const matches = await platformSearchResults(prompt, fetchImpl);
   if (!matches.length) return { text: PLATFORM_SEARCH_NO_MATCH, actions: [] };
 
-  return { text: buildPlatformSearchAnswer(matches, language), actions: buildResultActions(matches) };
+  return { text: buildPlatformSearchAnswer(matches), actions: buildResultActions(matches) };
 }
 
 // Cues that a question asks for reasoning rather than a one-line fact.
@@ -431,25 +401,15 @@ export function buildMedicalGroundedPrompt(userPrompt, sources) {
   const questionType = classifyQuestionType(userPrompt);
   const sourceContext = sources.length ? medicalSources.buildSourceContext(sources) : '';
   const sourceBlock = sourceContext
-    ? 'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:
-' +
-      `${sourceContext}
-
-`
-    : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ لا تذكر أي مصدر أو PMID أو DOI.
-
-';
+    ? 'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:\n' +
+      `${sourceContext}\n\n`
+    : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ لا تذكر أي مصدر أو PMID أو DOI.\n\n';
 
   const personalNote = isPersonalClinicalQuestion(userPrompt)
-    ? '
-
-تنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.'
+    ? '\n\nتنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.'
     : '';
 
-  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}
-
-سؤال الطالب:
-${userPrompt}`;
+  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}\n\nسؤال الطالب:\n${userPrompt}`;
 }
 
 /**
@@ -474,14 +434,11 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
   const prompt = String(userPrompt ?? '').trim();
   if (!prompt) return { text: '⚠️ يرجى كتابة سؤال واضح.', actions: [] };
 
-  let language = 'ar';
-  try { language = db.getUserLanguage(userId); } catch {}
-
   const intent = classifyIntent(prompt);
 
   if (!isMedicalQuestion(prompt, intent)) {
     const cacheable = isCacheableGeneralQuestion(prompt);
-    const cacheKey = cacheable ? `${language}:${searchEngine.normalizeText(prompt)}` : '';
+    const cacheKey = cacheable ? searchEngine.normalizeText(prompt) : '';
     if (cacheKey) {
       const cached = genericCacheGet(cacheKey);
       if (cached) return { text: cached, actions: [] };
@@ -493,9 +450,8 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
     if (!candidates.length) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
 
     const answer = await providerFailover({
-      groundedPrompt: `سؤال الطالب:
-${prompt}`,
-      systemPrompt: generalAssistantSystemPrompt(language),
+      groundedPrompt: `سؤال الطالب:\n${prompt}`,
+      systemPrompt: GENERAL_ASSISTANT_PROMPT,
       candidates,
       userId,
       label: 'General assistant',
@@ -526,7 +482,7 @@ ${prompt}`,
 
   const answer = await providerFailover({
     groundedPrompt: buildMedicalGroundedPrompt(prompt, sources),
-    systemPrompt: assistantSystemPrompt(language),
+    systemPrompt: UNIFIED_ASSISTANT_PROMPT,
     candidates,
     userId,
     label: 'Medical assistant',
