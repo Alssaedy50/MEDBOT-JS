@@ -100,7 +100,7 @@ export async function getFolderView(db, folderId) {
 }
 
 export async function getSearchableRecords(db) {
-  const [folders, contents, paths] = await Promise.all([
+  const [folders, contents] = await Promise.all([
     all(
       db,
       'SELECT id, parent_id, name, node_type, description, keywords FROM folders ORDER BY id ASC',
@@ -109,11 +109,10 @@ export async function getSearchableRecords(db) {
       db,
       'SELECT id, folder_id, title, file_type, description, keywords FROM content ORDER BY id DESC',
     ),
-    buildBreadcrumbPaths(db, new Set()),
   ]);
   const ids = new Set([...folders.map((row) => row[0]), ...contents.map((row) => row[1])]);
-  const resolvedPaths = await buildBreadcrumbPaths(db, ids);
-  return { folders, contents, paths: { ...paths, ...resolvedPaths } };
+  const paths = await buildBreadcrumbPaths(db, ids);
+  return { folders, contents, paths };
 }
 
 export async function addFolder(db, parentId, name, nodeType, acceptsContributions = 0) {
