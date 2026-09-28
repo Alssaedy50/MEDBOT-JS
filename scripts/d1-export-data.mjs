@@ -107,7 +107,53 @@ function foreignParents(db, table) {
     .prepare(`PRAGMA foreign_key_list(${quoteIdent(table)})`)
     .all()
     .map((row) => String(row[2]))
-    .filter((name) => EXPECTED_TABLES.includes(name));
+    .filter((name) => EXPECTED_TABLES.includes(name) && name !== table);
+}
+
+function selfReferences(db, table) {
+  return db
+    .prepare(`PRAGMA foreign_key_list(${quoteIdent(table)})`)
+    .all()
+    .filter((row) => String(row[2]) === table)
+    .map((row) => ({ from: String(row[3]), to: String(row[4]) }));
+}
+
+function orderRowsForSelfReferences(db, table, columns, rows) {
+  const references = selfReferences(db, table);
+  if (!references.length || !rows.length) return rows;
+  if (references.length !== 1 || !references[0].from || !references[0].to) {
+    throw new Error(`Unsupported self-referential schema in table: ${table}`);
+  }
+
+  const reference = references[0];
+  const fromIndex = columns.findIndex((column) => column.name === reference.from);
+  const toIndex = columns.findIndex((column) => column.name === reference.to);
+  if (fromIndex < 0 || toIndex < 0) {
+    throw new Error(`Self-reference columns are missing in table: ${table}`);
+  }
+
+  const pending = new Map();
+  for (const row of rows) pending.set(String(row[toIndex]), row);
+  const ordered = [];
+  const emitted = new Set();
+
+  while (pending.size) {
+    let progressed = false;
+    for (const [key, row] of pending) {
+      const parent = row[fromIndex];
+      if (parent === null || parent === undefined || !pending.has(String(parent))) {
+        ordered.push(row);
+        emitted.add(key);
+        pending.delete(key);
+        progressed = true;
+      }
+    }
+    if (!progressed) {
+      throw new Error(`Self-referential row cycle detected in table: ${table}`);
+    }
+  }
+
+  return ordered;
 }
 
 function topoOrder(db) {
@@ -135,14 +181,18 @@ function topoOrder(db) {
   return ordered;
 }
 
-function writeStatement(stream, sql) {
+async function writeStatement(stream, sql) {
   const bytes = Buffer.byteLength(sql, 'utf8');
   if (bytes > MAX_STATEMENT_BYTES) {
     throw new Error(
       `Generated statement for D1 is ${bytes} bytes, above safety limit ${MAX_STATEMENT_BYTES}`,
     );
   }
-  stream.write(sql);
+  if (stream.write(sql)) return;
+  await new Promise((resolve, reject) => {
+    stream.once('drain', resolve);
+    stream.once('error', reject);
+  });
 }
 
 async function exportData({ sqlitePath, outputPath, manifestPath }) {
@@ -195,14 +245,14 @@ async function exportData({ sqlitePath, outputPath, manifestPath }) {
       const names = columns.map((column) => quoteIdent(column.name));
       const select = `SELECT ${names.join(', ')} FROM ${quoteIdent(table)}`;
       const orderBy = primaryKeyOrder(columns);
-      const rows = db.prepare(orderBy ? `${select} ORDER BY ${orderBy}` : select).all();
+      const rows = orderRowsForSelfReferences(\n        db,\n        table,\n        columns,\n        db.prepare(orderBy ? `${select} ORDER BY ${orderBy}` : select).all(),\n      );
 
       let rowsExported = 0;
       for (const row of rows) {
         const values = row.map(quoteValue);
         const sql =
           `INSERT INTO ${quoteIdent(table)} (${names.join(', ')}) VALUES (${values.join(', ')});\n`;
-        writeStatement(stream, sql);
+        await writeStatement(stream, sql);
         rowsExported += 1;
       }
 
