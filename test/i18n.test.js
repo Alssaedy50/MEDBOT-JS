@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { localizeText, localizeMarkup, t } from '../src/i18n.js';
+import { buildMessageContext } from '../src/telegram/context.js';
 
 test('i18n renders canonical keys in both languages', () => {
   assert.equal(t('menu_resources', 'ar'), '📚 موارد المنصة');
@@ -44,4 +45,22 @@ test('markup localization changes labels but preserves callback data', () => {
 test('user/resource text is not translated merely because it contains Arabic', () => {
   const original = 'اسم المورد: فسيولوجيا العضلات';
   assert.equal(localizeText(original, 'en'), original);
+});
+
+
+test('context localizes direct bot sends without changing callback data', async () => {
+  const sent = [];
+  const bot = {
+    sendMessage: async (...args) => { sent.push(args); },
+  };
+  const ctx = buildMessageContext({
+    from: { id: 9001, first_name: 'Test' },
+    text: '',
+    bot,
+  });
+  await ctx.reply('🏠 Home', {
+    reply_markup: { inline_keyboard: [[{ text: '📚 Resources', callback_data: 'resources' }]] },
+  });
+  assert.equal(sent[0][1], '🏠 الرئيسية');
+  assert.equal(sent[0][2].reply_markup.inline_keyboard[0][0].callback_data, 'resources');
 });
