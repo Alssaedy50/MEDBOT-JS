@@ -86,6 +86,8 @@ function mockD1() {
   const db = {
     prepare(sql) {
       return {
+        sql,
+        params: [],
         bind(...params) {
           this.params = params;
           return this;
@@ -110,7 +112,9 @@ function mockD1() {
               .map((r) => [r[0], r[2], r[3], r[4]]);
           }
           if (/SELECT id, title, file_id, file_type, source_type/i.test(sql)) {
-            return [...state.content.values()].filter((r) => r[1] === p[0]);
+            return [...state.content.values()]
+              .filter((r) => r[1] === p[0])
+              .map((r) => [r[0], r[2], r[3], r[4], r[5], r[6], r[7]]);
           }
           if (/SELECT id, parent_id, name, node_type, description, keywords FROM folders/i.test(sql)) return [];
           if (/SELECT id, folder_id, title, file_type, description, keywords FROM content/i.test(sql)) return [];
@@ -139,23 +143,11 @@ function mockD1() {
     },
     async batch(statements) {
       const outputs = [];
-      for (const statement of statements) outputs.push(result(statement.__sql ?? '', statement.__params ?? []));
+      for (const statement of statements) outputs.push(result(statement.sql ?? '', statement.params ?? []));
       return outputs;
     },
   };
 
-  const originalPrepare = db.prepare;
-  db.prepare = (sql) => {
-    const statement = originalPrepare(sql);
-    const originalBind = statement.bind.bind(statement);
-    statement.bind = (...params) => {
-      statement.__sql = sql;
-      statement.__params = params;
-      originalBind(...params);
-      return statement;
-    };
-    return statement;
-  };
   return db;
 }
 
