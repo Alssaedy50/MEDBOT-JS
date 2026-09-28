@@ -138,7 +138,7 @@ function mockD1() {
           }
           return [];
         },
-        async run() { return result(sql, this.params ?? []); },
+        async run() { return { meta: result(sql, this.params ?? []) }; },
       };
     },
     async batch(statements) {
