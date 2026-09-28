@@ -15,7 +15,8 @@
     "lint": "eslint src test",
     "check": "npm run lint && npm test",
     "cf:dev": "npx wrangler dev",
-    "cf:deploy": "npx wrangler deploy"
+    "cf:deploy": "npx wrangler deploy",
+    "cf:export-data": "node scripts/d1-export-data.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5"

@@ -7,3 +7,6 @@ backups/
 coverage/
 .agent_tmp/
 npm-debug.log*
+
+# Local Cloudflare migration artifacts
+artifacts/
