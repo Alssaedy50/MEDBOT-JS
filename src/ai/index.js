@@ -295,26 +295,37 @@ export async function platformSearchResults(userPrompt, fetchImpl = fetch, langu
   return catalogFallbackMatches(userPrompt, fetchImpl, language);
 }
 
-function platformSearchLine(item) {
+function platformSearchLine(item, language = 'ar') {
   const isFolder = item.result_type === 'FOLDER' || item.result_type === 'EMPTY_FOLDER';
   const icon = isFolder ? '📂' : '📄';
   const title = item.title || item.name || 'بدون عنوان';
   const path = item.path || 'الرئيسية 🏠';
-  const label = isFolder ? 'المسار' : 'داخل';
+  const label = language === 'en' ? (isFolder ? 'Path' : 'Inside') : (isFolder ? 'المسار' : 'داخل');
   return `${icon} *${title}*\n   ${label}: ${path}`;
 }
 
 /** Short, discovery-oriented answer rendered only from verified rows. */
-export function buildPlatformSearchAnswer(results) {
+export function buildPlatformSearchAnswer(results, language = 'ar') {
   if (!results?.length) return PLATFORM_SEARCH_NO_MATCH;
 
+  if (language === 'en') {
+    if (results.length === 1) {
+      return `I found a resource related to your request:\n\n${platformSearchLine(results[0], 'en')}`;
+    }
+    const lines = ['I found several resources related to your request:', ''];
+    for (const item of results.slice(0, MAX_RESULT_ACTIONS)) {
+      lines.push(platformSearchLine(item, 'en'));
+    }
+    return lines.join('\n');
+  }
+
   if (results.length === 1) {
-    return `وجدت لك مورداً مرتبطاً بطلبك:\n\n${platformSearchLine(results[0])}`;
+    return `وجدت لك مورداً مرتبطاً بطلبك:\n\n${platformSearchLine(results[0], 'ar')}`;
   }
 
   const lines = ['وجدت عدة موارد مرتبطة بطلبك:', ''];
   for (const item of results.slice(0, MAX_RESULT_ACTIONS)) {
-    lines.push(platformSearchLine(item));
+    lines.push(platformSearchLine(item, 'ar'));
   }
   return lines.join('\n');
 }
@@ -343,7 +354,7 @@ export async function generatePlatformSearchResult(userPrompt, _userId = null, f
   let language = 'ar';\n  try { language = db.getUserLanguage(_userId); } catch {}\n  const matches = await platformSearchResults(prompt, fetchImpl, language);
   if (!matches.length) return { text: PLATFORM_SEARCH_NO_MATCH, actions: [] };
 
-  return { text: buildPlatformSearchAnswer(matches), actions: buildResultActions(matches) };
+  return { text: buildPlatformSearchAnswer(matches, language), actions: buildResultActions(matches) };
 }
 
 // Cues that a question asks for reasoning rather than a one-line fact.
@@ -433,6 +444,9 @@ export function buildMedicalSourcesFooter(sources) {
 export async function generateAiChatResult(userPrompt, userId = null, fetchImpl = fetch) {
   const prompt = String(userPrompt ?? '').trim();
   if (!prompt) return { text: '⚠️ يرجى كتابة سؤال واضح.', actions: [] };
+
+  let language = 'ar';
+  try { language = db.getUserLanguage(userId); } catch {}
 
   const intent = classifyIntent(prompt);
 
