@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "medbot-js",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-28",
+  "workers_dev": true,
+
+  // Phase 1 intentionally declares the D1 boundary but does not migrate
+  // SQLite or switch the production Telegram bot to webhook.
+  //
+  // Replace the placeholder database_id after creating the MEDBOT D1 database.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "medbot",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ],
+
+  // R2 is intentionally not bound yet. Large-file storage is a later
+  // migration phase; Telegram remains the current archive in Phase 1.
+  //
+  // Future shape:
+  // "r2_buckets": [{ "binding": "FILES", "bucket_name": "medbot-files" }]
+}
