@@ -413,7 +413,8 @@ export function buildMedicalGroundedPrompt(userPrompt, sources, language = 'ar')
       : '\n\nتنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.')
     : '';
 
-  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}\n\nسؤال الطالب:\n${userPrompt}`;
+  const questionLabel = language === 'en' ? 'Student question:' : 'سؤال الطالب:';
+  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}\n\n${questionLabel}\n${userPrompt}`;
 }
 
 /**
@@ -439,10 +440,10 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
   if (!prompt) return { text: '⚠️ يرجى كتابة سؤال واضح.', actions: [] };
 
   const intent = classifyIntent(prompt);
+  const language = userId === null ? 'ar' : db.getUserLanguage(userId);
 
   if (!isMedicalQuestion(prompt, intent)) {
     const cacheable = isCacheableGeneralQuestion(prompt);
-    const language = userId === null ? 'ar' : db.getUserLanguage(userId);
     const cacheKey = cacheable ? language + ':' + searchEngine.normalizeText(prompt) : '';
     if (cacheKey) {
       const cached = genericCacheGet(cacheKey);
