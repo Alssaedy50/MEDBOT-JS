@@ -5,7 +5,7 @@
  * eventual Worker router can reuse presentation logic without a second data
  * contract.
  */
-import { all, get, run, batch } from './core.js';
+import { all, get, run } from './core.js';
 
 const FOLDER_COLS = 'id, parent_id, name, node_type, accepts_contributions';
 
