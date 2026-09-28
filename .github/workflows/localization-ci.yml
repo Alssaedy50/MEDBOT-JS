@@ -25,52 +25,26 @@ jobs:
       - name: Lint
         id: lint
         continue-on-error: true
-        run: |
-          npm run lint > lint.log 2>&1
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
-          cat lint.log
+        run: npm run lint > lint.log 2>&1; code=$?; cat lint.log; echo exit_code=$code >> $GITHUB_OUTPUT; exit $code
       - name: Report lint failure
-        if: steps.lint.outputs.exit_code != '0'
+        if: steps.lint.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const log = fs.readFileSync('lint.log', 'utf8');
-            const body = '### Localization CI lint failure\
-\
-```text\
-' + log.slice(0, 12000) + '\
-```';
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
+            await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: 'Lint failure: ' + log.slice(0, 12000)});
             core.setFailed('npm run lint failed');
       - name: Test
         id: test
         continue-on-error: true
-        run: |
-          npm test > test.log 2>&1
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
-          cat test.log
+        run: npm test > test.log 2>&1; code=$?; cat test.log; echo exit_code=$code >> $GITHUB_OUTPUT; exit $code
       - name: Report test failure
-        if: steps.test.outputs.exit_code != '0'
+        if: steps.test.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const log = fs.readFileSync('test.log', 'utf8');
-            const body = '### Localization CI test failure\
-\
-```text\
-' + log.slice(0, 16000) + '\
-```';
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
+            await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: 'Test failure: ' + log.slice(0, 16000)});
             core.setFailed('npm test failed');
