@@ -1,10 +1,5 @@
 /**
  * Home page, main menu, account, language and about surfaces.
- *
- * The home page is the single entry point: it renders only the features that
- * are currently visible, and adds the admin entry point for admins. Hiding a
- * feature removes its button here and is enforced again in that feature's own
- * callback handler, so hiding is not merely cosmetic.
  */
 
 import * as db from '../db/index.js';
@@ -16,8 +11,8 @@ export function esc(value) {
   return escHtml(value);
 }
 
-export function homeKeyboard() {
-  return keyboard([[btn('🏠 الرئيسية', 'home')]]);
+export function homeKeyboard(language = i18n.DEFAULT_LANGUAGE) {
+  return keyboard([[btn(i18n.t('home', language), 'home')]]);
 }
 
 async function lang(userId) {
@@ -28,7 +23,6 @@ async function lang(userId) {
   }
 }
 
-/** Resolve the platform identity, falling back to the MEDBOT defaults. */
 export function platformSettings() {
   try {
     return db.getPlatformSettings();
@@ -37,12 +31,6 @@ export function platformSettings() {
   }
 }
 
-/**
- * Build the home-page keyboard from the *visible* features.
- *
- * Admins always keep their own entry point so they can restore a hidden
- * feature during maintenance.
- */
 export function buildMenu(userId, language = i18n.DEFAULT_LANGUAGE) {
   let hidden = new Set();
   try {
@@ -52,7 +40,6 @@ export function buildMenu(userId, language = i18n.DEFAULT_LANGUAGE) {
   }
 
   const visible = (feature) => !hidden.has(feature);
-  const rows = [];
   const menu = {
     resources: ['menu_resources', 'resources'],
     topics: ['menu_topics', 'topics'],
@@ -66,6 +53,7 @@ export function buildMenu(userId, language = i18n.DEFAULT_LANGUAGE) {
     language: ['menu_language', 'language'],
   };
 
+  const rows = [];
   for (const [feature, [key, callback]] of Object.entries(menu)) {
     if (visible(feature)) rows.push([btn(i18n.t(key, language), callback)]);
   }
@@ -79,85 +67,8 @@ export function buildMenu(userId, language = i18n.DEFAULT_LANGUAGE) {
   if (isAdmin) rows.push([btn(i18n.t('menu_admin', language), 'admin')]);
 
   return keyboard(rows);
-}**
- * Home page, main menu, account, language and about surfaces.
- *
- * The home page is the single entry point: it renders only the features that
- * are currently visible, and adds the admin entry point for admins. Hiding a
- * feature removes its button here and is enforced again in that feature's own
- * callback handler, so hiding is not merely cosmetic.
- */
-
-import * as db from '../db/index.js';
-import * as i18n from '../i18n.js';
-import { AI_DAILY_LIMIT } from '../constants.js';
-import { btn, escHtml, keyboard } from '../telegram/ui.js';
-
-export function esc(value) {
-  return escHtml(value);
 }
 
-export function homeKeyboard() {
-  return keyboard([[btn('🏠 الرئيسية', 'home')]]);
-}
-
-async function lang(userId) {
-  try {
-    return db.getUserLanguage(userId);
-  } catch {
-    return i18n.DEFAULT_LANGUAGE;
-  }
-}
-
-/** Resolve the platform identity, falling back to the MEDBOT defaults. */
-export function platformSettings() {
-  try {
-    return db.getPlatformSettings();
-  } catch {
-    return { ...db.PLATFORM_SETTING_DEFAULTS };
-  }
-}
-
-/**
- * Build the home-page keyboard from the *visible* features.
- *
- * Admins always keep their own entry point so they can restore a hidden
- * feature during maintenance.
- */
-export function buildMenu(userId) {
-  let hidden = new Set();
-  try {
-    hidden = db.getHiddenFeatures();
-  } catch {
-    hidden = new Set();
-  }
-
-  const visible = (feature) => !hidden.has(feature);
-  const rows = [];
-
-  if (visible('resources')) rows.push([btn('📚 موارد المنصة', 'resources')]);
-  if (visible('topics')) rows.push([btn('🧭 المواضيع', 'topics')]);
-  if (visible('assistant')) rows.push([btn('🤖 المساعد', 'assistant')]);
-  if (visible('news')) rows.push([btn('📰 الأخبار', 'news')]);
-  if (visible('contributions')) rows.push([btn('📤 مساهمات الطلاب', 'contribute')]);
-  if (visible('my_contributions')) rows.push([btn('📄 مساهماتي', 'my_contributions')]);
-  if (visible('account')) rows.push([btn('📊 حسابي', 'account')]);
-  if (visible('contact')) rows.push([btn('📬 تواصل مع المنصة', 'contact')]);
-  if (visible('about')) rows.push([btn('ℹ️ عن المنصة', 'about')]);
-  if (visible('language')) rows.push([btn('🌐 اللغة', 'language')]);
-
-  let isAdmin = false;
-  try {
-    isAdmin = db.isUserAdmin(userId);
-  } catch {
-    isAdmin = false;
-  }
-  if (isAdmin) rows.push([btn('🛠 إدارة المنصة', 'admin')]);
-
-  return keyboard(rows);
-}
-
-/** Full home-page text. */
 export async function homeText(userId, firstName = '') {
   const language = await lang(userId);
   const settings = platformSettings();
@@ -169,49 +80,38 @@ export async function homeText(userId, firstName = '') {
     unread = 0;
   }
 
-  const name = String(firstName ?? '').trim() || 'Doctor';
-  const base = i18n.t('welcome', language, {
-    platform: settings.platform_name,
-    name,
-  });
+  const name = String(firstName ?? '').trim() || (language === 'en' ? 'Doctor' : 'دكتور');
+  const base = i18n.t('welcome', language, { platform: settings.platform_name, name });
+  const badge = unread
+    ? language === 'en'
+      ? `\n\n📰 You have ${unread} unread news item${unread === 1 ? '' : 's'}.`
+      : `\n\n📰 لديك ${unread} خبر غير مقروء.`
+    : '';
 
-  const badge = unread ? `\n\n📰 ${language === 'en' ? `${unread} unread news item${unread === 1 ? '' : 's'}.` : `لديك ${unread} خبر غير مقروء.`}` : '';
   return `${base}${badge}`;
 }
 
-/** Render (or edit into) the home page. */
 export async function showHome(ctx) {
   const userId = ctx.from.id;
+  const language = await lang(userId);
   const text = await homeText(userId, ctx.from.first_name ?? ctx.from.full_name);
-  const markup = buildMenu(userId, await lang(userId));
+  const markup = buildMenu(userId, language);
 
-  if (ctx.kind === 'callback') {
-    await ctx.editMessageText(text, { reply_markup: markup });
-  } else {
-    await ctx.reply(text, { reply_markup: markup });
-  }
+  if (ctx.kind === 'callback') await ctx.editMessageText(text, { reply_markup: markup });
+  else await ctx.reply(text, { reply_markup: markup });
 }
 
-/**
- * Language picker.
- *
- * The choice is persisted per user, so every subsequent screen is rendered in
- * the chosen language without any per-handler branching.
- */
 export async function showLanguage(ctx) {
   const current = await lang(ctx.from.id);
-
   const rows = [
     [btn(`${current === 'ar' ? '✅ ' : ''}🇸🇦 العربية`, 'lang_set:ar')],
     [btn(`${current === 'en' ? '✅ ' : ''}🇬🇧 English`, 'lang_set:en')],
-    [btn('⬅️ رجوع', 'home')],
-    [btn('🏠 الرئيسية', 'home')],
+    [btn(i18n.t('back', current), 'home')],
+    [btn(i18n.t('home', current), 'home')],
   ];
-
   await ctx.editMessageText(i18n.t('language_title', current), { reply_markup: keyboard(rows) });
 }
 
-/** Persist a language choice and re-render the home page. */
 export async function setLanguage(ctx, language) {
   const userId = ctx.from.id;
   const changed = db.setUserLanguage(userId, language);
@@ -230,73 +130,49 @@ export async function setLanguage(ctx, language) {
   await showHome(ctx);
 }
 
-/** Personal account screen: identity + today's assistant allowance. */
 export async function showAccount(ctx) {
   const userId = ctx.from.id;
   const language = await lang(userId);
-
   let quota = 0;
-  try {
-    quota = db.getRemainingQuota(userId, AI_DAILY_LIMIT);
-  } catch {
-    quota = 0;
-  }
-
+  try { quota = db.getRemainingQuota(userId, AI_DAILY_LIMIT); } catch {}
   let contributions = 0;
-  try {
-    contributions = db.getUserContributions(userId, 50).length;
-  } catch {
-    contributions = 0;
-  }
-
+  try { contributions = db.getUserContributions(userId, 50).length; } catch {}
   let readPercent = 0;
   try {
     const total = db.countNews({ status: 'published' });
     const unread = db.getUnreadNewsCount(userId);
     readPercent = total ? Math.round(((total - unread) / total) * 100) : 100;
-  } catch {
-    readPercent = 100;
-  }
+  } catch { readPercent = 100; }
 
   const handle = ctx.from.username ? `@${ctx.from.username}` : '—';
-  const languageLabel = i18n.t('language_saved', language).replace(/^.*?: /, language === 'en' ? '🇬🇧 English' : '🇸🇦 العربية');
+  const text = language === 'en'
+    ? `${i18n.t('account_title', language)}\n\n👤 ${esc(ctx.from.first_name ?? ctx.from.full_name)}\n🆔 <code>${userId}</code>\n🔗 ${esc(handle)}\n\n🤖 AI allowance remaining today: ${quota}/${AI_DAILY_LIMIT}\n📤 My contributions: ${contributions}\n📰 News read: ${readPercent}%\n🌐 🇬🇧 English`
+    : `${i18n.t('account_title', language)}\n\n👤 ${esc(ctx.from.first_name ?? ctx.from.full_name)}\n🆔 <code>${userId}</code>\n🔗 ${esc(handle)}\n\n🤖 استهلاك المساعد اليوم: ${quota}/${AI_DAILY_LIMIT} متبقٍ\n📤 مساهماتي: ${contributions}\n📰 نسبة الأخبار المقروءة: ${readPercent}%\n🌐 🇸🇦 العربية`;
 
-  await ctx.editMessageText(
-    `${i18n.t('account_title', language)}\n\n` +
-      `👤 ${esc(ctx.from.first_name ?? ctx.from.full_name)}\n` +
-      `🆔 <code>${userId}</code>\n` +
-      `🔗 ${esc(handle)}\n\n` +
-      `🤖 استهلاك المساعد اليوم: ${quota}/${AI_DAILY_LIMIT} متبقٍ\n` +
-      `📤 مساهماتي: ${contributions}\n` +
-      `📰 نسبة الأخبار المقروءة: ${readPercent}%\n` +
-      `🌐 ${languageLabel}`,
-    {
-      reply_markup: keyboard([
-        [btn('📄 مساهماتي', 'my_contributions')],
-        [btn('🌐 اللغة', 'language')],
-        [btn('🏠 الرئيسية', 'home')],
-      ]),
-    },
-  );
+  await ctx.editMessageText(text, {
+    reply_markup: keyboard([
+      [btn(i18n.t('menu_my_contributions', language), 'my_contributions')],
+      [btn(i18n.t('menu_language', language), 'language')],
+      [btn(i18n.t('home', language), 'home')],
+    ]),
+  });
 }
 
-/** About screen from the admin-editable platform settings. */
 export async function showAbout(ctx) {
   const settings = platformSettings();
+  const language = await lang(ctx.from.id);
+  const body = String(settings.platform_about ?? '').trim() ||
+    (language === 'en' ? 'Platform information has not been added yet.' : 'لم تُضف معلومات عن المنصة بعد.');
 
-  const body = String(settings.platform_about ?? '').trim() || 'لم تُضف معلومات عن المنصة بعد.';
-
-  await ctx.editMessageText(
-    `ℹ️ <b>${esc(settings.platform_name)}</b>\n\n${esc(body)}`,
-    { reply_markup: keyboard([[btn('🏠 الرئيسية', 'home')]]) },
-  );
+  await ctx.editMessageText(`ℹ️ <b>${esc(settings.platform_name)}</b>\n\n${esc(body)}`, {
+    reply_markup: keyboard([[btn(i18n.t('home', language), 'home')]]),
+  });
 }
 
-/** Contact instructions from the admin-editable platform settings. */
-export function contactText() {
+export function contactText(language = i18n.DEFAULT_LANGUAGE) {
   const settings = platformSettings();
-  return (
-    String(settings.contact_text ?? '').trim() ||
-    'يمكنك التواصل مع إدارة المنصة عبر خيار 📬 تواصل مع المنصة.'
-  );
+  return String(settings.contact_text ?? '').trim() ||
+    (language === 'en'
+      ? 'You can contact the platform administration through the 📬 Contact option.'
+      : 'يمكنك التواصل مع إدارة المنصة عبر خيار 📬 تواصل مع المنصة.');
 }
