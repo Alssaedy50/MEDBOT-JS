@@ -43,6 +43,87 @@ export function platformSettings() {
  * Admins always keep their own entry point so they can restore a hidden
  * feature during maintenance.
  */
+export function buildMenu(userId, language = i18n.DEFAULT_LANGUAGE) {
+  let hidden = new Set();
+  try {
+    hidden = db.getHiddenFeatures();
+  } catch {
+    hidden = new Set();
+  }
+
+  const visible = (feature) => !hidden.has(feature);
+  const rows = [];
+  const menu = {
+    resources: ['menu_resources', 'resources'],
+    topics: ['menu_topics', 'topics'],
+    assistant: ['menu_assistant', 'assistant'],
+    news: ['menu_news', 'news'],
+    contributions: ['menu_contributions', 'contribute'],
+    my_contributions: ['menu_my_contributions', 'my_contributions'],
+    account: ['menu_account', 'account'],
+    contact: ['menu_contact', 'contact'],
+    about: ['menu_about', 'about'],
+    language: ['menu_language', 'language'],
+  };
+
+  for (const [feature, [key, callback]] of Object.entries(menu)) {
+    if (visible(feature)) rows.push([btn(i18n.t(key, language), callback)]);
+  }
+
+  let isAdmin = false;
+  try {
+    isAdmin = db.isUserAdmin(userId);
+  } catch {
+    isAdmin = false;
+  }
+  if (isAdmin) rows.push([btn(i18n.t('menu_admin', language), 'admin')]);
+
+  return keyboard(rows);
+}**
+ * Home page, main menu, account, language and about surfaces.
+ *
+ * The home page is the single entry point: it renders only the features that
+ * are currently visible, and adds the admin entry point for admins. Hiding a
+ * feature removes its button here and is enforced again in that feature's own
+ * callback handler, so hiding is not merely cosmetic.
+ */
+
+import * as db from '../db/index.js';
+import * as i18n from '../i18n.js';
+import { AI_DAILY_LIMIT } from '../constants.js';
+import { btn, escHtml, keyboard } from '../telegram/ui.js';
+
+export function esc(value) {
+  return escHtml(value);
+}
+
+export function homeKeyboard() {
+  return keyboard([[btn('🏠 الرئيسية', 'home')]]);
+}
+
+async function lang(userId) {
+  try {
+    return db.getUserLanguage(userId);
+  } catch {
+    return i18n.DEFAULT_LANGUAGE;
+  }
+}
+
+/** Resolve the platform identity, falling back to the MEDBOT defaults. */
+export function platformSettings() {
+  try {
+    return db.getPlatformSettings();
+  } catch {
+    return { ...db.PLATFORM_SETTING_DEFAULTS };
+  }
+}
+
+/**
+ * Build the home-page keyboard from the *visible* features.
+ *
+ * Admins always keep their own entry point so they can restore a hidden
+ * feature during maintenance.
+ */
 export function buildMenu(userId) {
   let hidden = new Set();
   try {
@@ -94,7 +175,7 @@ export async function homeText(userId, firstName = '') {
     name,
   });
 
-  const badge = unread ? `\n\n📰 لديك ${unread} خبر غير مقروء.` : '';
+  const badge = unread ? `\n\n📰 ${language === 'en' ? `${unread} unread news item${unread === 1 ? '' : 's'}.` : `لديك ${unread} خبر غير مقروء.`}` : '';
   return `${base}${badge}`;
 }
 
@@ -102,7 +183,7 @@ export async function homeText(userId, firstName = '') {
 export async function showHome(ctx) {
   const userId = ctx.from.id;
   const text = await homeText(userId, ctx.from.first_name ?? ctx.from.full_name);
-  const markup = buildMenu(userId);
+  const markup = buildMenu(userId, await lang(userId));
 
   if (ctx.kind === 'callback') {
     await ctx.editMessageText(text, { reply_markup: markup });
@@ -178,7 +259,7 @@ export async function showAccount(ctx) {
   }
 
   const handle = ctx.from.username ? `@${ctx.from.username}` : '—';
-  const languageLabel = language === 'en' ? '🇬🇧 English' : '🇸🇦 العربية';
+  const languageLabel = i18n.t('language_saved', language).replace(/^.*?: /, language === 'en' ? '🇬🇧 English' : '🇸🇦 العربية');
 
   await ctx.editMessageText(
     `${i18n.t('account_title', language)}\n\n` +
