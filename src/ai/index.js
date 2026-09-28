@@ -179,10 +179,14 @@ export function buildPlatformCatalog(folders, contents, paths) {
 
   if (!lines.length) return 'قاعدة البيانات لا تحتوي أي أقسام أو موارد مسجلة بعد.';
 
-  let catalog = lines.join('\n');
+  let catalog = lines.join('
+');
   if (catalog.length > CATALOG_MAX_CHARS) {
-    catalog = catalog.slice(0, CATALOG_MAX_CHARS).split('\n').slice(0, -1).join('\n');
-    catalog += '\n… (تم اختصار دليل المنصة لطوله)';
+    catalog = catalog.slice(0, CATALOG_MAX_CHARS).split('
+').slice(0, -1).join('
+');
+    catalog += '
+… (تم اختصار دليل المنصة لطوله)';
   }
   return catalog;
 }
@@ -264,9 +268,15 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch, lang
 
   const catalog = buildPlatformCatalog(folders, contents, paths);
   const groundedPrompt =
-    'دليل المنصة (المصدر الوحيد المسموح لمعرفة ما هو مسجّل):\n' +
-    `${catalog}\n\n` +
-    `طلب الطالب:\n${userPrompt}\n\n` +
+    'دليل المنصة (المصدر الوحيد المسموح لمعرفة ما هو مسجّل):
+' +
+    `${catalog}
+
+` +
+    `طلب الطالب:
+${userPrompt}
+
+` +
     'اذكر فقط الموارد/الأقسام المطابقة لطلب الطالب من الدليل أعلاه، مع ' +
     'مسار كل منها. لا تذكر أي شيء غير موجود في الدليل.';
 
@@ -301,7 +311,8 @@ function platformSearchLine(item, language = 'ar') {
   const title = item.title || item.name || 'بدون عنوان';
   const path = item.path || 'الرئيسية 🏠';
   const label = language === 'en' ? (isFolder ? 'Path' : 'Inside') : (isFolder ? 'المسار' : 'داخل');
-  return `${icon} *${title}*\n   ${label}: ${path}`;
+  return `${icon} *${title}*
+   ${label}: ${path}`;
 }
 
 /** Short, discovery-oriented answer rendered only from verified rows. */
@@ -310,24 +321,30 @@ export function buildPlatformSearchAnswer(results, language = 'ar') {
 
   if (language === 'en') {
     if (results.length === 1) {
-      return `I found a resource related to your request:\n\n${platformSearchLine(results[0], 'en')}`;
+      return `I found a resource related to your request:
+
+${platformSearchLine(results[0], 'en')}`;
     }
     const lines = ['I found several resources related to your request:', ''];
     for (const item of results.slice(0, MAX_RESULT_ACTIONS)) {
       lines.push(platformSearchLine(item, 'en'));
     }
-    return lines.join('\n');
+    return lines.join('
+');
   }
 
   if (results.length === 1) {
-    return `وجدت لك مورداً مرتبطاً بطلبك:\n\n${platformSearchLine(results[0], 'ar')}`;
+    return `وجدت لك مورداً مرتبطاً بطلبك:
+
+${platformSearchLine(results[0], 'ar')}`;
   }
 
   const lines = ['وجدت عدة موارد مرتبطة بطلبك:', ''];
   for (const item of results.slice(0, MAX_RESULT_ACTIONS)) {
     lines.push(platformSearchLine(item, 'ar'));
   }
-  return lines.join('\n');
+  return lines.join('
+');
 }
 
 /**
@@ -351,7 +368,9 @@ export async function generatePlatformSearchResult(userPrompt, _userId = null, f
     return { text: buildRegistryOverview(folders), actions: [] };
   }
 
-  let language = 'ar';\n  try { language = db.getUserLanguage(_userId); } catch {}\n  const matches = await platformSearchResults(prompt, fetchImpl, language);
+  let language = 'ar';
+  try { language = db.getUserLanguage(_userId); } catch {}
+  const matches = await platformSearchResults(prompt, fetchImpl, language);
   if (!matches.length) return { text: PLATFORM_SEARCH_NO_MATCH, actions: [] };
 
   return { text: buildPlatformSearchAnswer(matches, language), actions: buildResultActions(matches) };
@@ -412,15 +431,25 @@ export function buildMedicalGroundedPrompt(userPrompt, sources) {
   const questionType = classifyQuestionType(userPrompt);
   const sourceContext = sources.length ? medicalSources.buildSourceContext(sources) : '';
   const sourceBlock = sourceContext
-    ? 'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:\n' +
-      `${sourceContext}\n\n`
-    : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ لا تذكر أي مصدر أو PMID أو DOI.\n\n';
+    ? 'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:
+' +
+      `${sourceContext}
+
+`
+    : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ لا تذكر أي مصدر أو PMID أو DOI.
+
+';
 
   const personalNote = isPersonalClinicalQuestion(userPrompt)
-    ? '\n\nتنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.'
+    ? '
+
+تنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.'
     : '';
 
-  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}\n\nسؤال الطالب:\n${userPrompt}`;
+  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}
+
+سؤال الطالب:
+${userPrompt}`;
 }
 
 /**
@@ -464,7 +493,8 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
     if (!candidates.length) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
 
     const answer = await providerFailover({
-      groundedPrompt: `سؤال الطالب:\n${prompt}`,
+      groundedPrompt: `سؤال الطالب:
+${prompt}`,
       systemPrompt: generalAssistantSystemPrompt(language),
       candidates,
       userId,
