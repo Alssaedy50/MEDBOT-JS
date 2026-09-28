@@ -53,11 +53,7 @@ function userLanguage(userId) {
 }
 
 function localizeForUser(userId, text, markup) {
-  return localizeOutgoing({
-    text,
-    markup,
-    targetLanguage: userLanguage(userId),
-  });
+  return localizeOutgoing({ text, markup, targetLanguage: userLanguage(userId) });
 }
 
 function normaliseUser(user) {
@@ -121,8 +117,9 @@ export function buildCallbackContext({
 
     async editMessageText(text, options = {}) {
       this.edited = true;
-      this.lastText = text;
-      this.lastMarkup = options.reply_markup ?? null;
+      const localized = localizeForUser(this.from.id, text, options.reply_markup);
+      this.lastText = localized.text;
+      this.lastMarkup = localized.markup;
       this.lastParseMode = options.parse_mode ?? null;
       if (bot?.editMessageText) {
         try {
@@ -141,12 +138,13 @@ export function buildCallbackContext({
     },
 
     async reply(text, options = {}) {
-      this.lastText = text;
-      this.lastMarkup = options.reply_markup ?? null;
+      const localized = localizeForUser(this.from.id, text, options.reply_markup);
+      this.lastText = localized.text;
+      this.lastMarkup = localized.markup;
       if (bot?.sendMessage) {
-        return bot.sendMessage(this.chatId, text, {
+        return bot.sendMessage(this.chatId, localized.text, {
           parse_mode: options.parse_mode ?? ParseMode.HTML,
-          reply_markup: normalizeReplyMarkup(options.reply_markup),
+          reply_markup: normalizeReplyMarkup(localized.markup),
         });
       }
       return null;
@@ -193,12 +191,13 @@ export function buildMessageContext({
 
     async reply(text2, options = {}) {
       this.replied = true;
-      this.lastText = text2;
-      this.lastMarkup = options.reply_markup ?? null;
+      const localized = localizeForUser(this.from.id, text2, options.reply_markup);
+      this.lastText = localized.text;
+      this.lastMarkup = localized.markup;
       if (bot?.sendMessage) {
-        return bot.sendMessage(this.chatId, text2, {
+        return bot.sendMessage(this.chatId, localized.text, {
           parse_mode: options.parse_mode ?? ParseMode.HTML,
-          reply_markup: normalizeReplyMarkup(options.reply_markup),
+          reply_markup: normalizeReplyMarkup(localized.markup),
         });
       }
       return null;
