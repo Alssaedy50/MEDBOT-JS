@@ -29,7 +29,7 @@ test('D1 exporter reads SQLite read-only and preserves row data', () => {
     const sql = fs.readFileSync(output, 'utf8');
     assert.match(sql, /INSERT INTO "users" .*VALUES \(7, 'Hematology'\);/);
     assert.match(sql, /INSERT INTO "folders" .*VALUES \(3, 'Second Year'\);/);
-    const manifestPath = output.replace(/\.sql$//i, '') + '.manifest.json';
+    const manifestPath = output.replace(/\.sql$/i, '') + '.manifest.json';
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     assert.equal(manifest.tables.users.rows, 1);
     assert.equal(manifest.tables.folders.rows, 1);
