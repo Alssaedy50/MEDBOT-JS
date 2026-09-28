@@ -243,7 +243,12 @@ async function exportData({ sqlitePath, outputPath, manifestPath }) {
       const names = columns.map((column) => quoteIdent(column.name));
       const select = `SELECT ${names.join(', ')} FROM ${quoteIdent(table)}`;
       const orderBy = primaryKeyOrder(columns);
-      const rows = orderRowsForSelfReferences(\n        db,\n        table,\n        columns,\n        db.prepare(orderBy ? `${select} ORDER BY ${orderBy}` : select).all(),\n      );
+      const rows = orderRowsForSelfReferences(
+        db,
+        table,
+        columns,
+        db.prepare(orderBy ? select + ' ORDER BY ' + orderBy : select).all(),
+      );
 
       let rowsExported = 0;
       for (const row of rows) {
@@ -274,7 +279,7 @@ async function exportData({ sqlitePath, outputPath, manifestPath }) {
 const args = parseArgs(process.argv.slice(2));
 const outputPath = path.resolve(args.output);
 const manifestPath = path.resolve(
-  args.manifest ?? outputPath.replace(/\\.sql$/i, '') + '.manifest.json',
+  args.manifest ?? outputPath.replace(/\.sql$/i, '') + '.manifest.json',
 );
 
 try {
