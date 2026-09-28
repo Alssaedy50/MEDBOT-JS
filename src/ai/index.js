@@ -41,7 +41,7 @@ import {
   MAX_RESULT_ACTIONS,
   PLATFORM_SEARCH_NO_MATCH,
   PLATFORM_SEARCH_PROMPT,
-  UNIFIED_ASSISTANT_PROMPT,\n  assistantSystemPrompt,\n  generalAssistantSystemPrompt,\n  platformSearchSystemPrompt,
+  assistantSystemPrompt,\n  generalAssistantSystemPrompt,\n  platformSearchSystemPrompt,
 } from './prompts.js';
 import {
   getCandidates,
