@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { finished } from 'node:stream/promises';
 import { DatabaseSync } from 'node:sqlite';
 
 const EXPECTED_TABLES = [
@@ -144,7 +145,7 @@ function writeStatement(stream, sql) {
   stream.write(sql);
 }
 
-function exportData({ sqlitePath, outputPath, manifestPath }) {
+async function exportData({ sqlitePath, outputPath, manifestPath }) {
   if (!fs.existsSync(sqlitePath)) {
     throw new Error(`SQLite file not found: ${sqlitePath}`);
   }
@@ -210,6 +211,7 @@ function exportData({ sqlitePath, outputPath, manifestPath }) {
   } finally {
     stream.write('\n-- End of MEDBOT-JS data export\n');
     stream.end();
+    await finished(stream);
     db.close();
   }
 
@@ -228,7 +230,7 @@ const manifestPath = path.resolve(
 );
 
 try {
-  const manifest = exportData({
+  const manifest = await exportData({
     sqlitePath: path.resolve(args.sqlite),
     outputPath,
     manifestPath,
