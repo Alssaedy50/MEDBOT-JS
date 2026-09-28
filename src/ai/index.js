@@ -37,11 +37,11 @@ import { classifyQuestionType, depthContractFor, isPersonalClinicalQuestion } fr
 import {
   CATALOG_MAX_CHARS,
   CHAT_NO_PROVIDER_ANSWER,
-  GENERAL_ASSISTANT_PROMPT,
   MAX_RESULT_ACTIONS,
   PLATFORM_SEARCH_NO_MATCH,
-  PLATFORM_SEARCH_PROMPT,
-  UNIFIED_ASSISTANT_PROMPT,
+  generalAssistantSystemPrompt,
+  platformSearchSystemPrompt,
+  assistantSystemPrompt,
 } from './prompts.js';
 import {
   getCandidates,
@@ -252,7 +252,7 @@ export function verifyCatalogAnswer(answer, folders, contents, paths) {
  * reachable, or the model names nothing that maps back to a registered row, the
  * result is empty and the caller answers with the honest no-match message.
  */
-export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch) {
+export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch, language = 'ar') {
   const [folders, contents, paths] = loadRegistry();
   if (!folders.length && !contents.length) return [];
 
@@ -272,7 +272,7 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch) {
 
   const answer = await providerFailover({
     groundedPrompt,
-    systemPrompt: PLATFORM_SEARCH_PROMPT,
+    systemPrompt: platformSearchSystemPrompt(language),
     candidates,
     userId: null,
     label: 'Platform search',
@@ -288,34 +288,32 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch) {
  *
  * Returns only real search-engine result rows.
  */
-export async function platformSearchResults(userPrompt, fetchImpl = fetch) {
+export async function platformSearchResults(userPrompt, fetchImpl = fetch, language = 'ar') {
   const results = searchMedbot(userPrompt);
   const matches = genuineRegistryMatches(userPrompt, results);
   if (matches.length) return matches;
-  return catalogFallbackMatches(userPrompt, fetchImpl);
+  return catalogFallbackMatches(userPrompt, fetchImpl, language);
 }
 
-function platformSearchLine(item) {
+function platformSearchLine(item, language = 'ar') {
   const isFolder = item.result_type === 'FOLDER' || item.result_type === 'EMPTY_FOLDER';
   const icon = isFolder ? '📂' : '📄';
-  const title = item.title || item.name || 'بدون عنوان';
-  const path = item.path || 'الرئيسية 🏠';
-  const label = isFolder ? 'المسار' : 'داخل';
+  const title = item.title || item.name || (language === 'en' ? 'Untitled' : 'بدون عنوان');
+  const path = item.path || (language === 'en' ? 'Home 🏠' : 'الرئيسية 🏠');
+  const label = isFolder ? (language === 'en' ? 'Path' : 'المسار') : (language === 'en' ? 'Inside' : 'داخل');
   return `${icon} *${title}*\n   ${label}: ${path}`;
 }
 
 /** Short, discovery-oriented answer rendered only from verified rows. */
-export function buildPlatformSearchAnswer(results) {
-  if (!results?.length) return PLATFORM_SEARCH_NO_MATCH;
-
+export function buildPlatformSearchAnswer(results, language = 'ar') {
+  if (!results?.length) return language === 'en' ? 'I could not find a registered resource matching your request.' : PLATFORM_SEARCH_NO_MATCH;
   if (results.length === 1) {
-    return `وجدت لك مورداً مرتبطاً بطلبك:\n\n${platformSearchLine(results[0])}`;
+    return language === 'en'
+      ? `I found a registered resource related to your request:\n\n${platformSearchLine(results[0], language)}`
+      : `وجدت لك مورداً مرتبطاً بطلبك:\n\n${platformSearchLine(results[0], language)}`;
   }
-
-  const lines = ['وجدت عدة موارد مرتبطة بطلبك:', ''];
-  for (const item of results.slice(0, MAX_RESULT_ACTIONS)) {
-    lines.push(platformSearchLine(item));
-  }
+  const lines = [language === 'en' ? 'I found several registered resources related to your request:' : 'وجدت عدة موارد مرتبطة بطلبك:', ''];
+  for (const item of results.slice(0, MAX_RESULT_ACTIONS)) lines.push(platformSearchLine(item, language));
   return lines.join('\n');
 }
 
@@ -330,8 +328,9 @@ export function buildPlatformSearchAnswer(results) {
  */
 // `userId` is kept for signature parity with the chat entry point; platform
 // search is registry-scoped, so it has nothing per-user to apply here.
-export async function generatePlatformSearchResult(userPrompt, _userId = null, fetchImpl = fetch) {
+export async function generatePlatformSearchResult(userPrompt, userId = null, fetchImpl = fetch) {
   const prompt = String(userPrompt ?? '').trim();
+  const language = userId === null ? 'ar' : db.getUserLanguage(userId);
   if (!prompt) return { text: '⚠️ يرجى كتابة ما تبحث عنه.', actions: [] };
 
   // A bare enumeration is answered from the registered hierarchy alone.
@@ -340,10 +339,10 @@ export async function generatePlatformSearchResult(userPrompt, _userId = null, f
     return { text: buildRegistryOverview(folders), actions: [] };
   }
 
-  const matches = await platformSearchResults(prompt, fetchImpl);
+  const matches = await platformSearchResults(prompt, fetchImpl, language);
   if (!matches.length) return { text: PLATFORM_SEARCH_NO_MATCH, actions: [] };
 
-  return { text: buildPlatformSearchAnswer(matches), actions: buildResultActions(matches) };
+  return { text: buildPlatformSearchAnswer(matches, language), actions: buildResultActions(matches) };
 }
 
 // Cues that a question asks for reasoning rather than a one-line fact.
@@ -397,19 +396,25 @@ export function isMedicalQuestion(userPrompt, intent) {
  * into the research/immunotherapy territory the student did not ask about. The
  * source block is the ONLY permitted basis for a citation claim.
  */
-export function buildMedicalGroundedPrompt(userPrompt, sources) {
+export function buildMedicalGroundedPrompt(userPrompt, sources, language = 'ar') {
   const questionType = classifyQuestionType(userPrompt);
   const sourceContext = sources.length ? medicalSources.buildSourceContext(sources) : '';
-  const sourceBlock = sourceContext
-    ? 'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:\n' +
-      `${sourceContext}\n\n`
-    : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ لا تذكر أي مصدر أو PMID أو DOI.\n\n';
+  const sourceBlock = language === 'en'
+    ? (sourceContext
+      ? 'Verified medical sources (NCBI PubMed) — use them as the only basis for source claims:\n' + sourceContext + '\n\n'
+      : 'No PubMed sources are available for this question; do not mention any source, PMID, or DOI.\n\n')
+    : (sourceContext
+      ? 'مصادر طبية موثّقة (NCBI PubMed) — استخدمها كمصدر وحيد لأي ادّعاء مصدر:\n' + sourceContext + '\n\n'
+      : 'لا توجد مصادر PubMed متاحة لهذا السؤال؛ لا تذكر أي مصدر أو PMID أو DOI.\n\n');
 
   const personalNote = isPersonalClinicalQuestion(userPrompt)
-    ? '\n\nتنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.'
+    ? (language === 'en'
+      ? '\n\nNote: This appears to concern a personal clinical situation; keep the answer educational and general and state that it does not replace professional evaluation.'
+      : '\n\nتنبيه: السؤال يبدو عن حالة شخصية؛ اجعل الإجابة تعليمية عامة واذكر أنها لا تغني عن تقييم الطبيب.')
     : '';
 
-  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}\n\nسؤال الطالب:\n${userPrompt}`;
+  const questionLabel = language === 'en' ? 'Student question:' : 'سؤال الطالب:';
+  return `${sourceBlock}${depthContractFor(questionType)}${personalNote}\n\n${questionLabel}\n${userPrompt}`;
 }
 
 /**
@@ -419,9 +424,14 @@ export function buildMedicalGroundedPrompt(userPrompt, sources) {
  * says so explicitly rather than attaching an unrelated paper, and the
  * educational body is still delivered.
  */
-export function buildMedicalSourcesFooter(sources) {
-  if (!sources?.length) return medicalSources.NO_RELEVANT_SOURCE_NOTE;
-  return medicalSources.buildSourcesFooter(sources) || medicalSources.NO_RELEVANT_SOURCE_NOTE;
+export function buildMedicalSourcesFooter(sources, language = 'ar') {
+  if (!sources?.length) {
+    return language === 'en'
+      ? medicalSources.NO_RELEVANT_SOURCE_NOTE_EN
+      : medicalSources.NO_RELEVANT_SOURCE_NOTE;
+  }
+  return medicalSources.buildSourcesFooter(sources, language) ||
+    (language === 'en' ? medicalSources.NO_RELEVANT_SOURCE_NOTE_EN : medicalSources.NO_RELEVANT_SOURCE_NOTE);
 }
 
 /**
@@ -435,10 +445,11 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
   if (!prompt) return { text: '⚠️ يرجى كتابة سؤال واضح.', actions: [] };
 
   const intent = classifyIntent(prompt);
+  const language = userId === null ? 'ar' : db.getUserLanguage(userId);
 
   if (!isMedicalQuestion(prompt, intent)) {
     const cacheable = isCacheableGeneralQuestion(prompt);
-    const cacheKey = cacheable ? searchEngine.normalizeText(prompt) : '';
+    const cacheKey = cacheable ? language + ':' + searchEngine.normalizeText(prompt) : '';
     if (cacheKey) {
       const cached = genericCacheGet(cacheKey);
       if (cached) return { text: cached, actions: [] };
@@ -451,7 +462,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
 
     const answer = await providerFailover({
       groundedPrompt: `سؤال الطالب:\n${prompt}`,
-      systemPrompt: GENERAL_ASSISTANT_PROMPT,
+      systemPrompt: generalAssistantSystemPrompt(language),
       candidates,
       userId,
       label: 'General assistant',
@@ -481,12 +492,12 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
   if (!candidates.length) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
 
   const answer = await providerFailover({
-    groundedPrompt: buildMedicalGroundedPrompt(prompt, sources),
-    systemPrompt: UNIFIED_ASSISTANT_PROMPT,
+    groundedPrompt: buildMedicalGroundedPrompt(prompt, sources, language),
+    systemPrompt: assistantSystemPrompt(language),
     candidates,
     userId,
     label: 'Medical assistant',
-    sourcesFooter: buildMedicalSourcesFooter(sources),
+    sourcesFooter: buildMedicalSourcesFooter(sources, language),
     fetchImpl,
   });
 

@@ -29,6 +29,8 @@
  */
 
 import { normalizeReplyMarkup, ParseMode } from './ui.js';
+import * as db from '../db/index.js';
+import { localizeOutgoing } from '../i18n.js';
 
 /** Bot transport contract every implementation (Telegraf, test double) meets. */
 export const BOT_METHODS = Object.freeze([
@@ -41,6 +43,18 @@ export const BOT_METHODS = Object.freeze([
   'editMessageText',
   'answerCallbackQuery',
 ]);
+
+function userLanguage(userId) {
+  try {
+    return db.getUserLanguage(userId);
+  } catch {
+    return 'ar';
+  }
+}
+
+function localizeForUser(userId, text, markup) {
+  return localizeOutgoing({ text, markup, targetLanguage: userLanguage(userId) });
+}
 
 function normaliseUser(user) {
   if (!user) return null;
@@ -103,18 +117,19 @@ export function buildCallbackContext({
 
     async editMessageText(text, options = {}) {
       this.edited = true;
-      this.lastText = text;
-      this.lastMarkup = options.reply_markup ?? null;
+      const localized = localizeForUser(this.from.id, text, options.reply_markup);
+      this.lastText = localized.text;
+      this.lastMarkup = localized.markup;
       this.lastParseMode = options.parse_mode ?? null;
       if (bot?.editMessageText) {
         try {
-          await bot.editMessageText(text, {
+          await bot.editMessageText(localized.text, {
             chat_id: this.chatId,
             message_id: options.message_id ?? this.messageId,
             parse_mode: options.parse_mode ?? ParseMode.HTML,
             // Never a `null` markup: Telegram rejects it outright. Omitting the
             // key keeps the previous keyboard, which is the intended behaviour.
-            reply_markup: normalizeReplyMarkup(options.reply_markup),
+            reply_markup: normalizeReplyMarkup(localized.markup),
           });
         } catch {
           // An edit can fail if the text is unchanged; never fatal.
@@ -123,12 +138,13 @@ export function buildCallbackContext({
     },
 
     async reply(text, options = {}) {
-      this.lastText = text;
-      this.lastMarkup = options.reply_markup ?? null;
+      const localized = localizeForUser(this.from.id, text, options.reply_markup);
+      this.lastText = localized.text;
+      this.lastMarkup = localized.markup;
       if (bot?.sendMessage) {
-        return bot.sendMessage(this.chatId, text, {
+        return bot.sendMessage(this.chatId, localized.text, {
           parse_mode: options.parse_mode ?? ParseMode.HTML,
-          reply_markup: normalizeReplyMarkup(options.reply_markup),
+          reply_markup: normalizeReplyMarkup(localized.markup),
         });
       }
       return null;
@@ -138,7 +154,47 @@ export function buildCallbackContext({
       if (!bot) {
         throw new Error('This handler needs a bot transport but none was provided.');
       }
-      return bot;
+
+      const language = userLanguage(this.from.id);
+      const localizeOptions = (options = {}) => {
+        const localized = localizeOutgoing({
+          text: options.text,
+          markup: options.reply_markup,
+          targetLanguage: language,
+        });
+        const next = { ...options };
+        if (localized.text !== null && localized.text !== undefined) next.text = localized.text;
+        if (options.caption !== undefined) next.caption = localizeOutgoing({
+          text: options.caption,
+          targetLanguage: language,
+        }).text;
+        if (localized.markup !== null && localized.markup !== undefined) {
+          next.reply_markup = normalizeReplyMarkup(localized.markup);
+        }
+        return next;
+      };
+
+      return {
+        ...bot,
+        sendMessage: (chatId, text, options = {}) =>
+          bot.sendMessage(chatId, localizeOutgoing({
+            text,
+            markup: options.reply_markup,
+            targetLanguage: language,
+          }).text, localizeOptions(options)),
+        sendDocument: (chatId, document, options = {}) =>
+          bot.sendDocument(chatId, document, localizeOptions(options)),
+        sendPhoto: (chatId, photo, options = {}) =>
+          bot.sendPhoto(chatId, photo, localizeOptions(options)),
+        sendAudio: (chatId, audio, options = {}) =>
+          bot.sendAudio(chatId, audio, localizeOptions(options)),
+        sendVideo: (chatId, video, options = {}) =>
+          bot.sendVideo(chatId, video, localizeOptions(options)),
+        sendVoice: (chatId, voice, options = {}) =>
+          bot.sendVoice(chatId, voice, localizeOptions(options)),
+        editMessageText: (text, options = {}) =>
+          bot.editMessageText(text, localizeOptions(options)),
+      };
     },
   };
 
@@ -175,12 +231,13 @@ export function buildMessageContext({
 
     async reply(text2, options = {}) {
       this.replied = true;
-      this.lastText = text2;
-      this.lastMarkup = options.reply_markup ?? null;
+      const localized = localizeForUser(this.from.id, text2, options.reply_markup);
+      this.lastText = localized.text;
+      this.lastMarkup = localized.markup;
       if (bot?.sendMessage) {
-        return bot.sendMessage(this.chatId, text2, {
+        return bot.sendMessage(this.chatId, localized.text, {
           parse_mode: options.parse_mode ?? ParseMode.HTML,
-          reply_markup: normalizeReplyMarkup(options.reply_markup),
+          reply_markup: normalizeReplyMarkup(localized.markup),
         });
       }
       return null;

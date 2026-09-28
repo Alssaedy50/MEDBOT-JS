@@ -405,17 +405,24 @@ export const NO_RELEVANT_SOURCE_NOTE =
   '\n\n—\n🔬 *Sources — مصادر موثوقة (NCBI PubMed):*\n' +
   '• No directly relevant PubMed source found.';
 
+export const NO_RELEVANT_SOURCE_NOTE_EN =
+  '\n\n—\n🔬 *Sources (NCBI PubMed):*\n' +
+  '• No directly relevant PubMed source found.';
+
 /**
  * Render a compact "trusted sources" footer with verifiable links.
  *
  * Only records carrying both a PMID and a URL are shown, so the footer can
  * never contain an unverifiable citation.
  */
-export function buildSourcesFooter(sources) {
+export function buildSourcesFooter(sources, language = 'ar') {
   const usable = (sources ?? []).filter((source) => source?.url && source?.pmid);
   if (!usable.length) return '';
 
-  const lines = ['', '—', '🔬 *Sources — مصادر موثوقة (NCBI PubMed):*'];
+  const heading = language === 'en'
+    ? '🔬 *Sources (NCBI PubMed):*'
+    : '🔬 *Sources — مصادر موثوقة (NCBI PubMed):*';
+  const lines = ['', '—', heading];
 
   for (const source of usable.slice(0, 3)) {
     const title = safeTruncate(escapeMarkdownLinkText(source.title || 'PubMed record'), 90);
