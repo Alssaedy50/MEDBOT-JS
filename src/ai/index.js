@@ -424,9 +424,14 @@ export function buildMedicalGroundedPrompt(userPrompt, sources, language = 'ar')
  * says so explicitly rather than attaching an unrelated paper, and the
  * educational body is still delivered.
  */
-export function buildMedicalSourcesFooter(sources) {
-  if (!sources?.length) return medicalSources.NO_RELEVANT_SOURCE_NOTE;
-  return medicalSources.buildSourcesFooter(sources) || medicalSources.NO_RELEVANT_SOURCE_NOTE;
+export function buildMedicalSourcesFooter(sources, language = 'ar') {
+  if (!sources?.length) {
+    return language === 'en'
+      ? medicalSources.NO_RELEVANT_SOURCE_NOTE_EN
+      : medicalSources.NO_RELEVANT_SOURCE_NOTE;
+  }
+  return medicalSources.buildSourcesFooter(sources, language) ||
+    (language === 'en' ? medicalSources.NO_RELEVANT_SOURCE_NOTE_EN : medicalSources.NO_RELEVANT_SOURCE_NOTE);
 }
 
 /**
@@ -492,7 +497,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
     candidates,
     userId,
     label: 'Medical assistant',
-    sourcesFooter: buildMedicalSourcesFooter(sources),
+    sourcesFooter: buildMedicalSourcesFooter(sources, language),
     fetchImpl,
   });
 
