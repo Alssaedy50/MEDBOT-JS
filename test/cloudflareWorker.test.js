@@ -5,7 +5,7 @@ import worker from '../src/worker.js';
 
 async function request(path, method = 'GET') {
   return worker.fetch(
-    new Request(`https://example.test${path}`, { method }),
+    new globalThis.Request(`https://example.test${path}`, { method }),
     {},
     {},
   );
