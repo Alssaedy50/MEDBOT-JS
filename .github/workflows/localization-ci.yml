@@ -30,5 +30,8 @@ jobs:
           set +e
           npm test > test.log 2>&1
           code=$?
+          if [ "$code" -ne 0 ]; then
+            grep -n -E -B 12 -A 30 'not ok|failureType|ERR_TEST_FAILURE' test.log || true
+          fi
           tail -n 160 test.log
           exit $code
