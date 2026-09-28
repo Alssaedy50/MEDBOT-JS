@@ -29,6 +29,8 @@
  */
 
 import { normalizeReplyMarkup, ParseMode } from './ui.js';
+import * as db from '../db/index.js';
+import { localizeOutgoing } from '../i18n.js';
 
 /** Bot transport contract every implementation (Telegraf, test double) meets. */
 export const BOT_METHODS = Object.freeze([
@@ -42,7 +44,7 @@ export const BOT_METHODS = Object.freeze([
   'answerCallbackQuery',
 ]);
 
-function normaliseUser(user) {
+function userLanguage(userId) {\n  try {\n    return db.getUserLanguage(userId);\n  } catch {\n    return 'ar';\n  }\n}\n\nfunction localizeForUser(userId, text, markup) {\n  return localizeOutgoing({\n    text,\n    markup,\n    targetLanguage: userLanguage(userId),\n  });\n}\n\nfunction normaliseUser(user) {
   if (!user) return null;
   return {
     id: user.id,
@@ -108,13 +110,13 @@ export function buildCallbackContext({
       this.lastParseMode = options.parse_mode ?? null;
       if (bot?.editMessageText) {
         try {
-          await bot.editMessageText(text, {
+          await bot.editMessageText(localized.text, {
             chat_id: this.chatId,
             message_id: options.message_id ?? this.messageId,
             parse_mode: options.parse_mode ?? ParseMode.HTML,
             // Never a `null` markup: Telegram rejects it outright. Omitting the
             // key keeps the previous keyboard, which is the intended behaviour.
-            reply_markup: normalizeReplyMarkup(options.reply_markup),
+            reply_markup: normalizeReplyMarkup(localized.markup),
           });
         } catch {
           // An edit can fail if the text is unchanged; never fatal.
