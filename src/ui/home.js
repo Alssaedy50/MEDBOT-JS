@@ -134,9 +134,9 @@ export async function showAccount(ctx) {
   const userId = ctx.from.id;
   const language = await lang(userId);
   let quota = 0;
-  try { quota = db.getRemainingQuota(userId, AI_DAILY_LIMIT); } catch {}
+  try { quota = db.getRemainingQuota(userId, AI_DAILY_LIMIT); } catch { quota = 0; }
   let contributions = 0;
-  try { contributions = db.getUserContributions(userId, 50).length; } catch {}
+  try { contributions = db.getUserContributions(userId, 50).length; } catch { contributions = 0; }
   let readPercent = 0;
   try {
     const total = db.countNews({ status: 'published' });
