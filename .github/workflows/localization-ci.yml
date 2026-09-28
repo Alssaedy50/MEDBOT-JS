@@ -36,7 +36,11 @@ jobs:
           script: |
             const fs = require('fs');
             const log = fs.readFileSync('lint.log', 'utf8');
-            const body = '### Localization CI lint failure\\n\\n```text\\n' + log.slice(0, 12000) + '\\n```';
+            const body = '### Localization CI lint failure\
+\
+```text\
+' + log.slice(0, 12000) + '\
+```';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -44,4 +48,29 @@ jobs:
               body
             });
             core.setFailed('npm run lint failed');
-      - name: Test\n        id: test\n        continue-on-error: true\n        run: |\n          npm test > test.log 2>&1\n          echo "exit_code=$?" >> "$GITHUB_OUTPUT"\n          cat test.log\n      - name: Report test failure\n        if: steps.test.outputs.exit_code != '0'\n        uses: actions/github-script@v7\n        with:\n          script: |\n            const fs = require('fs');\n            const log = fs.readFileSync('test.log', 'utf8');\n            const body = '### Localization CI test failure\\n\\n```text\\n' + log.slice(0, 16000) + '\\n```';\n            await github.rest.issues.createComment({\n              owner: context.repo.owner,\n              repo: context.repo.repo,\n              issue_number: context.issue.number,\n              body\n            });\n            core.setFailed('npm test failed');\n
+      - name: Test
+        id: test
+        continue-on-error: true
+        run: |
+          npm test > test.log 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat test.log
+      - name: Report test failure
+        if: steps.test.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('test.log', 'utf8');
+            const body = '### Localization CI test failure\
+\
+```text\
+' + log.slice(0, 16000) + '\
+```';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+            core.setFailed('npm test failed');
