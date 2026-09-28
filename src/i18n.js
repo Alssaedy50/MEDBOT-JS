@@ -526,7 +526,10 @@ export function localizeText(text, targetLanguage = DEFAULT_LANGUAGE, sourceLang
   const source = sourceLanguage === 'ar' || sourceLanguage === 'en'
     ? sourceLanguage
     : /[\u0600-\u06FF]/.test(raw) ? 'ar' : 'en';
-  return replaceKnownPhrases(raw, source, target);
+  let localized = replaceKnownPhrases(raw, source, target);
+  if (target === 'en') localized = localized.replaceAll('🔎 بحث في موارد المنصة', '🔎 Search Platform Resources');
+  if (target === 'ar') localized = localized.replaceAll('🔎 Search Platform Resources', '🔎 بحث في موارد المنصة');
+  return localized;
 }
 
 export function localizeMarkup(markup, targetLanguage = DEFAULT_LANGUAGE) {
