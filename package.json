@@ -2,7 +2,7 @@
   "name": "medbot-js",
   "version": "1.0.0",
   "private": true,
-  "description": "MEDBOT \u2014 Telegram medical-education LMS. JavaScript/Node.js implementation of the MEDBOT platform.",
+  "description": "MEDBOT — Telegram medical-education LMS. JavaScript/Node.js implementation of the MEDBOT platform.",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -13,7 +13,9 @@
     "test": "node --test \"test/**/*.test.js\"",
     "test:watch": "node --test --watch \"test/**/*.test.js\"",
     "lint": "eslint src test",
-    "check": "npm run lint && npm test"
+    "check": "npm run lint && npm test",
+    "cf:dev": "npx wrangler dev",
+    "cf:deploy": "npx wrangler deploy"
   },
   "dependencies": {
     "dotenv": "^16.4.5"
