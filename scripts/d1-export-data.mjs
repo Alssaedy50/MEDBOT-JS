@@ -135,7 +135,6 @@ function orderRowsForSelfReferences(db, table, columns, rows) {
   const pending = new Map();
   for (const row of rows) pending.set(String(row[toIndex]), row);
   const ordered = [];
-  const emitted = new Set();
 
   while (pending.size) {
     let progressed = false;
@@ -143,7 +142,6 @@ function orderRowsForSelfReferences(db, table, columns, rows) {
       const parent = row[fromIndex];
       if (parent === null || parent === undefined || !pending.has(String(parent))) {
         ordered.push(row);
-        emitted.add(key);
         pending.delete(key);
         progressed = true;
       }
