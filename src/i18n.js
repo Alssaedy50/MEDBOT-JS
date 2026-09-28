@@ -512,7 +512,8 @@ function replaceKnownPhrases(text, sourceLanguage, targetLanguage) {
   for (const [ar, en] of LEGACY_TEXT_PAIRS) {
     const from = sourceLanguage === 'ar' ? ar : en;
     const to = sourceLanguage === 'ar' ? en : ar;
-    if (from && output.includes(from)) output = output.split(from).join(to);
+    const isSafePhrase = from.length >= 6 || /[\u{1F300}-\u{1FAFF}]/u.test(from);
+    if (isSafePhrase && from && output.includes(from)) output = output.split(from).join(to);
   }
   return output;
 }
