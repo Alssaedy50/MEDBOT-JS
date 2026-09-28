@@ -37,11 +37,11 @@ import { classifyQuestionType, depthContractFor, isPersonalClinicalQuestion } fr
 import {
   CATALOG_MAX_CHARS,
   CHAT_NO_PROVIDER_ANSWER,
-  GENERAL_ASSISTANT_PROMPT,
   MAX_RESULT_ACTIONS,
   PLATFORM_SEARCH_NO_MATCH,
-  PLATFORM_SEARCH_PROMPT,
-  UNIFIED_ASSISTANT_PROMPT,
+  generalAssistantSystemPrompt,
+  platformSearchSystemPrompt,
+  assistantSystemPrompt,
 } from './prompts.js';
 import {
   getCandidates,
