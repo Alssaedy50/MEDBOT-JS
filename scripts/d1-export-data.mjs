@@ -153,7 +153,7 @@ async function exportData({ sqlitePath, outputPath, manifestPath }) {
   fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
   fs.mkdirSync(path.dirname(path.resolve(manifestPath)), { recursive: true });
 
-  const db = new DatabaseSync(sqlitePath, { readOnly: true });
+  const db = new DatabaseSync(sqlitePath, { readOnly: true, returnArrays: true });
   const available = new Set(
     db
       .prepare(
