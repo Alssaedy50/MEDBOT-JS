@@ -22,7 +22,7 @@ async function backupEndpoint(request, env) {
   if (request.method === 'GET') {
     const object = await env.FILES.get('backups/latest.json');
     if (!object) return json({ ok:false, error:'not_found' }, 404);
-    return new Response(object.body, { status:200, headers:{ 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store' } });
+    return new globalThis.Response(object.body, { status:200, headers:{ 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store' } });
   }
   return json({ok:false,error:'method_not_allowed'},405);
 }
