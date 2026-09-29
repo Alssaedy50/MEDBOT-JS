@@ -34,7 +34,7 @@ export async function buildFullBotBundle() {
     includes:['source','package configuration','SQLite data','encrypted runtime secret vault','deployment configuration'],
     excludes:EXCLUDES,
     database_path:dbName,
-    secret_note:'Runtime secrets are encrypted inside the database and require the same BOT_TOKEN to decrypt. BOT_TOKEN itself is never included.',
+    secret_note:'Runtime secrets are encrypted inside the database. The source BOT_TOKEN is never included; use restore:secrets with OLD_BOT_TOKEN and the destination BOT_TOKEN when changing bot identity.',
     resource_note:'Registered Telegram file_ids remain in the database. Telegram file_ids belong to the current bot and cannot be transferred to another bot; a future resource-export step should upload source files to durable object storage for true cross-bot portability.',
   };
   const resourceDir=path.join(temp,'resources');
