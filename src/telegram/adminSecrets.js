@@ -1,5 +1,5 @@
 import { isOwner } from '../db/admins.js';
-import { deleteRuntimeSecret, getRuntimeSecretNames, setRuntimeSecret } from '../security/secretVault.js';
+import { deleteRuntimeSecret, getRuntimeSecretNames, parseSecretAssignment, setRuntimeSecret } from '../security/secretVault.js';
 
 const PREFIXES = ['secrets_menu','secret_set','secret_delete','secret_confirm'];
 
