@@ -25,6 +25,10 @@ export default [
         TextDecoder: 'readonly',
         AbortController: 'readonly',
         fetch: 'readonly',
+        // Cloudflare Workers runtime globals (workerSecrets.js uses WebCrypto + base64).
+        crypto: 'readonly',
+        btoa: 'readonly',
+        atob: 'readonly',
       },
     },
     rules: {

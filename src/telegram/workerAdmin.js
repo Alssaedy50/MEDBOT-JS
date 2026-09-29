@@ -22,5 +22,5 @@ export async function buildWorkerRuntime(db,user){
   get(db,'SELECT COUNT(*) FROM folders'),get(db,'SELECT COUNT(*) FROM content'),get(db,'SELECT COUNT(*) FROM admins'),
   get(db,'SELECT COUNT(*) FROM audit_log'),get(db,"SELECT COUNT(*) FROM contributions WHERE status='pending'"),get(db,"SELECT COUNT(*) FROM news WHERE status='published'"),
  ]);
- return {text:'📊 <b>حالة التشغيل</b>\\n\\n🗂 الأقسام: '+Number(folders?.[0]??0)+'\\n📄 الموارد: '+Number(content?.[0]??0)+'\\n👥 المشرفون: '+Number(admins?.[0]??0)+'\\n📥 مساهمات بانتظار المراجعة: '+Number(pending?.[0]??0)+'\\n📜 أحداث التدقيق: '+Number(audit?.[0]??0)+'\\n📰 الأخبار المنشورة: '+Number(news?.[0]??0),reply_markup:kb([[btn('🤖 سجل الذكاء الاصطناعي','admin_ai')],[btn('⬅️ إدارة المنصة','admin'),btn('🏠 الرئيسية','home')]])};
+ return {text:'📊 <b>حالة التشغيل</b>\n\n🗂 الأقسام: '+Number(folders?.[0]??0)+'\n📄 الموارد: '+Number(content?.[0]??0)+'\n👥 المشرفون: '+Number(admins?.[0]??0)+'\n📥 مساهمات بانتظار المراجعة: '+Number(pending?.[0]??0)+'\n📜 أحداث التدقيق: '+Number(audit?.[0]??0)+'\n📰 الأخبار المنشورة: '+Number(news?.[0]??0),reply_markup:kb([[btn('🤖 سجل الذكاء الاصطناعي','admin_ai')],[btn('⬅️ إدارة المنصة','admin'),btn('🏠 الرئيسية','home')]])};
 }
