@@ -26,7 +26,7 @@ for (const file of [
 }
 
 const d1Configured = /"database_id"\s*:\s*"[^"]+"/.test(wrangler) && !/REPLACE_WITH_D1_DATABASE_ID/i.test(wrangler);
-add('d1_database_id', d1Configured ? 'PASS' : 'FAIL', d1Configured ? 'configured' : 'D1 database_id is still a placeholder or missing');
+add('d1_database_id', d1Configured ? 'PASS' : 'FAIL', d1Configured ? (placeholderAllowed ? 'placeholder accepted for CI only' : 'configured') : 'D1 database_id is still a placeholder or missing');
 
 const workerConfigured = /"main"\s*:\s*"src\/worker\.js"/.test(wrangler);
 add('worker_entrypoint', workerConfigured ? 'PASS' : 'FAIL', workerConfigured ? 'src/worker.js' : 'expected src/worker.js');
