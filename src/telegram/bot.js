@@ -421,12 +421,9 @@ async function backupCommand(ctx) {
 }
 
 async function restoreCommand(ctx) {
-  if (!backup.isOwnerForCommand?.(ctx.from.id)) {
-    // The backup module performs the authoritative owner check too.
-    if (!String(process.env.ADMIN_ID ?? '').trim() || String(process.env.ADMIN_ID).trim() !== String(ctx.from.id)) {
-      await ctx.reply('🔒 استعادة البيانات متاحة للمالك فقط.');
-      return;
-    }
+  if (!backup.isOwnerForCommand(ctx.from.id)) {
+    await ctx.reply('🔒 استعادة البيانات متاحة للمالك فقط.');
+    return;
   }
   ctx.userData.restore_waiting = true;
   await ctx.reply('♻️ أرسل الآن ملف MEDBOT Data Backup بصيغة JSON.\n\nلن يتم تعديل البيانات حتى يتم التحقق من الملف بالكامل.\n\nلإلغاء العملية أرسل /cancel.');
