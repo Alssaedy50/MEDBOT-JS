@@ -56,8 +56,7 @@ export function deleteRuntimeSecret(name) {
   const n = validateName(name);
   // Keep the encrypted value out of generic settings by replacing it with an
   // empty marker; actual row deletion is handled by the dedicated helper below.
-  const { withDb, run } = requireDb();
-  return withDb((db) => run(db, 'DELETE FROM settings WHERE key=?', [settingKey(n)]).changes > 0);
+  return withDb((db) => db.prepare('DELETE FROM settings WHERE key=?').run(settingKey(n)).changes > 0);
 }
 export function listRuntimeSecrets() {
   return getRuntimeSecretNames();
