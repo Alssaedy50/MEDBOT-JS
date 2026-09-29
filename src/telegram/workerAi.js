@@ -35,7 +35,7 @@ export async function answerWorkerAi(db,user,question,env){
    if(!String(answer).trim())throw new Error('empty_ai_response');
    const latency=Date.now()-started;if(item.id){await aiRegistryMarkSuccess(db,item.id,latency);await aiUsageRecord(db,item.id,{userId:uid,latencyMs:latency,success:true});}
    const footer=sources.length?'\\n\\n<b>Sources</b>\\n'+sources.map((s,i)=>(i+1)+'. <a href="https://pubmed.ncbi.nlm.nih.gov/'+s.pmid+'/">'+esc(s.title)+'</a> (PMID '+s.pmid+')').join('\\n'):(lang==='en'?'\\n\\n<i>No relevant PubMed source was retrieved.</i>':'\\n\\n<i>لم يتم استرجاع مصدر PubMed مناسب لهذا السؤال.</i>');
-   return {text:esc(String(answer).replace(/https?:\\/\\/\\S+/g,'')).replace(/\\n/g,'\\n')+footer,remaining};
+   return {text:esc(String(answer).replace(/https?:\\/\\/[^\\s]+/g,'')).replace(/\\n/g,'\\n')+footer,remaining};
   }catch(error){const [availability,auth,errorCategory]=classifyError(error);if(item.id){await aiRegistryMarkFailure(db,item.id,errorCategory,availability,auth);await aiUsageRecord(db,item.id,{userId:uid,latencyMs:Date.now()-started,success:false,errorCategory});}}
  }
  return {text:lang==='en'?'All configured AI providers failed for this request.':'تعذر الحصول على إجابة من مزودي الذكاء الاصطناعي المتاحين حالياً.',remaining};
