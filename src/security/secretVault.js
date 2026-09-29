@@ -14,7 +14,7 @@ const RESERVED = new Set([
   'BOT_TOKEN','ADMIN_ID','ADMIN_IDS','MEDBOT_SECRETS_KEY','MEDBOT_DB_PATH',
   'PORT','NODE_VERSION','DATABASE_URL',
 ]);
-const NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
+const NAME_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
 
 function key() {
   const token = String(process.env.BOT_TOKEN ?? '').trim();
@@ -43,7 +43,9 @@ function settingKey(name) { return PREFIX + name; }
 
 export function setRuntimeSecret(name, value) {
   const n = validateName(name);
-  if (String(value ?? '').length > 10000) throw new Error('secret_too_long');
+  if (value === null || value === undefined) throw new Error('secret_value_required');
+  const textValue=String(value);
+  if (textValue.length > 10000) throw new Error('secret_too_long');
   setSetting(settingKey(n), encrypt(value));
   process.env[n] = String(value);
   return n;
