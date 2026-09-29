@@ -20,7 +20,7 @@ test('Cloudflare Worker health endpoint exposes Phase 8 bindings without startin
   assert.equal(body.service, 'MEDBOT');
   assert.equal(body.runtime, 'cloudflare-worker');
   assert.equal(body.telegram_webhook, 'adapter_enabled');
-  assert.equal(body.telegram_domain_router, 'not_migrated');
+  assert.equal(body.telegram_domain_router, 'partial');
   assert.equal(body.database, 'd1-missing');
   assert.equal(body.object_storage, 'r2-missing');
 });
