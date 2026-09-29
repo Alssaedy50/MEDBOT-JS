@@ -107,13 +107,8 @@ export async function handleTelegramWebhook(request, {
   const updateId = extractUpdateId(update);
   if (updateId === null) return jsonResponse({ ok: false, error: 'invalid_update_id' }, 400);
 
-  if (await idempotency.has(updateId)) {
-    return jsonResponse({ ok: true, duplicate: true });
-  }
-
-  // Mark only after the payload is authenticated/validated. The dispatch
-  // boundary receives exactly one normalized raw update.
-  await idempotency.mark(updateId, DEFAULT_IDEMPOTENCY_TTL_SECONDS);
+  const claimed = await idempotency.claim(updateId, DEFAULT_IDEMPOTENCY_TTL_SECONDS);
+  if (!claimed) return jsonResponse({ ok: true, duplicate: true });
 
   if (typeof dispatch !== 'function') {
     return jsonResponse({ ok: false, error: 'dispatch_not_configured' }, 503);
@@ -121,10 +116,12 @@ export async function handleTelegramWebhook(request, {
 
   try {
     await dispatch(update, { env, now });
+    await idempotency.complete(updateId);
     return jsonResponse({ ok: true });
   } catch (error) {
     // Telegram only needs a fast acknowledgement. The update is already
     // claimed by the idempotency store, so retry storms cannot occur.
+    await idempotency.fail(updateId);
     console.error('[MEDBOT] webhook dispatch error:', error?.message ?? error);
     return jsonResponse({ ok: true, accepted: true });
   }
