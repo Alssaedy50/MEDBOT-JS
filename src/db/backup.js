@@ -9,7 +9,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDb, resolveDbPath, withDb, withTransaction } from './core.js';
+import { resolveDbPath, withDb, withTransaction } from './core.js';
 
 const FORMAT = 'medbot-state';
 const VERSION = 1;
