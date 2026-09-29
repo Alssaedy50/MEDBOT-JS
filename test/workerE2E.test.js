@@ -449,3 +449,18 @@ test('student contact submission is stored and fanned out to admins', async () =
     telegram.restore();
   }
 });
+
+test('stale callback queries are acknowledged and recover to the home screen', async () => {
+  const db = createD1Binding();
+  const telegram = captureTelegramCalls();
+  try {
+    const response = await post(db, callbackUpdate(77, 'callback_that_no_longer_exists'));
+    assert.equal(response.status, 200);
+    assert.ok(telegram.calls.some((c) => c.method === 'answerCallbackQuery'), 'stale callbacks must be acknowledged');
+    const edited = telegram.editedTexts().join('\n');
+    assert.ok(edited.includes('انتهت صلاحية'), `expected stale-button message, got ${edited}`);
+    assert.ok(edited.includes('الرئيسية'), `expected a home recovery button, got ${edited}`);
+  } finally {
+    telegram.restore();
+  }
+});
