@@ -20,7 +20,9 @@
     "restore:resources": "node scripts/rebind-bundle-resources.mjs",
     "restore:secrets": "node scripts/rekey-bundle-secrets.mjs",
     "deploy:check": "node scripts/deployment-doctor.mjs",
-    "migration:verify": "node scripts/migration-verify.mjs"
+    "migration:verify": "node scripts/migration-verify.mjs",
+    "cf:preflight": "node scripts/cloudflare-preflight.mjs",
+    "cf:webhook": "node scripts/cloudflare-webhook.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5"
