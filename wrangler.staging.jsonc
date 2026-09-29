@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "medbot-js-staging",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "medbot-staging",
+      "database_id": "363646be-1879-4a01-80d1-3fdfc4fd4ca1"
+    }
+  ]
+}
