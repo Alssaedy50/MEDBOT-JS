@@ -101,6 +101,7 @@ export function registerHandlers() {
   registerRoute({ name: 'language', prefixes: ['language', 'lang_set:'], handler: languageRoute });
   registerRoute({ name: 'account', prefixes: ['account'], handler: accountRoute });
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
+  registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
 
   setCatchAll(async (ctx) => {
@@ -184,6 +185,14 @@ async function languageRoute(ctx) {
 async function accountRoute(ctx) {
   await ctx.answer();
   await homeUi.showAccount(ctx);
+}
+
+async function backupRoute(ctx) {
+  await ctx.answer();
+  const data = ctx.data ?? '';
+  if (data === 'backup_menu') return backup.showBackupMenu(ctx);
+  if (data === 'backup_chat') return backup.sendDatabaseBackup(ctx, { toChannel: false });
+  if (data === 'backup_channel') return backup.sendDatabaseBackup(ctx, { toChannel: true });
 }
 
 async function aboutRoute(ctx) {
