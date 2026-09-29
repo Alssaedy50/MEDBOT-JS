@@ -74,3 +74,17 @@ export async function failTelegramUpdate(db, updateId) {
     .run();
   return Number(result?.meta?.changes ?? 0) === 1;
 }
+
+
+/** Adapt the D1 functions to the generic webhook idempotency contract. */
+export function createD1TelegramIdempotencyStore(db, options = {}) {
+  return Object.freeze({
+    claim: (updateId, ttlSeconds) =>
+      claimTelegramUpdate(db, updateId, {
+        ...options,
+        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+      }),
+    complete: (updateId) => completeTelegramUpdate(db, updateId, options),
+    fail: (updateId) => failTelegramUpdate(db, updateId),
+  });
+}

@@ -1,16 +1,13 @@
 /**
- * MEDBOT Cloudflare Worker compatibility boundary — Phase 1.
+ * MEDBOT Cloudflare Worker compatibility boundary.
  *
- * IMPORTANT:
- * - This module is intentionally a skeleton.
- * - It does NOT replace the Node/SQLite runtime.
- * - It does NOT start Telegram webhook processing.
- * - It does NOT import the Node bot assembly, because that assembly still
- *   depends on node:sqlite and process/filesystem APIs.
- *
- * The Worker boundary is kept deliberately small so the existing MEDBOT
- * business logic can be ported behind adapters in later phases.
+ * The Worker now owns the HTTP ingress and Cloudflare bindings. The Node bot
+ * assembly remains separate until every domain dependency is Worker-safe.
  */
+
+import { handleTelegramWebhook } from './telegram/webhook.js';
+import { createD1TelegramIdempotencyStore, initTelegramWebhookStore } from './db/d1/telegramUpdates.js';
+import { createR2Storage } from './storage/r2.js';
 
 /** Return a stable JSON response without leaking secrets or provider details. */
 function json(data, status = 200) {
@@ -23,53 +20,62 @@ function json(data, status = 200) {
   });
 }
 
-/** Phase 1 health endpoint. */
-function healthResponse() {
+function healthResponse(env = {}) {
   return json({
     ok: true,
     service: 'MEDBOT',
     runtime: 'cloudflare-worker',
-    phase: 1,
-    telegram_webhook: 'not_enabled',
-    database: 'd1-boundary-declared',
+    phase: 8,
+    telegram_webhook: 'adapter_enabled',
+    telegram_domain_router: 'not_migrated',
+    database: env.DB ? 'd1-bound' : 'd1-missing',
+    object_storage: env.FILES ? 'r2-bound' : 'r2-missing',
   });
 }
 
 /**
- * Reject webhook traffic during the compatibility phase.
+ * Phase 8 dispatch boundary.
  *
- * Production Telegram webhook processing will be enabled only after durable
- * state, D1 persistence, update dispatch and cutover tests are complete.
+ * This intentionally does not call the Node router. That router imports
+ * node:sqlite-backed UI modules and cannot execute safely in a Worker yet.
  */
-function webhookDisabledResponse() {
-  return json(
-    {
-      ok: false,
-      error: 'telegram_webhook_not_enabled',
-      phase: 1,
-    },
-    501,
-  );
+async function dispatchTelegramUpdate() {
+  throw new Error('telegram_domain_router_not_migrated');
 }
 
-/**
- * Minimal HTTP boundary.
- *
- * Future phases will inject:
- *   Request -> Telegram ingress -> MEDBOT context -> existing router
- *
- * The current Node polling entry point remains untouched.
- */
+async function webhookResponse(request, env) {
+  if (!env.DB) {
+    return json({ ok: false, error: 'd1_not_configured' }, 503);
+  }
+
+  await initTelegramWebhookStore(env.DB);
+  const idempotency = createD1TelegramIdempotencyStore(env.DB);
+
+  return handleTelegramWebhook(request, {
+    env,
+    idempotency,
+    dispatch: dispatchTelegramUpdate,
+  });
+}
+
 export default {
-  async fetch(request, _env, _ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
-      return healthResponse();
+      return healthResponse(env);
     }
 
     if (url.pathname === '/telegram/webhook') {
-      return webhookDisabledResponse();
+      return webhookResponse(request, env);
+    }
+
+    if (url.pathname === '/storage/status') {
+      return json({
+        ok: Boolean(env.FILES),
+        storage: env.FILES ? 'r2' : 'unconfigured',
+        adapter: env.FILES ? Boolean(createR2Storage(env.FILES)) : false,
+      });
     }
 
     return json({ ok: false, error: 'not_found' }, 404);
