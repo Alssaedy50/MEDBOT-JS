@@ -10,7 +10,16 @@ function db() {
         bind(..._params) {
           return {
             async run() { return { meta: { changes: 1, last_row_id: 1 } }; },
-            raw: async () => {\n              if (sql.includes('FROM users')) return [['ar']];\n              if (sql.includes('FROM settings')) return [];\n              if (sql.includes('FROM admins')) return [];\n              if (sql.includes('FROM daily_ai_usage')) return [];\n              if (sql.includes('FROM news')) return [[0]];\n              if (sql.includes('FROM contributions')) return [[0]];\n              return [];\n            },\n            async first() {
+            raw: async () => {
+              if (sql.includes('FROM users')) return [['ar']];
+              if (sql.includes('FROM settings')) return [];
+              if (sql.includes('FROM admins')) return [];
+              if (sql.includes('FROM daily_ai_usage')) return [];
+              if (sql.includes('FROM news')) return [[0]];
+              if (sql.includes('FROM contributions')) return [[0]];
+              return [];
+            },
+            async first() {
               if (sql.includes('FROM users')) return ['ar'];
               if (sql.includes('FROM settings')) return null;
               if (sql.includes('FROM admins')) return null;
