@@ -49,7 +49,7 @@ export function parseSecretAssignment(input) {
   const rawName = source.slice(0, separator).trim();
   const value = source.slice(separator + 1);
   const name = validateName(rawName);
-  if (value.includes('\\u0000')) throw new Error('secret_contains_nul');
+  if (value.includes(String.fromCharCode(0))) throw new Error('secret_contains_nul');
   return { name, value };
 }
 
