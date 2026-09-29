@@ -10,8 +10,6 @@
  * previous pool keeps serving if a refresh fails.
  */
 
-import { randomInt } from 'node:crypto';
-
 import { createNodeAiStorage } from './nodeStorage.js';
 import { ensureSourcesFooter, stripSourceIdentifiers } from '../medicalSources.js';
 import * as providers from './providers.js';
@@ -197,10 +195,17 @@ async function probeModel(item, fetchImpl, storage = defaultAiStorage) {
   }
 }
 
+function randomIndex(max) {
+  if (max <= 1) return 0;
+  const values = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(values);
+  return values[0] % max;
+}
+
 function shuffle(list) {
   const copy = [...list];
   for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = randomInt(i + 1);
+    const j = randomIndex(i + 1);
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
