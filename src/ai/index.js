@@ -461,7 +461,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
       if (cached) return { text: cached, actions: [] };
     }
 
-    const candidates = orderCandidatesForQuestion(await getCandidates(fetchImpl), {
+    const candidates = orderCandidatesForQuestion(await getCandidates(fetchImpl, aiStorage), {
       complex: isComplexQuestion(prompt),
     });
     if (!candidates.length) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
@@ -473,6 +473,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
       userId,
       label: 'General assistant',
       fetchImpl,
+      storage: aiStorage,
     });
 
     if (!answer) return { text: CHAT_NO_PROVIDER_ANSWER, actions: [] };
@@ -483,7 +484,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
   // A medical question: PubMed grounding + the bilingual answer contract.
   // Deliberately no registry search: AI Chat must not surface MEDBOT structure.
   const [candidatesResult, sourcesResult] = await Promise.allSettled([
-    getCandidates(fetchImpl),
+    getCandidates(fetchImpl, aiStorage),
     medicalSources.searchRelevantPubmed(prompt, 3),
   ]);
 
@@ -503,6 +504,7 @@ export async function generateAiChatResult(userPrompt, userId = null, fetchImpl 
     candidates,
     userId,
     label: 'Medical assistant',
+    storage: aiStorage,
     sourcesFooter: buildMedicalSourcesFooter(sources, language),
     fetchImpl,
   });
