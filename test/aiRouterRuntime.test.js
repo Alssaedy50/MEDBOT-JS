@@ -18,7 +18,7 @@ function storage() {
 test('runtime-neutral AI router accepts injected async storage', async () => {
   const s = storage();
   assert.deepEqual(await buildCandidatesUncached(async () => ({ ok: true, json: async () => ({}) }), s, {}), []);
-  assert.deepEqual(await getCandidates(async () => new Response('{}'), s, {}), []);
+  assert.deepEqual(await getCandidates(async () => ({ ok: true, json: async () => ({}) }), s, {}), []);
 });
 
 test('provider failover requires the injected persistence boundary', async () => {
