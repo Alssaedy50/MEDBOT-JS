@@ -12,7 +12,7 @@
 
 import { randomInt } from 'node:crypto';
 
-import * as db from '../db/index.js';
+import { createNodeAiStorage } from './nodeStorage.js';
 import { ensureSourcesFooter, stripSourceIdentifiers } from '../medicalSources.js';
 import * as providers from './providers.js';
 import { GroundingValidator } from './intent.js';
@@ -28,6 +28,12 @@ export const CANDIDATE_TTL_SECONDS = 300;
 
 export const COOLDOWN_SECONDS = 60;
 export const MAX_COOLDOWN_SECONDS = 900;
+
+const defaultAiStorage = createNodeAiStorage();
+
+export function getDefaultAiStorage() {
+  return defaultAiStorage;
+}
 
 /** Per-model runtime health, keyed by `provider|model|endpoint`. */
 const modelFailures = new Map();
@@ -112,13 +118,13 @@ function registryRowToProvider(row) {
 }
 
 /** Register candidates in the registry without promoting them. */
-function ensureCandidateRegistryIds(candidates) {
+async function ensureCandidateRegistryIds(candidates, storage = defaultAiStorage) {
   for (const item of candidates) {
     const { provider, model, endpoint } = item;
     if (!provider || !model || !endpoint) continue;
 
     try {
-      const registryId = db.aiRegistryEnsure(
+      const registryId = await storage.aiRegistryEnsure(
         provider,
         model,
         endpoint,
@@ -137,32 +143,32 @@ function ensureCandidateRegistryIds(candidates) {
   return candidates;
 }
 
-async function recordSuccess(item, latencyMs) {
+async function recordSuccess(item, latencyMs, storage = defaultAiStorage) {
   markModelSuccess(item);
   const registryId = item.id;
   if (!registryId) return;
   try {
-    db.aiRegistryMarkSuccess(registryId, latencyMs);
+    await storage.aiRegistryMarkSuccess(registryId, latencyMs);
   } catch {
     // Best-effort.
   }
 }
 
-async function recordFailure(item, error) {
+async function recordFailure(item, error, storage = defaultAiStorage) {
   const [availability, authStatus, errorCategory] = providers.classifyError(error);
   markModelFailure(item, errorCategory);
 
   const registryId = item.id;
   if (!registryId) return;
   try {
-    db.aiRegistryMarkFailure(registryId, errorCategory, availability, authStatus);
+    await storage.aiRegistryMarkFailure(registryId, errorCategory, availability, authStatus);
   } catch {
     // Best-effort.
   }
 }
 
 /** Lightweight health probe for a discovered model. */
-async function probeModel(item, fetchImpl) {
+async function probeModel(item, fetchImpl, storage = defaultAiStorage) {
   const probePrompt = 'أجب بكلمة واحدة: ما هو تعريف الحمى؟';
 
   try {
@@ -174,7 +180,7 @@ async function probeModel(item, fetchImpl) {
 
     if (item.id) {
       try {
-        db.aiRegistryMarkSuccess(item.id, latencyMs);
+        await storage.aiRegistryMarkSuccess(item.id, latencyMs);
       } catch {
         // Best-effort.
       }
@@ -186,7 +192,7 @@ async function probeModel(item, fetchImpl) {
     markModelSuccess(item);
     return true;
   } catch (error) {
-    await recordFailure(item, error);
+    await recordFailure(item, error, storage);
     return false;
   }
 }
@@ -261,7 +267,7 @@ export function buildActivePool(candidates) {
  * budget on one provider; this selects up to two per provider under a hard
  * global cap, prioritising models never tested or tested least recently.
  */
-export async function refreshDiscoveredModels(candidates, fetchImpl = fetch) {
+export async function refreshDiscoveredModels(candidates, fetchImpl = fetch, storage = defaultAiStorage) {
   const discovered = (candidates ?? []).filter(
     (item) => item.availability === 'DISCOVERED' && !isInCooldown(item) && item.provider,
   );
@@ -270,8 +276,7 @@ export async function refreshDiscoveredModels(candidates, fetchImpl = fetch) {
   let lastTestById = {};
   try {
     lastTestById = Object.fromEntries(
-      db
-        .aiRegistryGetAll()
+      (await storage.aiRegistryGetAll())
         .map((row) => [row[0], row.length > 11 ? row[11] : null]),
     );
   } catch {
@@ -311,7 +316,7 @@ export async function refreshDiscoveredModels(candidates, fetchImpl = fetch) {
     if (items.length >= MAX_PROBES_PER_PROVIDER) selected.push(items[1]);
   }
 
-  await Promise.allSettled(selected.map((item) => probeModel(item, fetchImpl)));
+  await Promise.allSettled(selected.map((item) => probeModel(item, fetchImpl, storage)));
   return candidates;
 }
 
@@ -352,7 +357,7 @@ export function orderCandidatesForQuestion(candidates, { complex = false } = {})
 }
 
 /** Discover, register, verify, then build the active pool (uncached). */
-export async function buildCandidatesUncached(fetchImpl = fetch) {
+export async function buildCandidatesUncached(fetchImpl = fetch, storage = defaultAiStorage) {
   const candidates = [];
 
   // A. Fresh provider discovery (independent providers run concurrently).
@@ -380,7 +385,7 @@ export async function buildCandidatesUncached(fetchImpl = fetch) {
   try {
     const seen = new Set(candidates.map(modelKey));
 
-    for (const row of db.aiRegistryGetHealthy()) {
+    for (const row of await storage.aiRegistryGetHealthy()) {
       const item = registryRowToProvider(row);
       if (!item.provider || !item.model) continue;
       if (!providers.hasKey(item.provider)) continue;
@@ -416,10 +421,10 @@ export async function buildCandidatesUncached(fetchImpl = fetch) {
   }
 
   // C. Register without promoting.
-  ensureCandidateRegistryIds(candidates);
+  await ensureCandidateRegistryIds(candidates, storage);
 
   // D. Probe a small rotating sample.
-  await refreshDiscoveredModels(candidates, fetchImpl);
+  await refreshDiscoveredModels(candidates, fetchImpl, storage);
 
   // E. Only VERIFIED models enter the pool.
   const verified = candidates.filter(
@@ -438,13 +443,13 @@ export async function buildCandidatesUncached(fetchImpl = fetch) {
  * Cached for `CANDIDATE_TTL_SECONDS`; on an empty build the previous pool keeps
  * serving (and an empty result is never cached), so the next request can retry.
  */
-export async function getCandidates(fetchImpl = fetch) {
+export async function getCandidates(fetchImpl = fetch, storage = defaultAiStorage) {
   const now = Date.now() / 1000;
   if (candidateCache && now - candidateCacheAt < CANDIDATE_TTL_SECONDS) {
     return [...candidateCache];
   }
 
-  const pool = await buildCandidatesUncached(fetchImpl);
+  const pool = await buildCandidatesUncached(fetchImpl, storage);
 
   if (pool.length) {
     candidateCache = pool;
@@ -480,6 +485,7 @@ export async function providerFailover({
   userId = null,
   sourcesFooter = '',
   fetchImpl = fetch,
+  storage = defaultAiStorage,
 }) {
   const validator = new GroundingValidator();
 
@@ -549,23 +555,23 @@ export async function providerFailover({
 
       if (item.id) {
         try {
-          db.aiUsageRecord(item.id, { userId, latencyMs, success: true });
+          await storage.aiUsageRecord(item.id, { userId, latencyMs, success: true });
         } catch {
           // Observability must never break a generation.
         }
       }
-      await recordSuccess(item, latencyMs);
+      await recordSuccess(item, latencyMs, storage);
 
       // The application, not the model, owns the final citation footer.
       answer = ensureSourcesFooter(answer, sourcesFooter);
       return answer;
     } catch (error) {
-      await recordFailure(item, error);
+      await recordFailure(item, error, storage);
 
       if (item.id) {
         try {
           const [, , errorCategory] = providers.classifyError(error);
-          db.aiUsageRecord(item.id, { userId, success: false, errorCategory });
+          await storage.aiUsageRecord(item.id, { userId, success: false, errorCategory });
         } catch {
           // Observability must never break a generation.
         }
