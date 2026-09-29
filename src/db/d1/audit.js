@@ -1,4 +1,4 @@
-import { get, run } from './core.js';
+import { all, get, run } from './core.js';
 
 export async function addAuditEntry(db, actorId, actorRole, action, targetType = null, targetId = null, details = null) {
   if (!String(action ?? '').trim()) return false;
@@ -21,7 +21,7 @@ export async function getAuditEntries(db, limit = 50, action = null, actorId = n
   if (actorId !== null && actorId !== undefined) { clauses.push('actor_id=?'); params.push(actorId); }
   params.push(safe);
   try {
-    return (await import('./core.js')).all(
+    return all(
       db,
       'SELECT id,actor_id,actor_role,action,target_type,target_id,details,created_at FROM audit_log' +
         (clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '') +
