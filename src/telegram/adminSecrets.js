@@ -49,7 +49,7 @@ export async function handleSecretText(ctx) {
       setRuntimeSecret(name, value);
       if (ctx.message?.message_id) await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(()=>{});
       await ctx.reply(`✅ تم حفظ <code>${name}</code> مشفّراً. القيمة لا يمكن عرضها من البوت.`,{parse_mode:'HTML'});
-    } catch (error) {
+    } catch {
       await ctx.reply('❌ لم يتم الحفظ: الصيغة غير صحيحة أو الاسم محجوز أو القيمة تتجاوز الحد الآمن.');
     }
     return true;
@@ -62,7 +62,7 @@ export async function handleSecretText(ctx) {
       await ctx.reply(deleted
         ? `✅ تم حذف <code>${name}</code>.`
         : `⚠️ المتغير <code>${name}</code> غير موجود.`, {parse_mode:'HTML'});
-    } catch(error){
+    } catch {
       await ctx.reply('❌ اسم المتغير غير صالح.');
     }
     return true;
