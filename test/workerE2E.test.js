@@ -464,3 +464,19 @@ test('stale callback queries are acknowledged and recover to the home screen', a
     telegram.restore();
   }
 });
+
+test('an unknown command is answered instead of failing the delivery', async () => {
+  const db = createD1Binding();
+  const telegram = captureTelegramCalls();
+  try {
+    const response = await post(db, commandUpdate(77, '/definitely_not_a_command'));
+    // A throw here would become a 503, which makes Telegram redeliver forever.
+    assert.equal(response.status, 200);
+    const menu = telegram.sentTexts().join('\n');
+    assert.ok(menu.includes('أمر غير معروف'), `expected a graceful unknown-command reply, got ${menu}`);
+    const home = telegram.calls.find((c) => c.method === 'sendMessage');
+    assert.ok(JSON.stringify(home?.payload?.reply_markup ?? {}).includes('"home"'), 'the reply must offer a way back home');
+  } finally {
+    telegram.restore();
+  }
+});

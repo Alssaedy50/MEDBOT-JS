@@ -87,7 +87,10 @@ async function dispatchTelegramUpdate(update, { env }) {
         ctx.userData.library_search = true;
         return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\n\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
       }
-      throw new Error('worker_command_not_migrated');
+      // An unrecognised command must not throw: a throw becomes a 503, which
+      // makes Telegram redeliver the same update forever while the student sees
+      // nothing. Reply with a way forward instead.
+      return ctx.reply('ℹ️ أمر غير معروف. استخدم أزرار MEDBOT للتنقل، أو /search للبحث داخل الموارد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
     },
     callback: async (ctx) => {
       if (ctx.data === 'language') { const menu=await buildWorkerLanguage(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
