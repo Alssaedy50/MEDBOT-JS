@@ -8,3 +8,4 @@ export * from './scopes.js';
 export * from './news.js';
 export * from './notifications.js';
 export * from './audit.js';
+export * from './aiRegistry.js';
