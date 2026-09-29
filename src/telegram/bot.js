@@ -28,6 +28,8 @@ import { buildFullBotBundle } from '../backup/fullBundle.js';
 import { loadRuntimeSecrets } from '../security/secretVault.js';
 import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
+import { readFile, rm } from 'node:fs/promises';
+import path from 'node:path';
 import { btn, keyboard } from './ui.js';
 import { TelegramTransport } from './client.js';
 import {
@@ -444,12 +446,17 @@ async function secretsCommand(ctx) { await secrets.showSecrets(ctx); }
 async function bundleCommand(ctx) {
   if (!db.isOwner(ctx.from.id)) { await ctx.reply('🔒 ملف البوت الكامل متاح للمالك فقط.'); return; }
   await ctx.reply('📦 جاري تجهيز ملف البوت الكامل… قد يستغرق ذلك حسب حجم المشروع.');
+  let bundle = null;
   try {
-    const bundle=await buildFullBotBundle();
+    bundle=await buildFullBotBundle();
     if (bundle.size > 49 * 1024 * 1024) throw new Error(`bundle_too_large_for_telegram:${bundle.size}`);
-    const bytes=await (await import('node:fs/promises')).readFile(bundle.path);
+    const bytes=await readFile(bundle.path);
     await ctx.bot.sendDocumentBytes(ctx.from.id,bytes,{filename:'MEDBOT-FULL.tar.gz',caption:`📦 <b>MEDBOT Full Deploy Bundle</b>\\nالحجم: ${(bundle.size/1024/1024).toFixed(2)} MB\\nيشمل الكود + قاعدة البيانات + الإعدادات + مخزن الأسرار المشفّر.`,parse_mode:'HTML'});
-  } catch(error) { await ctx.reply(`❌ تعذر إنشاء الملف الكامل: ${error.message}\\n\\nإذا تجاوز 50MB سنحتاج مسار R2/تنزيل مباشر بدلاً من Telegram.`); }
+  } catch(error) {
+    await ctx.reply(`❌ تعذر إنشاء الملف الكامل: ${error.message}\\n\\nإذا تجاوز 50MB سنحتاج مسار R2/تنزيل مباشر بدلاً من Telegram.`);
+  } finally {
+    if (bundle?.path) await rm(path.dirname(bundle.path), { recursive:true, force:true }).catch(()=>{});
+  }
 }
 
 async function backupCommand(ctx) {
@@ -497,7 +504,6 @@ async function unhandledText(ctx) {
 export async function createBot({ token = null, transport = null } = {}) {
   db.setDbPath();
   db.initDb();
-  loadRuntimeSecrets();
 
   // If the deployment recreated an empty filesystem, recover the latest durable
   // snapshot before handlers start serving users. Existing non-empty databases
@@ -510,6 +516,15 @@ export async function createBot({ token = null, transport = null } = {}) {
     if (result.restored) console.log(`MEDBOT restored durable state from ${result.exported_at ?? 'remote backup'}`);
   } catch (error) {
     console.error('MEDBOT durable restore skipped:', error.message);
+  }
+
+  // Hydrate only after durable restore: the restored SQLite snapshot may itself
+  // contain the encrypted vault. This also ensures managed AI/backup secrets are
+  // available before handlers and provider warm-up run.
+  try {
+    loadRuntimeSecrets();
+  } catch (error) {
+    console.error('MEDBOT secret vault hydration skipped:', error.message);
   }
 
   registerHandlers();

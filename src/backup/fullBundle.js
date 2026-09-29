@@ -8,7 +8,7 @@ import { TelegramTransport } from '../telegram/client.js';
 
 const EXCLUDES = [
   '.git','node_modules','.wrangler','coverage','backups','.agent_tmp',
-  '*.sqlite3-wal','*.sqlite3-shm','.env','.env.*'
+  '*.sqlite3','*.sqlite3-wal','*.sqlite3-shm','.env','.env.*'
 ];
 
 function run(command,args) {
@@ -24,6 +24,8 @@ export async function buildFullBotBundle() {
   const tarPath=path.join(temp,'MEDBOT-FULL.tar');
   const outPath=path.join(temp,'MEDBOT-FULL.tar.gz');
   const dbPath=resolveDbPath();
+  const dbName=path.basename(dbPath);
+  const snapshotDb=path.join(temp,dbName);
   const manifest={
     format:'medbot-full-deploy-bundle',
     version:1,
@@ -31,8 +33,8 @@ export async function buildFullBotBundle() {
     project:'MEDBOT-JS',
     includes:['source','package configuration','SQLite data','encrypted runtime secret vault','deployment configuration'],
     excludes:EXCLUDES,
-    database_path:dbPath,
-    secret_note:'Runtime secrets are encrypted inside the database and require the same BOT_TOKEN to decrypt. BOT_TOKEN itself is never included.',
+    database_path:dbName,
+    secret_note:'Runtime secrets are encrypted inside the database. The source BOT_TOKEN is never included; use restore:secrets with OLD_BOT_TOKEN and the destination BOT_TOKEN when changing bot identity.',
     resource_note:'Registered Telegram file_ids remain in the database. Telegram file_ids belong to the current bot and cannot be transferred to another bot; a future resource-export step should upload source files to durable object storage for true cross-bot portability.',
   };
   const resourceDir=path.join(temp,'resources');
@@ -59,12 +61,28 @@ export async function buildFullBotBundle() {
   }
   manifest.resource_files=resourceResults;
   manifest.resource_note='Registered resources are embedded when Telegram permits downloading them (currently up to 20MB per file). Files above that limit are reported as not_embedded; the official Bot API cannot download them from a bot. Included resources must be uploaded again to the destination bot during restore because file_id values belong to the original bot.';
+  // SQLite runs in WAL mode in production. VACUUM INTO creates a consistent,
+  // self-contained snapshot instead of copying only the main file while a WAL
+  // sidecar may still contain committed pages.
+  if (fs.existsSync(dbPath)) {
+    const db=await import('node:sqlite');
+    const connection=new db.DatabaseSync(dbPath);
+    try {
+      const escaped=snapshotDb.replace(/'/g,"''");
+      connection.exec(`VACUUM INTO '${escaped}'`);
+    } finally {
+      connection.close();
+    }
+    manifest.database_snapshot='consistent_sqlite_snapshot';
+  } else {
+    manifest.database_snapshot='not_found';
+  }
   await fsp.writeFile(path.join(temp,'BUNDLE-MANIFEST.json'),JSON.stringify(manifest,null,2));
   // Source/config/data. Runtime-only directories and plaintext .env are excluded.
   const excludeArgs=EXCLUDES.flatMap((x)=>['--exclude',x]);
   await run('tar',['-cf',tarPath,...excludeArgs,'-C',root,'.']);
-  if (fs.existsSync(dbPath) && path.resolve(dbPath)!==path.resolve(path.join(root,path.basename(dbPath)))) {
-    await run('tar',['-rf',tarPath,'-C',path.dirname(dbPath),path.basename(dbPath)]);
+  if (fs.existsSync(snapshotDb)) {
+    await run('tar',['-rf',tarPath,'-C',temp,dbName]);
   }
   await run('tar',['-rf',tarPath,'-C',temp,'BUNDLE-MANIFEST.json','resources']);
   await run('gzip',['-9','-f',tarPath]);

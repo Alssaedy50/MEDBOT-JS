@@ -1,5 +1,5 @@
 import { isOwner } from '../db/admins.js';
-import { deleteRuntimeSecret, getRuntimeSecretNames, setRuntimeSecret } from '../security/secretVault.js';
+import { deleteRuntimeSecret, getRuntimeSecretNames, parseSecretAssignment, setRuntimeSecret } from '../security/secretVault.js';
 
 const PREFIXES = ['secrets_menu','secret_set','secret_delete','secret_confirm'];
 
@@ -41,25 +41,30 @@ export async function handleSecretCallback(ctx) {
 
 export async function handleSecretText(ctx) {
   if (!owner(ctx)) return false;
-  const text = String(ctx.text ?? '').trim();
+  const text = String(ctx.text ?? '');
   if (ctx.userData.secret_waiting) {
     ctx.userData.secret_waiting = false;
-    const match = text.match(/^([A-Za-z][A-Za-z0-9_]*)=(.*)$/s);
-    if (!match) { await ctx.reply('⚠️ الصيغة غير صحيحة. استخدم NAME=VALUE.'); return true; }
     try {
-      const name=setRuntimeSecret(match[1],match[2]);
+      const { name, value } = parseSecretAssignment(text);
+      setRuntimeSecret(name, value);
       if (ctx.message?.message_id) await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(()=>{});
       await ctx.reply(`✅ تم حفظ <code>${name}</code> مشفّراً. القيمة لا يمكن عرضها من البوت.`,{parse_mode:'HTML'});
-    } catch (error) { await ctx.reply(`❌ لم يتم الحفظ: ${error.message}`); }
+    } catch {
+      await ctx.reply('❌ لم يتم الحفظ: الصيغة غير صحيحة أو الاسم محجوز أو القيمة تتجاوز الحد الآمن.');
+    }
     return true;
   }
   if (ctx.userData.secret_delete_waiting) {
     ctx.userData.secret_delete_waiting = false;
     try {
       const name=String(text).trim().toUpperCase();
-      deleteRuntimeSecret(name);
-      await ctx.reply(`✅ تم حذف <code>${name}</code>.`,{parse_mode:'HTML'});
-    } catch(error){ await ctx.reply(`❌ لم يتم الحذف: ${error.message}`); }
+      const deleted = deleteRuntimeSecret(name);
+      await ctx.reply(deleted
+        ? `✅ تم حذف <code>${name}</code>.`
+        : `⚠️ المتغير <code>${name}</code> غير موجود.`, {parse_mode:'HTML'});
+    } catch {
+      await ctx.reply('❌ اسم المتغير غير صالح.');
+    }
     return true;
   }
   return false;
