@@ -5,6 +5,9 @@ import { createWorkerTelegramDispatcher } from './telegram/workerDispatcher.js';
 import { buildWorkerHome, buildWorkerAccount } from './telegram/workerHome.js';
 import { buildWorkerLibraryRoot, buildWorkerFolder, findWorkerResources, buildWorkerFile } from './telegram/workerResources.js';
 import { buildWorkerLanguage, applyWorkerLanguage, buildWorkerAbout, buildWorkerContact, buildWorkerNews, buildWorkerNewsDetail, buildWorkerMyContributions, buildWorkerUnsupported } from './telegram/workerParity.js';
+import { buildWorkerTopics, buildWorkerTopic } from './telegram/workerTopics.js';
+import { buildWorkerContributionStart, prepareWorkerContribution, handleWorkerContributionMedia } from './telegram/workerContributions.js';
+import { answerWorkerAi } from './telegram/workerAi.js';
 
 function json(data, status = 200) {
   return new globalThis.Response(JSON.stringify(data), {
@@ -31,7 +34,7 @@ async function backupEndpoint(request, env) {
 function healthResponse(env = {}) {
   return json({
     ok: true, service: 'MEDBOT', runtime: 'cloudflare-worker', phase: 11,
-    telegram_webhook: 'adapter_enabled', telegram_domain_router: 'phase14-student-parity',
+    telegram_webhook: 'adapter_enabled', telegram_domain_router: 'phase15-core-parity',
     database: env.DB ? 'd1-bound' : 'd1-missing',
     object_storage: env.FILES ? 'r2-bound' : 'r2-missing',
   });
@@ -68,6 +71,8 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (command === 'start') { const menu = await buildWorkerHome(ctx.db, ctx.from); return ctx.reply(menu.text, { reply_markup: menu.reply_markup }); }
       if (command === 'help') { const menu=await buildWorkerAbout(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
       if (command === 'quota') { const menu=await buildWorkerAccount(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
+      if (command === 'ask') { ctx.userData.ai_chat=true; return ctx.reply('🤖 <b>المساعد الذكي</b>\\n\\nاكتب سؤالك الطبي الآن.', { parse_mode:'HTML' }); }
+      if (command === 'contribute') { const menu=await buildWorkerContributionStart(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (command === 'search') {
         ctx.userData.library_search = true;
         return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\\n\\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
@@ -83,7 +88,12 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (ctx.data.startsWith('news_page:')) { const menu=await buildWorkerNews(ctx.db,ctx.from,Number(ctx.data.split(':')[1])||0); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('news:')) { const menu=await buildWorkerNewsDetail(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data === 'my_contributions') { const menu=await buildWorkerMyContributions(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
-      if (ctx.data === 'assistant' || ctx.data === 'topics' || ctx.data === 'contributions' || ctx.data === 'admin') { const menu=await buildWorkerUnsupported(ctx.db,ctx.from,ctx.data); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'topics') { const menu=await buildWorkerTopics(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data.startsWith('topic:')) { const menu=await buildWorkerTopic(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'contributions') { const menu=await buildWorkerContributionStart(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data.startsWith('contrib_folder:')) { const folderId=Number(ctx.data.split(':')[1]); const result=await prepareWorkerContribution(ctx.db,ctx.from,folderId); if(result.ok)ctx.userData.contribution_folder=folderId; await ctx.answer(); return ctx.editMessageText(result.text,{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
+      if (ctx.data === 'assistant') { ctx.userData.ai_chat=true; await ctx.answer(); return ctx.editMessageText('🤖 <b>المساعد الذكي</b>\\n\\nاكتب سؤالك الطبي الآن.',{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
+      if (ctx.data === 'admin') { const menu=await buildWorkerUnsupported(ctx.db,ctx.from,ctx.data); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data === 'resources') {
         const menu = await buildWorkerLibraryRoot(ctx.db, ctx.from);
         await ctx.answer();
@@ -132,6 +142,7 @@ async function dispatchTelegramUpdate(update, { env }) {
     },
   };
   handlers.message = async (ctx) => {
+    if (ctx.userData?.ai_chat) { ctx.userData.ai_chat=false; const result=await answerWorkerAi(ctx.db,ctx.from,ctx.text,env); return ctx.reply(result.text,{parse_mode:'HTML'}); }
     if (ctx.userData?.library_search) {
       ctx.userData.library_search = false;
       const result = await findWorkerResources(ctx.db, ctx.from, ctx.text);
@@ -139,6 +150,7 @@ async function dispatchTelegramUpdate(update, { env }) {
     }
     return ctx.reply('ℹ️ استخدم أزرار MEDBOT للتنقل، أو /search للبحث داخل الموارد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
   };
+  handlers.media = async (ctx) => { if (ctx.userData?.contribution_folder) { const result=await handleWorkerContributionMedia(ctx.db,ctx.from,ctx.message,ctx.userData.contribution_folder); ctx.userData.contribution_folder=null; return ctx.reply(result.text,{parse_mode:'HTML'}); } return ctx.reply('ℹ️ اختر أولاً قسم المساهمات ثم أرسل المورد.'); };
   const dispatch = createWorkerTelegramDispatcher({ bot, db: env.DB, handlers });
   return dispatch(update);
 }
