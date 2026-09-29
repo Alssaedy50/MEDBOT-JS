@@ -7,7 +7,7 @@ import {
 } from '../src/telegram/webhook.js';
 
 function request(updateId) {
-  return new Request('https://example.test/telegram/webhook', {
+  return new globalThis.Request('https://example.test/telegram/webhook', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
