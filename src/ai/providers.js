@@ -16,16 +16,23 @@ export const REQUEST_TIMEOUT_MS = 30000;
 export const DISCOVERY_TIMEOUT_MS = 12000;
 
 /** Provider -> environment variable holding its API key. */
-export function keyFor(provider) {
-  if (provider === 'google_gemini') return process.env.GEMINI_API_KEY?.trim() ?? '';
-  if (provider === 'groq') return process.env.GROQ_API_KEY?.trim() ?? '';
-  if (provider === 'openrouter') return process.env.OPENROUTER_API_KEY?.trim() ?? '';
+function runtimeEnv(env) {
+  if (env) return env;
+  if (typeof process !== 'undefined' && process.env) return process.env;
+  return {};
+}
+
+export function keyFor(provider, env = undefined) {
+  const values = runtimeEnv(env);
+  if (provider === 'google_gemini') return values.GEMINI_API_KEY?.trim() ?? '';
+  if (provider === 'groq') return values.GROQ_API_KEY?.trim() ?? '';
+  if (provider === 'openrouter') return values.OPENROUTER_API_KEY?.trim() ?? '';
   return '';
 }
 
 /** True when MEDBOT has a key for this provider. */
-export function hasKey(provider) {
-  return Boolean(keyFor(provider));
+export function hasKey(provider, env = undefined) {
+  return Boolean(keyFor(provider, env));
 }
 
 /**
@@ -75,10 +82,10 @@ async function throwForResponse(provider, response) {
 }
 
 /** Gemini `generateContent`. Returns the concatenated text parts. */
-export async function geminiRequest({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch }) {
+export async function geminiRequest({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch, env }) {
   const response = await fetchImpl(geminiEndpoint(item), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyFor('google_gemini') },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyFor('google_gemini', env) },
     body: JSON.stringify({
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -109,9 +116,10 @@ export async function openAiCompatibleRequest({
   prompt,
   systemPrompt = SYSTEM_PROMPT,
   fetchImpl = fetch,
+  env,
 }) {
   const provider = item.provider;
-  const apiKey = keyFor(provider);
+  const apiKey = keyFor(provider, env);
   if (!apiKey) throw new Error(`Unsupported OpenAI-compatible provider: ${provider}`);
 
   const headers = {
@@ -153,12 +161,12 @@ export async function openAiCompatibleRequest({
 }
 
 /** Route to the right adapter for `item.provider`. */
-export async function request({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch }) {
+export async function request({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch, env }) {
   if (item.provider === 'google_gemini') {
-    return geminiRequest({ item, prompt, systemPrompt, fetchImpl });
+    return geminiRequest({ item, prompt, systemPrompt, fetchImpl, env });
   }
   if (item.provider === 'groq' || item.provider === 'openrouter') {
-    return openAiCompatibleRequest({ item, prompt, systemPrompt, fetchImpl });
+    return openAiCompatibleRequest({ item, prompt, systemPrompt, fetchImpl, env });
   }
   throw new Error(`Unsupported AI provider: ${item.provider}`);
 }
@@ -241,8 +249,8 @@ export function resetDiscoveryCache() {
 }
 
 /** Discover Gemini text-generation models exposed to the configured key. */
-export async function discoverGeminiModels(fetchImpl = fetch) {
-  if (!hasKey('google_gemini')) return [];
+export async function discoverGeminiModels(fetchImpl = fetch, env) {
+  if (!hasKey('google_gemini', env)) return [];
 
   const cached = cacheGet('google_gemini');
   if (cached) return cached;
@@ -251,7 +259,7 @@ export async function discoverGeminiModels(fetchImpl = fetch) {
     const response = await fetchImpl(
       'https://generativelanguage.googleapis.com/v1beta/models?pageSize=100',
       {
-        headers: { 'x-goog-api-key': keyFor('google_gemini') },
+        headers: { 'x-goog-api-key': keyFor('google_gemini', env) },
         signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
       },
     );
@@ -288,15 +296,15 @@ const GROQ_EXCLUDED_PREFIXES = [
   'meta-llama/llama-prompt-guard',
 ];
 
-export async function discoverGroqModels(fetchImpl = fetch) {
-  if (!hasKey('groq')) return [];
+export async function discoverGroqModels(fetchImpl = fetch, env) {
+  if (!hasKey('groq', env)) return [];
 
   const cached = cacheGet('groq');
   if (cached) return cached;
 
   try {
     const response = await fetchImpl('https://api.groq.com/openai/v1/models', {
-      headers: { Authorization: `Bearer ${keyFor('groq')}` },
+      headers: { Authorization: `Bearer ${keyFor('groq', env)}` },
       signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
     });
     if (!response.ok) return [];
@@ -343,8 +351,8 @@ const OPENROUTER_EXCLUDED_TERMS = [
  * A model qualifies when it is text-capable, not an excluded modality, and
  * OpenRouter reports zero prompt/completion pricing OR the id uses `:free`.
  */
-export async function discoverOpenrouterModels(fetchImpl = fetch) {
-  if (!hasKey('openrouter')) return [];
+export async function discoverOpenrouterModels(fetchImpl = fetch, env) {
+  if (!hasKey('openrouter', env)) return [];
 
   const cached = cacheGet('openrouter');
   if (cached) return cached;
@@ -352,7 +360,7 @@ export async function discoverOpenrouterModels(fetchImpl = fetch) {
   try {
     const response = await fetchImpl('https://openrouter.ai/api/v1/models', {
       headers: {
-        Authorization: `Bearer ${keyFor('openrouter')}`,
+        Authorization: `Bearer ${keyFor('openrouter', env)}`,
         'HTTP-Referer': 'https://medbot.local',
         'X-Title': 'MEDBOT',
       },
