@@ -15,5 +15,5 @@ test('secret vault encrypts values and round-trips',()=>{
   assert.equal(getRuntimeSecret('TEST_API_KEY'),'super-secret');
   assert.notEqual(getSetting('secret.v1.TEST_API_KEY'),'super-secret');
   if(old===undefined) delete process.env.BOT_TOKEN; else process.env.BOT_TOKEN=old;
-  try{fs.rmSync(file,{force:true});}catch{}
+  try { fs.rmSync(file,{force:true}); } catch (error) { assert.ok(error); }
 });
