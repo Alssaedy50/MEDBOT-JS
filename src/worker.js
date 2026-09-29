@@ -30,7 +30,7 @@ async function backupEndpoint(request, env) {
 
 function healthResponse(env = {}) {
   return json({
-    ok: true, service: 'MEDBOT', runtime: 'cloudflare-worker', phase: 14,
+    ok: true, service: 'MEDBOT', runtime: 'cloudflare-worker', phase: 11,
     telegram_webhook: 'adapter_enabled', telegram_domain_router: 'phase14-student-parity',
     database: env.DB ? 'd1-bound' : 'd1-missing',
     object_storage: env.FILES ? 'r2-bound' : 'r2-missing',
