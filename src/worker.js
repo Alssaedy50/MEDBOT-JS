@@ -2,7 +2,7 @@ import { handleTelegramWebhook } from './telegram/webhook.js';
 import { createD1TelegramIdempotencyStore, initTelegramWebhookStore } from './db/d1/telegramUpdates.js';
 import { createR2Storage } from './storage/r2.js';
 import { createWorkerTelegramDispatcher } from './telegram/workerDispatcher.js';
-import { handleWorkerStart, buildWorkerHome, buildWorkerAccount } from './telegram/workerHome.js';
+import { buildWorkerHome, buildWorkerAccount } from './telegram/workerHome.js';
 
 function json(data, status = 200) {
   return new globalThis.Response(JSON.stringify(data), {
@@ -44,7 +44,7 @@ async function dispatchTelegramUpdate(update, { env }) {
   const handlers = {
     command: async (ctx) => {
       const command = String(ctx.text).trim().split(/\\s+/, 1)[0].split('@', 1)[0].slice(1);
-      if (command === 'start') return handleWorkerStart(ctx);
+      if (command === 'start') { const menu = await buildWorkerHome(ctx.db, ctx.from); return ctx.reply(menu.text, { reply_markup: menu.reply_markup }); }
       throw new Error('worker_command_not_migrated');
     },
     callback: async (ctx) => {
