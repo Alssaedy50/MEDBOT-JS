@@ -10,7 +10,7 @@
  * previous pool keeps serving if a refresh fails.
  */
 
-import { createNodeAiStorage } from './nodeStorage.js';
+import { assertAiStorage } from './storage.js';
 import { ensureSourcesFooter, stripSourceIdentifiers } from '../medicalSources.js';
 import * as providers from './providers.js';
 import { GroundingValidator } from './intent.js';
@@ -26,12 +26,6 @@ export const CANDIDATE_TTL_SECONDS = 300;
 
 export const COOLDOWN_SECONDS = 60;
 export const MAX_COOLDOWN_SECONDS = 900;
-
-const defaultAiStorage = createNodeAiStorage();
-
-export function getDefaultAiStorage() {
-  return defaultAiStorage;
-}
 
 /** Per-model runtime health, keyed by `provider|model|endpoint`. */
 const modelFailures = new Map();
@@ -141,7 +135,7 @@ async function ensureCandidateRegistryIds(candidates, storage = defaultAiStorage
   return candidates;
 }
 
-async function recordSuccess(item, latencyMs, storage = defaultAiStorage) {
+async function recordSuccess(item, latencyMs, storage) {
   markModelSuccess(item);
   const registryId = item.id;
   if (!registryId) return;
@@ -152,7 +146,7 @@ async function recordSuccess(item, latencyMs, storage = defaultAiStorage) {
   }
 }
 
-async function recordFailure(item, error, storage = defaultAiStorage) {
+async function recordFailure(item, error, storage) {
   const [availability, authStatus, errorCategory] = providers.classifyError(error);
   markModelFailure(item, errorCategory);
 
@@ -166,7 +160,7 @@ async function recordFailure(item, error, storage = defaultAiStorage) {
 }
 
 /** Lightweight health probe for a discovered model. */
-async function probeModel(item, fetchImpl, storage = defaultAiStorage, env = undefined) {
+async function probeModel(item, fetchImpl, storage, env = undefined) {
   const probePrompt = 'أجب بكلمة واحدة: ما هو تعريف الحمى؟';
 
   try {
@@ -272,7 +266,8 @@ export function buildActivePool(candidates) {
  * budget on one provider; this selects up to two per provider under a hard
  * global cap, prioritising models never tested or tested least recently.
  */
-export async function refreshDiscoveredModels(candidates, fetchImpl = fetch, storage = defaultAiStorage, env = undefined) {
+export async function refreshDiscoveredModels(candidates, fetchImpl = fetch, storage, env = undefined) {
+  assertAiStorage(storage);
   const discovered = (candidates ?? []).filter(
     (item) => item.availability === 'DISCOVERED' && !isInCooldown(item) && item.provider,
   );
@@ -362,7 +357,8 @@ export function orderCandidatesForQuestion(candidates, { complex = false } = {})
 }
 
 /** Discover, register, verify, then build the active pool (uncached). */
-export async function buildCandidatesUncached(fetchImpl = fetch, storage = defaultAiStorage, env = undefined) {
+export async function buildCandidatesUncached(fetchImpl = fetch, storage, env = undefined) {
+  assertAiStorage(storage);
   const candidates = [];
 
   // A. Fresh provider discovery (independent providers run concurrently).
@@ -448,13 +444,14 @@ export async function buildCandidatesUncached(fetchImpl = fetch, storage = defau
  * Cached for `CANDIDATE_TTL_SECONDS`; on an empty build the previous pool keeps
  * serving (and an empty result is never cached), so the next request can retry.
  */
-export async function getCandidates(fetchImpl = fetch, storage = defaultAiStorage) {
+export async function getCandidates(fetchImpl = fetch, storage, env = undefined) {
+  assertAiStorage(storage);
   const now = Date.now() / 1000;
   if (candidateCache && now - candidateCacheAt < CANDIDATE_TTL_SECONDS) {
     return [...candidateCache];
   }
 
-  const pool = await buildCandidatesUncached(fetchImpl, storage);
+  const pool = await buildCandidatesUncached(fetchImpl, storage, env);
 
   if (pool.length) {
     candidateCache = pool;
@@ -467,9 +464,10 @@ export async function getCandidates(fetchImpl = fetch, storage = defaultAiStorag
 }
 
 /** Warm the discovery/probe cache once at startup (best-effort). */
-export async function warmAiPool() {
+export async function warmAiPool(storage, env = undefined) {
+  assertAiStorage(storage);
   try {
-    await getCandidates();
+    await getCandidates(fetch, storage, env);
   } catch {
     // Startup warm-up must never break serving.
   }
@@ -490,9 +488,10 @@ export async function providerFailover({
   userId = null,
   sourcesFooter = '',
   fetchImpl = fetch,
-  storage = defaultAiStorage,
+  storage,
   env,
 }) {
+  assertAiStorage(storage);
   const validator = new GroundingValidator();
 
   for (const item of candidates ?? []) {
