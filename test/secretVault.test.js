@@ -8,6 +8,7 @@ import { setDbPath } from '../src/db/core.js';
 import {
   getRuntimeSecret,
   parseSecretAssignment,
+  rekeyRuntimeSecrets,
   setRuntimeSecret,
 } from '../src/security/secretVault.js';
 import { getSetting } from '../src/db/settings.js';
@@ -72,3 +73,15 @@ test('NUL bytes and oversized values are rejected', () => {
   assert.throws(() => parseSecretAssignment(`TOKEN=a${String.fromCharCode(0)}b`), /secret_contains_nul/);
   assert.throws(() => setRuntimeSecret('TOKEN', 'x'.repeat(10001)), /secret_too_long/);
 });
+
+test('vault can be re-keyed for a different bot without exposing plaintext', () => withTestDb(() => {
+  setRuntimeSecret('MIGRATION_TOKEN', 'opaque-a=b\\nline2');
+  const count = rekeyRuntimeSecrets('123456:TEST_TOKEN', '654321:DEST_TOKEN');
+  assert.equal(count, 1);
+  process.env.BOT_TOKEN = '654321:DEST_TOKEN';
+  assert.equal(getRuntimeSecret('MIGRATION_TOKEN'), 'opaque-a=b\\nline2');
+  assert.throws(() => {
+    process.env.BOT_TOKEN = '123456:TEST_TOKEN';
+    getRuntimeSecret('MIGRATION_TOKEN');
+  });
+}));
