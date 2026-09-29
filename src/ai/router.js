@@ -166,7 +166,7 @@ async function recordFailure(item, error, storage = defaultAiStorage) {
 }
 
 /** Lightweight health probe for a discovered model. */
-async function probeModel(item, fetchImpl, storage = defaultAiStorage) {
+async function probeModel(item, fetchImpl, storage = defaultAiStorage, env = undefined) {
   const probePrompt = 'أجب بكلمة واحدة: ما هو تعريف الحمى؟';
 
   try {
@@ -272,7 +272,7 @@ export function buildActivePool(candidates) {
  * budget on one provider; this selects up to two per provider under a hard
  * global cap, prioritising models never tested or tested least recently.
  */
-export async function refreshDiscoveredModels(candidates, fetchImpl = fetch, storage = defaultAiStorage) {
+export async function refreshDiscoveredModels(candidates, fetchImpl = fetch, storage = defaultAiStorage, env = undefined) {
   const discovered = (candidates ?? []).filter(
     (item) => item.availability === 'DISCOVERED' && !isInCooldown(item) && item.provider,
   );
@@ -321,7 +321,7 @@ export async function refreshDiscoveredModels(candidates, fetchImpl = fetch, sto
     if (items.length >= MAX_PROBES_PER_PROVIDER) selected.push(items[1]);
   }
 
-  await Promise.allSettled(selected.map((item) => probeModel(item, fetchImpl, storage)));
+  await Promise.allSettled(selected.map((item) => probeModel(item, fetchImpl, storage, env)));
   return candidates;
 }
 
@@ -429,7 +429,7 @@ export async function buildCandidatesUncached(fetchImpl = fetch, storage = defau
   await ensureCandidateRegistryIds(candidates, storage, env);
 
   // D. Probe a small rotating sample.
-  await refreshDiscoveredModels(candidates, fetchImpl, storage);
+  await refreshDiscoveredModels(candidates, fetchImpl, storage, env);
 
   // E. Only VERIFIED models enter the pool.
   const verified = candidates.filter(
