@@ -30,7 +30,7 @@ async function backupEndpoint(request, env) {
 
 function healthResponse(env = {}) {
   return json({
-    ok: true, service: 'MEDBOT', runtime: 'cloudflare-worker', phase: 11,
+    ok: true, service: 'MEDBOT', runtime: 'cloudflare-worker', phase: 14,
     telegram_webhook: 'adapter_enabled', telegram_domain_router: 'phase14-student-parity',
     database: env.DB ? 'd1-bound' : 'd1-missing',
     object_storage: env.FILES ? 'r2-bound' : 'r2-missing',
@@ -64,8 +64,10 @@ async function dispatchTelegramUpdate(update, { env }) {
   if (!bot) throw new Error('telegram_bot_token_not_configured');
   const handlers = {
     command: async (ctx) => {
-      const command = String(ctx.text).trim().split(/\\s+/, 1)[0].split('@', 1)[0].slice(1);
+      const command = String(ctx.text).trim().split(/\s+/, 1)[0].split('@', 1)[0].slice(1);
       if (command === 'start') { const menu = await buildWorkerHome(ctx.db, ctx.from); return ctx.reply(menu.text, { reply_markup: menu.reply_markup }); }
+      if (command === 'help') { const menu=await buildWorkerAbout(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
+      if (command === 'quota') { const menu=await buildWorkerAccount(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
       if (command === 'search') {
         ctx.userData.library_search = true;
         return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\\n\\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
