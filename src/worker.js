@@ -10,7 +10,7 @@ import { buildWorkerContributionStart, prepareWorkerContribution, handleWorkerCo
 import { answerWorkerAi } from './telegram/workerAi.js';
 import { buildWorkerAdmin, buildWorkerPending, buildWorkerContributionReview, reviewWorkerContribution, buildWorkerAiAdmin, buildWorkerAdmins, buildWorkerAdminUser, applyWorkerAdminRole, buildWorkerRuntime } from './telegram/workerAdmin.js';
 import { ensureConfiguredAdmin } from './db/d1/admins.js';
-import { buildWorkerAdminSurfaces, buildWorkerFolders, buildWorkerFolderAdmin, createFolderFromText, renameFolderFromText, deleteFolder, buildWorkerContentAdmin, buildWorkerFileAdmin, renameFileFromText, deleteFileWorker, buildWorkerMessages, buildWorkerMessage, closeWorkerMessage, replyWorkerMessage, buildWorkerTopicsAdmin, buildWorkerTopicAdmin, toggleWorkerTopic, buildWorkerSettings, settingPrompt, saveSetting, buildWorkerNewsAdmin, buildWorkerNewsItem, publishWorkerNews, deleteWorkerNews, buildWorkerVisibility, toggleWorkerVisibility } from './telegram/workerAdminParity.js';
+import { buildWorkerAdminSurfaces, buildWorkerFolders, buildWorkerFolderAdmin, createFolderFromText, renameFolderFromText, deleteFolder, buildWorkerContentAdmin, buildWorkerFileAdmin, renameFileFromText, deleteFileWorker, handleWorkerAdminMedia, buildWorkerMessages, buildWorkerMessage, closeWorkerMessage, replyWorkerMessage, buildWorkerTopicsAdmin, buildWorkerTopicAdmin, toggleWorkerTopic, buildWorkerSettings, settingPrompt, saveSetting, buildWorkerNewsAdmin, buildWorkerNewsItem, publishWorkerNews, deleteWorkerNews, buildWorkerVisibility, toggleWorkerVisibility } from './telegram/workerAdminParity.js';
 import { get } from './db/d1/core.js';
 
 function json(data, status = 200) {
@@ -111,6 +111,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (ctx.data.startsWith('admin_folder_rename:')) { ctx.userData.admin_folder_rename=Number(ctx.data.split(':')[1]); await ctx.answer(); return ctx.editMessageText('✏️ أرسل الاسم الجديد الآن.',{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_folder_delete:')) { const result=await deleteFolder(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(result.text,{reply_markup:{inline_keyboard:[[ {text:'⬅️ الأقسام',callback_data:'admin_folders:0'},{text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
       if (ctx.data === 'admin_content' || ctx.data.startsWith('admin_content:')) { const menu=await buildWorkerContentAdmin(ctx.db,ctx.from,Number(ctx.data.split(':')[1]||0)); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data.startsWith('admin_upload:')) { ctx.userData.admin_upload_folder=Number(ctx.data.split(':')[1]); await ctx.answer(); return ctx.editMessageText('📎 أرسل المورد الآن، واكتب عنوانه في caption.',{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_file:')) { const menu=await buildWorkerFileAdmin(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_file_rename:')) { ctx.userData.admin_file_rename=Number(ctx.data.split(':')[1]); await ctx.answer(); return ctx.editMessageText('✏️ أرسل العنوان الجديد الآن.',{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_file_delete:')) { const result=await deleteFileWorker(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(result.text,{reply_markup:{inline_keyboard:[[ {text:'⬅️ الموارد',callback_data:'admin_content'},{text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
@@ -196,7 +197,8 @@ async function dispatchTelegramUpdate(update, { env }) {
     }
     return ctx.reply('ℹ️ استخدم أزرار MEDBOT للتنقل، أو /search للبحث داخل الموارد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
   };
-  handlers.media = async (ctx) => { if (ctx.userData?.contribution_folder) { const result=await handleWorkerContributionMedia(ctx.db,ctx.from,ctx.message,ctx.userData.contribution_folder); ctx.userData.contribution_folder=null; return ctx.reply(result.text,{parse_mode:'HTML'}); } return ctx.reply('ℹ️ اختر أولاً قسم المساهمات ثم أرسل المورد.'); };
+  handlers.media = async (ctx) => {
+    if (ctx.userData?.admin_upload_folder) { const folderId=ctx.userData.admin_upload_folder; delete ctx.userData.admin_upload_folder; const result=await handleWorkerAdminMedia(ctx.db,ctx.from,ctx.message,folderId); return ctx.reply(result.text,{parse_mode:'HTML'}); } if (ctx.userData?.contribution_folder) { const result=await handleWorkerContributionMedia(ctx.db,ctx.from,ctx.message,ctx.userData.contribution_folder); ctx.userData.contribution_folder=null; return ctx.reply(result.text,{parse_mode:'HTML'}); } return ctx.reply('ℹ️ اختر أولاً قسم المساهمات ثم أرسل المورد.'); };
   const dispatch = createWorkerTelegramDispatcher({ bot, db: env.DB, handlers });
   return dispatch(update);
 }
