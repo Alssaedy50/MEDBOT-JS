@@ -3,6 +3,7 @@ import { aiRegistryEnsure, aiRegistryGetHealthy, aiRegistryMarkSuccess, aiRegist
 import { searchRelevantPubmed } from '../medicalSources.js';
 import { request, classifyError, discoverGeminiModels, discoverGroqModels, discoverOpenrouterModels, isModelSuitableForMedbot } from '../ai/providers.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
+import { loadWorkerSecrets } from './workerSecrets.js';
 
 const SYSTEM_AR='أنت MEDBOT، مساعد أكاديمي طبي. أجب تعليمياً وبوضوح. لا تشخّص ولا تصف علاجاً لحالة شخصية. لا تخترع مصادر أو أرقام PMID. استخدم المصادر التي يزوّدك بها النظام فقط.';
 const SYSTEM_EN='You are MEDBOT, an academic medical assistant. Answer clearly for education. Do not diagnose or prescribe for personal clinical cases. Never invent sources or PMIDs. Use only sources supplied by the system.';
@@ -28,12 +29,14 @@ export async function answerWorkerAi(db,user,question,env){
  const [allowed,remaining]=await checkAndIncrementQuota(db,uid,AI_DAILY_LIMIT);
  if(!allowed)return {text:lang==='en'?'Daily AI allowance reached.':'لقد استنفدت الحد اليومي للمساعد الذكي.',remaining:0};
  let sources=[];try{sources=await searchRelevantPubmed(prompt,3);}catch{sources=[];}
- const pool=await candidates(db,env);
+ const runtimeSecrets=await loadWorkerSecrets(db,env.TELEGRAM_BOT_TOKEN).catch(()=>({}));
+ const aiEnv=new Proxy(env,{get(target,prop){return Object.prototype.hasOwnProperty.call(runtimeSecrets,prop)?runtimeSecrets[prop]:target[prop];}});
+ const pool=await candidates(db,aiEnv);
  if(!pool.length)return {text:lang==='en'?'The AI service is temporarily unavailable.':'المساعد الذكي غير متاح مؤقتاً.',remaining};
  for(const item of pool){
   const started=Date.now();
   try{
-   const answer=await request({item,prompt:grounded(prompt,sources,lang),systemPrompt:lang==='en'?SYSTEM_EN:SYSTEM_AR,fetchImpl:fetch,env});
+   const answer=await request({item,prompt:grounded(prompt,sources,lang),systemPrompt:lang==='en'?SYSTEM_EN:SYSTEM_AR,fetchImpl:fetch,env:aiEnv});
    if(!String(answer).trim())throw new Error('empty_ai_response');
    const latency=Date.now()-started;
    if(item.id){await aiRegistryMarkSuccess(db,item.id,latency);await aiUsageRecord(db,item.id,{userId:uid,latencyMs:latency,success:true});}
