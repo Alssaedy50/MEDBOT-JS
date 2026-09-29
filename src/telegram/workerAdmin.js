@@ -14,3 +14,13 @@ export async function buildWorkerAiAdmin(db,user){if(!(await hasPermission(db,us
 export async function buildWorkerAdmins(db,user){if(!(await hasPermission(db,user.id,'can_admins')))return {text:'🔒 غير مصرح.',reply_markup:kb(home)};const rows=await getAdminsFullRecords(db);const lines=['👥 <b>إدارة المشرفين</b>',''];for(const admin of rows)lines.push('• '+(admin.username?'@'+admin.username:admin.telegram_id)+' — '+admin.role);const buttons=rows.map(r=>[btn((r.username?'@'+r.username:r.telegram_id)+' · '+r.role,'admin_user:'+r.telegram_id)]);buttons.push([btn('⬅️ إدارة المنصة','admin'),btn('🏠 الرئيسية','home')]);return {text:lines.join('\n'),reply_markup:kb(buttons)};}
 export async function buildWorkerAdminUser(db,user,id){if(!(await hasPermission(db,user.id,'can_admins')))return {text:'🔒 غير مصرح.',reply_markup:kb(home)};const r=await get(db,'SELECT telegram_id,username,role FROM admins WHERE telegram_id=?',[Number(id)]);if(!r)return {text:'⚠️ غير موجود.',reply_markup:kb([[btn('⬅️ المشرفون','admin_admins')]])};return {text:'👤 <b>'+String(r[1]||r[0])+'</b>\n\n🆔 '+r[0]+'\n👑 '+r[2],reply_markup:kb([[btn('🛡 مشرف','admin_role:'+r[0]+':admin'),btn('🔎 مراجع','admin_role:'+r[0]+':reviewer')],[btn('⛔ سحب الوصول','admin_role:'+r[0]+':none')],[btn('⬅️ المشرفون','admin_admins')]])};}
 export async function applyWorkerAdminRole(db,user,target,role){if(!(await isOwner(db,user.id)))return {text:'🔒 المالك فقط.'};const ok=await setAdminRole(db,Number(target),role);return {text:ok?'✅ تم تحديث الدور.':'⚠️ تعذر تحديث الدور.'};}
+
+export async function buildWorkerRuntime(db,user){
+ const id=Number(user.id);
+ if(!(await hasPermission(db,id,'can_ai')) && !(await hasPermission(db,id,'can_settings'))) return {text:'🔒 غير مصرح.',reply_markup:kb(home)};
+ const [folders,content,admins,audit,pending,news] = await Promise.all([
+  get(db,'SELECT COUNT(*) FROM folders'),get(db,'SELECT COUNT(*) FROM content'),get(db,'SELECT COUNT(*) FROM admins'),
+  get(db,'SELECT COUNT(*) FROM audit_log'),get(db,"SELECT COUNT(*) FROM contributions WHERE status='pending'"),get(db,"SELECT COUNT(*) FROM news WHERE status='published'"),
+ ]);
+ return {text:'📊 <b>حالة التشغيل</b>\\n\\n🗂 الأقسام: '+Number(folders?.[0]??0)+'\\n📄 الموارد: '+Number(content?.[0]??0)+'\\n👥 المشرفون: '+Number(admins?.[0]??0)+'\\n📥 مساهمات بانتظار المراجعة: '+Number(pending?.[0]??0)+'\\n📜 أحداث التدقيق: '+Number(audit?.[0]??0)+'\\n📰 الأخبار المنشورة: '+Number(news?.[0]??0),reply_markup:kb([[btn('🤖 سجل الذكاء الاصطناعي','admin_ai')],[btn('⬅️ إدارة المنصة','admin'),btn('🏠 الرئيسية','home')]])};
+}
