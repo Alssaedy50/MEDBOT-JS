@@ -17,7 +17,7 @@ export async function applyWorkerAdminRole(db,user,target,role){if(!(await isOwn
 
 export async function buildWorkerRuntime(db,user){
  const id=Number(user.id);
- if(!(await hasPermission(db,id,'can_ai')) && !(await hasPermission(db,id,'can_settings'))) return {text:'🔒 غير مصرح.',reply_markup:kb(home)};
+ if(!(await isAdmin(db,id))) return {text:'🔒 غير مصرح.',reply_markup:kb(home)};
  const [folders,content,admins,audit,pending,news] = await Promise.all([
   get(db,'SELECT COUNT(*) FROM folders'),get(db,'SELECT COUNT(*) FROM content'),get(db,'SELECT COUNT(*) FROM admins'),
   get(db,'SELECT COUNT(*) FROM audit_log'),get(db,"SELECT COUNT(*) FROM contributions WHERE status='pending'"),get(db,"SELECT COUNT(*) FROM news WHERE status='published'"),
