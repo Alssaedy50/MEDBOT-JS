@@ -188,7 +188,8 @@ async function dispatchTelegramUpdate(update, { env }) {
         await ctx.answer();
         return ctx.editMessageText(account.text, { reply_markup: account.reply_markup, parse_mode: 'HTML' });
       }
-      throw new Error('worker_callback_not_migrated');
+      await ctx.answer();
+      return ctx.editMessageText('⚠️ انتهت صلاحية هذا الزر. افتح القائمة الرئيسية من جديد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] }, parse_mode:'HTML' });
     },
   };
   handlers.message = async (ctx) => {
