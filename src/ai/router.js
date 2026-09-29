@@ -110,7 +110,7 @@ function registryRowToProvider(row) {
 }
 
 /** Register candidates in the registry without promoting them. */
-async function ensureCandidateRegistryIds(candidates, storage = defaultAiStorage, env = undefined) {
+async function ensureCandidateRegistryIds(candidates, storage, env = undefined) {
   for (const item of candidates) {
     const { provider, model, endpoint } = item;
     if (!provider || !model || !endpoint) continue;
