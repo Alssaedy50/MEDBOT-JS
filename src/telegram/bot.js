@@ -106,6 +106,7 @@ export function registerHandlers() {
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
   registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
   registerRoute({ name: 'secrets', prefixes: secrets.ADMIN_SECRET_PREFIXES, handler: secrets.handleSecretCallback });
+  registerRoute({ name: 'bundle', prefixes: ['bundle_confirm'], handler: bundleRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
 
   setCatchAll(async (ctx) => {
@@ -200,6 +201,12 @@ async function backupRoute(ctx) {
   if (data === 'backup_menu') return backup.showBackupMenu(ctx);
   if (data === 'backup_chat') return backup.sendDatabaseBackup(ctx, { toChannel: false });
   if (data === 'backup_channel') return backup.sendDatabaseBackup(ctx, { toChannel: true });
+}
+
+async function bundleRoute(ctx) {
+  await ctx.answer();
+  if (!db.isOwner(ctx.from.id)) return ctx.editMessageText('🔒 ملف البوت الكامل متاح للمالك فقط.');
+  return bundleCommand(ctx);
 }
 
 async function aboutRoute(ctx) {
