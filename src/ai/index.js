@@ -18,7 +18,7 @@
  * callers; the Telegram layer selects a mode explicitly.
  */
 
-import * as db from '../db/index.js';
+import { createNodeAiStorage } from './nodeStorage.js';
 import * as searchEngine from '../searchEngine.js';
 import * as medicalSources from '../medicalSources.js';
 import {
@@ -47,11 +47,15 @@ import {
   getCandidates,
   orderCandidatesForQuestion,
   providerFailover,
-  warmAiPool,
+  warmAiPool as warmRouterAiPool,
 } from './router.js';
 
+const aiStorage = createNodeAiStorage();
+
 // Re-exported so the bot can warm the provider pool during startup.
-export { warmAiPool };
+export async function warmAiPool() {
+  return warmRouterAiPool(aiStorage);
+}
 
 // ---------------------------------------------------------------------------
 // Generic educational answer cache
@@ -259,7 +263,7 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch, lang
   const subject = searchSubjectTokens(userPrompt);
   if (!subject.size) return [];
 
-  const candidates = await getCandidates(fetchImpl);
+  const candidates = await getCandidates(fetchImpl, aiStorage);
   if (!candidates.length) return [];
 
   const catalog = buildPlatformCatalog(folders, contents, paths);
@@ -277,6 +281,7 @@ export async function catalogFallbackMatches(userPrompt, fetchImpl = fetch, lang
     userId: null,
     label: 'Platform search',
     fetchImpl,
+    storage: aiStorage,
   });
 
   if (!answer) return [];
@@ -330,7 +335,7 @@ export function buildPlatformSearchAnswer(results, language = 'ar') {
 // search is registry-scoped, so it has nothing per-user to apply here.
 export async function generatePlatformSearchResult(userPrompt, userId = null, fetchImpl = fetch) {
   const prompt = String(userPrompt ?? '').trim();
-  const language = userId === null ? 'ar' : db.getUserLanguage(userId);
+  const language = userId === null ? 'ar' : await aiStorage.getUserLanguage(userId);
   if (!prompt) return { text: '⚠️ يرجى كتابة ما تبحث عنه.', actions: [] };
 
   // A bare enumeration is answered from the registered hierarchy alone.
