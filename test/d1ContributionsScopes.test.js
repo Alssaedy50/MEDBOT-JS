@@ -114,7 +114,7 @@ function mockD1() {
       return statement;
     },
     async batch(statements) {
-      return statements.map((statement) => execute(statement.sql, statement.params ?? []));
+      return statements.map((statement) => ({ meta: execute(statement.sql, statement.params ?? []) }));
     },
   };
   return db;
