@@ -22,7 +22,7 @@ export async function buildWorkerNews(db,user,offset=0) {
  const lines=[lang==='en'?'📰 <b>News</b>':'📰 <b>الأخبار</b>','']; const buttons=[];
  for(const item of rows){ lines.push((item.news_type==='notify'?'🚨':'📚')+' <b>'+esc(item.title)+'</b>'); if(item.doctor)lines.push('👨‍⚕️ '+esc(item.doctor)); if(item.event_at)lines.push('📅 '+esc(item.event_at)); if(item.body)lines.push(esc(item.body).slice(0,260)); lines.push(''); buttons.push([btn('📰 '+String(item.title).slice(0,32),'news:'+item.id)]); }
  if(!rows.length)lines.push(lang==='en'?'No published news.':'لا توجد أخبار منشورة حالياً.');
- const nav=[]; if(Number(offset)>0)nav.push(btn('⬅️','news_page:'+Math.max(0,Number(offset)-5))); if(rows.length===5)nav.push(btn('➡️','news_page:'+(Number(offset)+5))); if(nav.length)buttons.push(nav); buttons.push([btn(t('home',lang),'home')]);
+ const nav=[]; if(Number(offset)>0)nav.push({text:'⬅️',callback_data:'news_page:'+Math.max(0,Number(offset)-5)}); if(rows.length===5)nav.push({text:'➡️',callback_data:'news_page:'+(Number(offset)+5)}); if(nav.length)buttons.push(nav); buttons.push([btn(t('home',lang),'home')]);
  return {text:lines.join('\n'),reply_markup:keyboard(buttons)};
 }
 export async function buildWorkerNewsDetail(db,user,newsId) {
