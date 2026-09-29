@@ -497,7 +497,6 @@ async function unhandledText(ctx) {
 export async function createBot({ token = null, transport = null } = {}) {
   db.setDbPath();
   db.initDb();
-  loadRuntimeSecrets();
 
   // If the deployment recreated an empty filesystem, recover the latest durable
   // snapshot before handlers start serving users. Existing non-empty databases
@@ -510,6 +509,15 @@ export async function createBot({ token = null, transport = null } = {}) {
     if (result.restored) console.log(`MEDBOT restored durable state from ${result.exported_at ?? 'remote backup'}`);
   } catch (error) {
     console.error('MEDBOT durable restore skipped:', error.message);
+  }
+
+  // Hydrate only after durable restore: the restored SQLite snapshot may itself
+  // contain the encrypted vault. This also ensures managed AI/backup secrets are
+  // available before handlers and provider warm-up run.
+  try {
+    loadRuntimeSecrets();
+  } catch (error) {
+    console.error('MEDBOT secret vault hydration skipped:', error.message);
   }
 
   registerHandlers();
