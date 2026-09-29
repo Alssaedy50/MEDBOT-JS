@@ -4,7 +4,9 @@
   "private": true,
   "description": "MEDBOT — Telegram medical-education LMS. JavaScript/Node.js implementation of the MEDBOT platform.",
   "type": "module",
-  "engines": { "node": ">=22.5.0" },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -17,9 +19,13 @@
     "cf:export-data": "node scripts/d1-export-data.mjs",
     "restore:resources": "node scripts/rebind-bundle-resources.mjs",
     "restore:secrets": "node scripts/rekey-bundle-secrets.mjs",
-    "deploy:check": "node --input-type=module -e \"import('./src/backup/fullBundle.js').then(m => process.exit(m.runDeploymentDoctor ? (m.runDeploymentDoctor().ok ? 0 : 1) : 1))\"",
-    "migration:verify": "node --input-type=module -e \"import('./src/db/migrations.js').then(m => process.exit(m.verifyDatabase ? (m.verifyDatabase().ok ? 0 : 1) : 1))\""
+    "deploy:check": "node scripts/deployment-doctor.mjs",
+    "migration:verify": "node scripts/migration-verify.mjs"
   },
-  "dependencies": { "dotenv": "^16.4.5" },
-  "devDependencies": { "eslint": "^9.13.0" }
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "eslint": "^9.13.0"
+  }
 }
