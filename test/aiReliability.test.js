@@ -22,6 +22,7 @@ import * as ai from '../src/ai/index.js';
 import * as intent from '../src/ai/intent.js';
 import * as guard from '../src/ai/guard.js';
 import * as router from '../src/ai/router.js';
+import { createNodeAiStorage } from '../src/ai/nodeStorage.js';
 import * as providers from '../src/ai/providers.js';
 import * as medicalSources from '../src/medicalSources.js';
 import * as prompts from '../src/ai/prompts.js';
@@ -31,6 +32,7 @@ import { AI_DAILY_LIMIT } from '../src/constants.js';
 import { cleanupDb, freshDb, messageCtx, FakeBot } from './helpers/harness.js';
 
 let dbPath;
+const aiStorage = createNodeAiStorage();
 let registry;
 
 before(() => {
@@ -280,6 +282,7 @@ describe('provider failover and output sanitization in the router', () => {
       systemPrompt: 'system',
       candidates: [bad, good],
       fetchImpl,
+      storage: aiStorage,
     });
 
     assert.equal(answer, 'Working answer.');
@@ -295,6 +298,7 @@ describe('provider failover and output sanitization in the router', () => {
       systemPrompt: 'system',
       candidates: [bad],
       fetchImpl: leaking,
+      storage: aiStorage,
     });
     assert.equal(answer, '', 'a leaking provider yields no answer');
   });
@@ -340,7 +344,7 @@ describe('provider failover and output sanitization in the router', () => {
     process.env.GROQ_API_KEY = 'test-key';
     const stub = providerFetch({ answer: 'OK' });
 
-    const first = await router.getCandidates(stub);
+    const first = await router.getCandidates(stub, aiStorage);
     assert.ok(first.length > 0);
 
     // A rebuild must not treat the persisted AVAILABLE row as already verified:
