@@ -497,6 +497,7 @@ async function unhandledText(ctx) {
 export async function createBot({ token = null, transport = null } = {}) {
   db.setDbPath();
   db.initDb();
+  hydrateRuntimeConfig();
 
   // If the deployment recreated an empty filesystem, recover the latest durable
   // snapshot before handlers start serving users. Existing non-empty databases
