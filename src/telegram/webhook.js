@@ -124,11 +124,12 @@ export async function handleTelegramWebhook(request, {
     await idempotency.complete(updateId);
     return jsonResponse({ ok: true });
   } catch (error) {
-    // Telegram only needs a fast acknowledgement. The update is already
-    // claimed by the idempotency store, so retry storms cannot occur.
+    // Do not acknowledge a failed dispatch. Removing the claim allows the next
+    // Telegram delivery attempt to be processed again instead of losing the
+    // update behind a false HTTP 200 acknowledgement.
     await idempotency.fail(updateId);
     console.error('[MEDBOT] webhook dispatch error:', error?.message ?? error);
-    return jsonResponse({ ok: true, accepted: true });
+    return jsonResponse({ ok: false, error: 'dispatch_failed' }, 503);
   }
 }
 
