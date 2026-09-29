@@ -54,8 +54,9 @@ async function readJsonWithLimit(request, maxBodyBytes) {
 
 /**
  * Minimal idempotency store contract:
- *   has(updateId) -> Promise<boolean>
- *   mark(updateId, ttlSeconds) -> Promise<void>
+ *   claim(updateId, ttlSeconds) -> Promise<boolean>
+ *   complete(updateId) -> Promise<void>
+ *   fail(updateId) -> Promise<void>
  *
  * The production Worker will back this with D1. Keeping it injected makes the
  * adapter deterministic and prevents process-local memory from becoming a
@@ -63,19 +64,21 @@ async function readJsonWithLimit(request, maxBodyBytes) {
  */
 export function createMemoryIdempotencyStore({ now = () => Date.now() } = {}) {
   const entries = new Map();
-
   return {
-    async has(updateId) {
-      const expiresAt = entries.get(updateId);
-      if (!expiresAt) return false;
-      if (expiresAt <= now()) {
-        entries.delete(updateId);
-        return false;
-      }
+    async claim(updateId, ttlSeconds = DEFAULT_IDEMPOTENCY_TTL_SECONDS) {
+      const current = entries.get(updateId);
+      const timestamp = now();
+      if (current && current.expiresAt > timestamp) return false;
+      entries.set(updateId, { status: 'processing', expiresAt: timestamp + ttlSeconds * 1000 });
       return true;
     },
-    async mark(updateId, ttlSeconds = DEFAULT_IDEMPOTENCY_TTL_SECONDS) {
-      entries.set(updateId, now() + ttlSeconds * 1000);
+    async complete(updateId) {
+      const current = entries.get(updateId);
+      if (current) entries.set(updateId, { ...current, status: 'completed' });
+    },
+    async fail(updateId) {
+      const current = entries.get(updateId);
+      if (current) entries.delete(updateId);
     },
   };
 }
