@@ -14,7 +14,7 @@ const RESERVED = new Set([
   'BOT_TOKEN','ADMIN_ID','ADMIN_IDS','MEDBOT_SECRETS_KEY','MEDBOT_DB_PATH',
   'PORT','NODE_VERSION','DATABASE_URL',
 ]);
-const NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
+const NAME_RE = /^[A-Z_][A-Z0-9_]{0,63}$/;
 
 function key() {
   const token = String(process.env.BOT_TOKEN ?? '').trim();
@@ -41,9 +41,23 @@ function decrypt(payload) {
 }
 function settingKey(name) { return PREFIX + name; }
 
+/** Parse the first '=' as the assignment separator and preserve the value byte-for-byte as text. */
+export function parseSecretAssignment(input) {
+  const source = String(input ?? '');
+  const separator = source.indexOf('=');
+  if (separator <= 0) throw new Error('invalid_secret_assignment');
+  const rawName = source.slice(0, separator).trim();
+  const value = source.slice(separator + 1);
+  const name = validateName(rawName);
+  if (value.includes('\\u0000')) throw new Error('secret_contains_nul');
+  return { name, value };
+}
+
 export function setRuntimeSecret(name, value) {
   const n = validateName(name);
-  if (String(value ?? '').length > 10000) throw new Error('secret_too_long');
+  const text = String(value ?? '');
+  if (text.includes('\\u0000')) throw new Error('secret_contains_nul');
+  if (Buffer.byteLength(text, 'utf8') > 10000) throw new Error('secret_too_long');
   setSetting(settingKey(n), encrypt(value));
   return n;
 }
