@@ -11,7 +11,7 @@ The owner can open **🔐 المتغيرات السرية** or use `/secrets`.
 - BOT_TOKEN, ADMIN_ID, ADMIN_IDS, MEDBOT_SECRETS_KEY, and core process variables are reserved.
 - The encryption key is derived from BOT_TOKEN; the same bot token is required to decrypt the vault after migration.
 
-Typical managed values: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, MEDBOT_BACKUP_URL, MEDBOT_BACKUP_TOKEN.
+Typical managed values: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, MEDBOT_BACKUP_URL, MEDBOT_BACKUP_TOKEN. Any other valid environment-variable name can also be added; the UI does not require a provider to be pre-registered.
 
 ## Full deploy bundle
 
@@ -31,3 +31,23 @@ This uploads embedded resources to the destination bot and replaces the copied d
 The bundle never contains the plaintext BOT_TOKEN. Runtime secrets are encrypted in the database. The full bundle remains owner-sensitive.
 
 A destination platform still needs Node.js >=22.5, the Telegram bot token, persistent SQLite storage or the D1 path, network access, and platform bindings such as R2/D1. The archive contains the application and state; platform credentials and infrastructure cannot safely be embedded as plaintext.
+
+## Dynamic variable input and validation
+
+The owner-only UI accepts:
+- `NAME=VALUE`
+- `export NAME=VALUE`
+- `NAME = VALUE`
+- `NAME: VALUE`
+- JSON object: `{"NAME":"VALUE","OTHER":"VALUE"}`
+- multiline values such as PEM/private-key material
+
+The parser preserves the value rather than trimming or rewriting it after the delimiter.
+
+Validation has two levels:
+1. **Generic validation:** variable-name syntax, length, non-empty value, supported value types.
+2. **Provider-aware shape checks:** when the variable name identifies Telegram/OpenAI/Google/Groq/OpenRouter, common token/key shapes produce warnings when they do not match.
+
+A warning is not treated as proof that a key is invalid. Conversely, a correct-looking prefix is not proof that a credential is active. The bot therefore does not falsely claim to validate an arbitrary provider token without actually contacting that provider.
+
+After successful storage the secret is applied to the current process immediately, so adding a provider key does not require a restart.
