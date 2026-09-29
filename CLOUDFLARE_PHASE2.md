@@ -13,7 +13,7 @@ contract without switching the production bot away from SQLite.
   - D1 constraint-error normalization
   - dependency-injected adapter factory
 - `src/db/d1/migrations.js`
-  - final MEDBOT schema contract at version 17
+  - final MEDBOT schema contract at version 18
   - fresh-D1 bootstrap
   - schema version marker
 - `test/d1Core.test.js`
@@ -47,7 +47,7 @@ This phase does NOT:
 The next database operation is a verified SQLite-to-D1 data transfer:
 
 1. create a real D1 database;
-2. bootstrap schema version 17;
+2. bootstrap schema version 18;
 3. export/transform SQLite data;
 4. import into a staging D1 database;
 5. run row-count, key, foreign-key and semantic checks;
