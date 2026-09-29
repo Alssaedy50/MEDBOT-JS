@@ -25,9 +25,9 @@ function withTestDb(fn) {
     if (oldToken === undefined) delete process.env.BOT_TOKEN;
     else process.env.BOT_TOKEN = oldToken;
     setDbPath(null);
-    try { fs.rmSync(file, { force: true }); } catch {}
-    try { fs.rmSync(`${file}-wal`, { force: true }); } catch {}
-    try { fs.rmSync(`${file}-shm`, { force: true }); } catch {}
+    try { fs.rmSync(file, { force: true }); } catch { /* cleanup is best-effort */ }
+    try { fs.rmSync(`${file}-wal`, { force: true }); } catch { /* cleanup is best-effort */ }
+    try { fs.rmSync(`${file}-shm`, { force: true }); } catch { /* cleanup is best-effort */ }
   }
 }
 
