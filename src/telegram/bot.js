@@ -22,6 +22,8 @@ import * as adminSettings from '../ui/adminSettings.js';
 import * as adminFolders from '../ui/adminFolders.js';
 import * as homeUi from '../ui/home.js';
 import * as workflowModule from '../workflow.js';
+import * as backup from './adminBackup.js';
+import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { btn, keyboard } from './ui.js';
 import { TelegramTransport } from './client.js';
@@ -130,6 +132,11 @@ export function registerHandlers() {
 
   // ---- Media handler (uploads) ------------------------------------
   setMediaHandler(async (ctx) => {
+    if (ctx.userData?.restore_waiting && ctx.message?.document?.file_id) {
+      await backup.restoreFromUploadedFile(ctx, ctx.message.document.file_id);
+      delete ctx.userData.restore_waiting;
+      return;
+    }
     if (await adminFolders.handleUploadMedia(ctx)) return;
     if (await contributions.handleContributionMedia(ctx)) return;
     if (await contributions.handleResubmitMedia(ctx)) return;
@@ -144,6 +151,8 @@ export function registerHandlers() {
   registerCommand('search', searchCommand);
   registerCommand('ask', askCommand);
   registerCommand('contact', messages.contactCommand);
+  registerCommand('backup', backupCommand);
+  registerCommand('restore', restoreCommand);
   registerCommand('cancel', cancelCommand);
   registerCommand('text', unhandledText);
 }
@@ -407,6 +416,22 @@ async function askCommand(ctx) {
   await assistant.handleAssistantText(ctx);
 }
 
+async function backupCommand(ctx) {
+  await backup.sendDatabaseBackup(ctx);
+}
+
+async function restoreCommand(ctx) {
+  if (!backup.isOwnerForCommand?.(ctx.from.id)) {
+    // The backup module performs the authoritative owner check too.
+    if (!String(process.env.ADMIN_ID ?? '').trim() || String(process.env.ADMIN_ID).trim() !== String(ctx.from.id)) {
+      await ctx.reply('🔒 استعادة البيانات متاحة للمالك فقط.');
+      return;
+    }
+  }
+  ctx.userData.restore_waiting = true;
+  await ctx.reply('♻️ أرسل الآن ملف MEDBOT Data Backup بصيغة JSON.\n\nلن يتم تعديل البيانات حتى يتم التحقق من الملف بالكامل.\n\nلإلغاء العملية أرسل /cancel.');
+}
+
 async function cancelCommand(ctx) {
   // Clear every armed workflow so no stale state consumes the next message.
   workflowModule.clearAll(ctx);
@@ -439,6 +464,19 @@ async function unhandledText(ctx) {
 export async function createBot({ token = null, transport = null } = {}) {
   db.setDbPath();
   db.initDb();
+
+  // If the deployment recreated an empty filesystem, recover the latest durable
+  // snapshot before handlers start serving users. Existing non-empty databases
+  // are never overwritten.
+  try {
+    const result = await restoreRemoteSnapshotIfEmpty({
+      url: process.env.MEDBOT_BACKUP_URL,
+      token: process.env.MEDBOT_BACKUP_TOKEN,
+    });
+    if (result.restored) console.log(`MEDBOT restored durable state from ${result.exported_at ?? 'remote backup'}`);
+  } catch (error) {
+    console.error('MEDBOT durable restore skipped:', error.message);
+  }
 
   registerHandlers();
 
