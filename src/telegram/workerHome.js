@@ -1,7 +1,7 @@
 import { get } from '../db/d1/core.js';
 import { registerUser, getUserLanguage, getRemainingQuota } from '../db/d1/users.js';
 import { getUnreadNewsCount, countNews } from '../db/d1/news.js';
-import { AI_DAILY_LIMIT, DEFAULT_LANGUAGE, FEATURES, PLATFORM_SETTING_DEFAULTS } from '../constants.js';
+import { AI_DAILY_LIMIT, FEATURES, PLATFORM_SETTING_DEFAULTS } from '../constants.js';
 import { t } from '../i18n.js';
 
 const MENU = [
@@ -17,7 +17,7 @@ async function setting(db, key) {
   return row?.[0] ?? PLATFORM_SETTING_DEFAULTS[key] ?? '';
 }
 
-async function hidden(db) {
+async function getHiddenFeatures(db) {
   const raw = await setting(db, 'hidden_features');
   return new Set(String(raw).split(',').map((x) => x.trim()).filter((x) => FEATURES.includes(x)));
 }
@@ -27,7 +27,7 @@ export async function buildWorkerHome(db, user) {
   if (!Number.isSafeInteger(id)) throw new TypeError('Invalid Telegram user id');
   await registerUser(db, id, user?.username ?? null, [user?.first_name, user?.last_name].filter(Boolean).join(' ') || null);
   const language = await getUserLanguage(db, id);
-  const hidden = await hidden(db);
+  const hidden = await getHiddenFeatures(db);
   const rows = MENU.filter(([feature]) => !hidden.has(feature))
     .map(([, key, callback]) => [{ text: t(key, language), callback_data: callback }]);
   const admin = await get(db, 'SELECT 1 FROM admins WHERE user_id=? AND role IN (?,?,?)', [id, 'owner', 'admin', 'reviewer']);
