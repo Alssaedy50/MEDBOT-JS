@@ -313,6 +313,7 @@ describe('provider failover and output sanitization in the router', () => {
       systemPrompt: 'system',
       candidates: [bad],
       fetchImpl,
+      storage: aiStorage,
     });
     assert.equal(answer, 'The clean, final answer.');
   });
@@ -350,7 +351,7 @@ describe('provider failover and output sanitization in the router', () => {
     // A rebuild must not treat the persisted AVAILABLE row as already verified:
     // it is a fresh DISCOVERED candidate and has to be probed again.
     router.resetRouterState();
-    const second = await router.getCandidates(stub);
+    const second = await router.getCandidates(stub, aiStorage);
     assert.equal(
       second.length,
       first.length,
