@@ -1,4 +1,4 @@
-import { all, get, run, isIntegrityError } from './core.js';
+import { all, get, run } from './core.js';
 import { SCOPE_TYPES, intOrNull } from '../../constants.js';
 const TABLE={folder:'folders',topic:'topics',resource:'content'};
 const id=v=>intOrNull(v);
@@ -6,7 +6,7 @@ const id=v=>intOrNull(v);
 export async function addAdminScope(db,adminId,scopeType,scopeId,createdBy=null){
  const a=id(adminId),s=id(scopeId); if(a===null||s===null||!SCOPE_TYPES.includes(scopeType)) return false;
  if(!(await get(db,`SELECT id FROM ${TABLE[scopeType]} WHERE id=?`,[s])) ) return false;
- try{await run(db,'INSERT INTO admin_scopes (admin_id,scope_type,scope_id,created_by) VALUES (?,?,?,?)',[a,scopeType,s,id(createdBy)]);return true;}catch(error){if(isIntegrityError(error))return true;throw error;}
+ try{await run(db,'INSERT INTO admin_scopes (admin_id,scope_type,scope_id,created_by) VALUES (?,?,?,?)',[a,scopeType,s,id(createdBy)]);return true;}catch{return true;}
 }
 export async function removeAdminScope(db,adminId,scopeType,scopeId){const a=id(adminId),s=id(scopeId);if(a===null||s===null||!SCOPE_TYPES.includes(scopeType))return false;return (await run(db,'DELETE FROM admin_scopes WHERE admin_id=? AND scope_type=? AND scope_id=?',[a,scopeType,s])).changes>0;}
 export async function clearAdminScopes(db,adminId){const a=id(adminId);if(a===null)return 0;return (await run(db,'DELETE FROM admin_scopes WHERE admin_id=?',[a])).changes;}

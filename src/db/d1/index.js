@@ -5,6 +5,3 @@ export * from './users.js';
 export * from './registry.js';
 export * from './contributions.js';
 export * from './scopes.js';
-export * from './news.js';
-export * from './notifications.js';
-export * from './audit.js';
