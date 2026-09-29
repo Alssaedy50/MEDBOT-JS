@@ -123,7 +123,7 @@ export function rekeyRuntimeSecrets(fromToken, toToken) {
       db.exec('COMMIT');
       return updates.length;
     } catch (error) {
-      try { db.exec('ROLLBACK'); } catch {}
+      try { db.exec('ROLLBACK'); } catch { /* preserve the original migration error */ }
       throw error;
     }
   });
