@@ -29,6 +29,7 @@ import { loadRuntimeSecrets } from '../security/secretVault.js';
 import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { readFile, rm } from 'node:fs/promises';
+import path from 'node:path';
 import { btn, keyboard } from './ui.js';
 import { TelegramTransport } from './client.js';
 import {
@@ -454,7 +455,7 @@ async function bundleCommand(ctx) {
   } catch(error) {
     await ctx.reply(`❌ تعذر إنشاء الملف الكامل: ${error.message}\\n\\nإذا تجاوز 50MB سنحتاج مسار R2/تنزيل مباشر بدلاً من Telegram.`);
   } finally {
-    if (bundle?.path) await rm(new URL('.', `file://${bundle.path}`), { recursive:true, force:true }).catch(()=>{});
+    if (bundle?.path) await rm(path.dirname(bundle.path), { recursive:true, force:true }).catch(()=>{});
   }
 }
 
