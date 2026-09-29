@@ -59,7 +59,7 @@ export function parseSecretAssignment(input) {
 export function setRuntimeSecret(name, value) {
   const n = validateName(name);
   const text = String(value ?? '');
-  if (text.includes('\\u0000')) throw new Error('secret_contains_nul');
+  if (text.includes(String.fromCharCode(0))) throw new Error('secret_contains_nul');
   if (Buffer.byteLength(text, 'utf8') > 10000) throw new Error('secret_too_long');
   setSetting(settingKey(n), encrypt(value));
   return n;
