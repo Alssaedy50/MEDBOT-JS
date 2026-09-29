@@ -336,6 +336,7 @@ describe('provider failover and output sanitization in the router', () => {
       systemPrompt: 'system',
       candidates: [bad],
       fetchImpl,
+      storage: aiStorage,
     });
     assert.equal(answer, 'The final clean answer.');
     assert.equal(call, 2, 'exactly one clean regeneration was attempted');
