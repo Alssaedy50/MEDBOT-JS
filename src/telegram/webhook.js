@@ -1,3 +1,4 @@
+/* global Response, TextEncoder */
 /**
  * Telegram webhook adapter.
  *
