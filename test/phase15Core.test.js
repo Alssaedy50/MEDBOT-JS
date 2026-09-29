@@ -4,8 +4,6 @@ import { buildWorkerTopics, buildWorkerTopic } from '../src/telegram/workerTopic
 import { buildWorkerContributionStart, prepareWorkerContribution } from '../src/telegram/workerContributions.js';
 import { buildWorkerContext } from '../src/telegram/workerContext.js';
 
-function fakeDb(rows){return {prepare(){throw new Error('not used');},...rows};}
-
 test('Phase 15 Worker context recognizes Telegram media updates',()=>{
  const ctx=buildWorkerContext({update:{message:{from:{id:1},chat:{id:1},document:{file_id:'x'}}}});
  assert.equal(ctx.kind,'media'); assert.equal(ctx.message.document.file_id,'x');
