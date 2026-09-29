@@ -3,3 +3,5 @@ export * from './core.js';
 export * from './migrations.js';
 export * from './users.js';
 export * from './registry.js';
+export * from './contributions.js';
+export * from './scopes.js';
