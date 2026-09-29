@@ -3,7 +3,6 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { resolveDbPath, withDb } from '../db/core.js';
 import { TelegramTransport } from '../telegram/client.js';
 
@@ -18,11 +17,6 @@ function run(command,args) {
     let stderr=''; child.stderr.on('data',(d)=>{stderr+=d.toString();});
     child.on('error',reject); child.on('close',(code)=>code===0?resolve():reject(new Error(stderr||`command_failed:${code}`)));
   });
-}
-async function addFile(tarPath, sourcePath, arcPath) {
-  await run('tar',['-rf',tarPath,'-C',path.dirname(sourcePath),path.basename(sourcePath)]);
-  // arcPath is documented in the manifest; tar is intentionally kept simple.
-  return arcPath;
 }
 export async function buildFullBotBundle() {
   const root=process.cwd();
