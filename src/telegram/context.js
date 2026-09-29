@@ -40,6 +40,9 @@ export const BOT_METHODS = Object.freeze([
   'sendAudio',
   'sendVideo',
   'sendVoice',
+  'sendDocumentBytes',
+  'getFile',
+  'downloadFile',
   'editMessageText',
   'answerCallbackQuery',
 ]);
@@ -192,6 +195,10 @@ export function buildCallbackContext({
           bot.sendVideo(chatId, video, localizeOptions(options)),
         sendVoice: (chatId, voice, options = {}) =>
           bot.sendVoice(chatId, voice, localizeOptions(options)),
+        sendDocumentBytes: (chatId, bytes, options = {}) =>
+          bot.sendDocumentBytes(chatId, bytes, localizeOptions(options)),
+        getFile: (fileId) => bot.getFile(fileId),
+        downloadFile: (filePath) => bot.downloadFile(filePath),
         editMessageText: (text, options = {}) =>
           bot.editMessageText(text, localizeOptions(options)),
       };
