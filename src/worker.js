@@ -4,7 +4,7 @@ import { createR2Storage } from './storage/r2.js';
 import { createWorkerTelegramDispatcher } from './telegram/workerDispatcher.js';
 import { buildWorkerHome, buildWorkerAccount } from './telegram/workerHome.js';
 import { buildWorkerLibraryRoot, buildWorkerFolder, findWorkerResources, buildWorkerFile } from './telegram/workerResources.js';
-import { buildWorkerLanguage, applyWorkerLanguage, buildWorkerAbout, buildWorkerContact, buildWorkerNews, buildWorkerNewsDetail, buildWorkerMyContributions, buildWorkerUnsupported } from './telegram/workerParity.js';
+import { buildWorkerLanguage, applyWorkerLanguage, buildWorkerAbout, buildWorkerContact, buildWorkerNews, buildWorkerNewsDetail, buildWorkerMyContributions } from './telegram/workerParity.js';
 import { buildWorkerTopics, buildWorkerTopic } from './telegram/workerTopics.js';
 import { buildWorkerContributionStart, prepareWorkerContribution, handleWorkerContributionMedia } from './telegram/workerContributions.js';
 import { answerWorkerAi } from './telegram/workerAi.js';
