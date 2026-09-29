@@ -17,9 +17,12 @@
     }
   ],
 
-  // R2 is intentionally not bound yet. Large-file storage is a later
-  // migration phase; Telegram remains the current archive in Phase 1.
-  //
-  // Future shape:
-  // "r2_buckets": [{ "binding": "FILES", "bucket_name": "medbot-files" }]
+  // Phase 8: R2 is the future object-storage boundary for registered files.
+  // The bucket can be created/bound in staging without changing Render.
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "medbot-files"
+    }
+  ]
 }
