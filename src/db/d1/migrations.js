@@ -142,6 +142,7 @@ export const D1_SCHEMA_SQL = [
   "CREATE INDEX IF NOT EXISTS idx_registry_avail ON ai_registry(availability)",
   "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_registry_provider_model_endpoint ON ai_registry(provider, model, endpoint)",
   "CREATE INDEX IF NOT EXISTS idx_content_created ON content(created_at)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS ux_content_contribution ON content(source_contribution_id) WHERE source_type = 'contribution' AND source_contribution_id IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status)",
   "CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)",
   "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id)",
