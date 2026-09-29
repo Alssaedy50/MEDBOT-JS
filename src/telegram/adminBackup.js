@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import { isOwner } from '../db/admins.js';
 import {
   exportDatabaseSnapshot,
@@ -14,6 +13,8 @@ let running = false;
 export function isOwnerForCommand(userId) {
   try { return isOwner(userId); } catch { return false; }
 }
+
+function ownerOnly(userId) { return isOwnerForCommand(userId); }
 
 function caption(snapshot) {
   const tables = snapshot.tables.length;
