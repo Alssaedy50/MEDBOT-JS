@@ -1,4 +1,4 @@
-import { get, run } from './core.js';
+import { all, get, run } from './core.js';
 
 function limit(value, fallback = 20, max = 200) {
   const n = Number.parseInt(value, 10);
@@ -18,7 +18,7 @@ export async function recordNotification(db, senderId, title, body, audience = '
 
 export async function getNotifications(db, count = 20) {
   const safe = limit(count);
-  return (await import('./core.js')).all(
+  return all(
     db,
     'SELECT id,sender_id,title,body,audience,recipients,delivered,created_at FROM notifications ORDER BY id DESC LIMIT ?',
     [safe],
