@@ -5,7 +5,9 @@ on:
   push:
     branches:
       - "cloudflare/phase13-*"
+      - "cloudflare/phase14-*"
       - "phase13-*"
+      - "phase14-*"
 jobs:
   test:
     runs-on: ubuntu-latest
