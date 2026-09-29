@@ -257,9 +257,9 @@ export class TelegramTransport {
   }
 
   async sendDocumentBytes(chatId, bytes, { filename = 'document.bin', caption, parse_mode, reply_markup, message_thread_id } = {}) {
-    const form = new FormData();
+    const form = new globalThis.FormData();
     form.set('chat_id', String(chatId));
-    form.set('document', new Blob([bytes], { type: 'application/octet-stream' }), filename);
+    form.set('document', new globalThis.Blob([bytes], { type: 'application/octet-stream' }), filename);
     if (caption !== undefined) form.set('caption', String(caption));
     if (parse_mode !== undefined) form.set('parse_mode', String(parse_mode));
     if (reply_markup !== undefined) form.set('reply_markup', JSON.stringify(normalizeReplyMarkup(reply_markup)));
