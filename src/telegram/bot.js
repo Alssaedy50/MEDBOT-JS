@@ -23,6 +23,9 @@ import * as adminFolders from '../ui/adminFolders.js';
 import * as homeUi from '../ui/home.js';
 import * as workflowModule from '../workflow.js';
 import * as backup from './adminBackup.js';
+import * as secrets from './adminSecrets.js';
+import { buildFullBotBundle } from '../backup/fullBundle.js';
+import { loadRuntimeSecrets } from '../security/secretVault.js';
 import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { btn, keyboard } from './ui.js';
@@ -102,6 +105,8 @@ export function registerHandlers() {
   registerRoute({ name: 'account', prefixes: ['account'], handler: accountRoute });
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
   registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
+  registerRoute({ name: 'secrets', prefixes: secrets.ADMIN_SECRET_PREFIXES, handler: secrets.handleSecretCallback });
+  registerRoute({ name: 'bundle', prefixes: ['bundle_confirm'], handler: bundleRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
 
   setCatchAll(async (ctx) => {
@@ -126,6 +131,7 @@ export function registerHandlers() {
   registerTextHandler('contact', messages.handleMessageText);
   registerTextHandler('adminAdd', adminManagement.handleAddAdminText);
   registerTextHandler('settings', adminSettings.handleSettingText);
+  registerTextHandler('secrets', secrets.handleSecretText);
   registerTextHandler('topicsCreate', topics.handleTopicsText);
   registerTextHandler('notifications', adminSettings.handleNotificationText);
   registerTextHandler('assistant', assistant.handleAssistantText);
@@ -154,6 +160,8 @@ export function registerHandlers() {
   registerCommand('contact', messages.contactCommand);
   registerCommand('backup', backupCommand);
   registerCommand('restore', restoreCommand);
+  registerCommand('secrets', secretsCommand);
+  registerCommand('bundle', bundleCommand);
   registerCommand('cancel', cancelCommand);
   registerCommand('text', unhandledText);
 }
@@ -193,6 +201,12 @@ async function backupRoute(ctx) {
   if (data === 'backup_menu') return backup.showBackupMenu(ctx);
   if (data === 'backup_chat') return backup.sendDatabaseBackup(ctx, { toChannel: false });
   if (data === 'backup_channel') return backup.sendDatabaseBackup(ctx, { toChannel: true });
+}
+
+async function bundleRoute(ctx) {
+  await ctx.answer();
+  if (!db.isOwner(ctx.from.id)) return ctx.editMessageText('🔒 ملف البوت الكامل متاح للمالك فقط.');
+  return bundleCommand(ctx);
 }
 
 async function aboutRoute(ctx) {
@@ -425,6 +439,19 @@ async function askCommand(ctx) {
   await assistant.handleAssistantText(ctx);
 }
 
+async function secretsCommand(ctx) { await secrets.showSecrets(ctx); }
+
+async function bundleCommand(ctx) {
+  if (!db.isOwner(ctx.from.id)) { await ctx.reply('🔒 ملف البوت الكامل متاح للمالك فقط.'); return; }
+  await ctx.reply('📦 جاري تجهيز ملف البوت الكامل… قد يستغرق ذلك حسب حجم المشروع.');
+  try {
+    const bundle=await buildFullBotBundle();
+    if (bundle.size > 49 * 1024 * 1024) throw new Error(`bundle_too_large_for_telegram:${bundle.size}`);
+    const bytes=await (await import('node:fs/promises')).readFile(bundle.path);
+    await ctx.bot.sendDocumentBytes(ctx.from.id,bytes,{filename:'MEDBOT-FULL.tar.gz',caption:`📦 <b>MEDBOT Full Deploy Bundle</b>\\nالحجم: ${(bundle.size/1024/1024).toFixed(2)} MB\\nيشمل الكود + قاعدة البيانات + الإعدادات + مخزن الأسرار المشفّر.`,parse_mode:'HTML'});
+  } catch(error) { await ctx.reply(`❌ تعذر إنشاء الملف الكامل: ${error.message}\\n\\nإذا تجاوز 50MB سنحتاج مسار R2/تنزيل مباشر بدلاً من Telegram.`); }
+}
+
 async function backupCommand(ctx) {
   await backup.sendDatabaseBackup(ctx);
 }
@@ -470,6 +497,7 @@ async function unhandledText(ctx) {
 export async function createBot({ token = null, transport = null } = {}) {
   db.setDbPath();
   db.initDb();
+  loadRuntimeSecrets();
 
   // If the deployment recreated an empty filesystem, recover the latest durable
   // snapshot before handlers start serving users. Existing non-empty databases
