@@ -13,14 +13,8 @@ export async function initTelegramWebhookStore(db) {
     throw new TypeError('A Cloudflare D1 database binding is required');
   }
   await db.exec(
-    `CREATE TABLE IF NOT EXISTS telegram_updates (
-      update_id INTEGER PRIMARY KEY,
-      status TEXT NOT NULL DEFAULT 'processing',
-      claimed_at INTEGER NOT NULL,
-      completed_at INTEGER,
-      expires_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_telegram_updates_expires ON telegram_updates(expires_at);`
+    `CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'processing', claimed_at INTEGER NOT NULL, completed_at INTEGER, expires_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_telegram_updates_expires ON telegram_updates(expires_at);`
+  );    CREATE INDEX IF NOT EXISTS idx_telegram_updates_expires ON telegram_updates(expires_at);`
   );
 }
 
