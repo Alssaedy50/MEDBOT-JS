@@ -7,6 +7,7 @@
  */
 import crypto from 'node:crypto';
 import { getSetting, setSetting } from '../db/settings.js';
+import { withDb } from '../db/core.js';
 
 const PREFIX = 'secret.v1.';
 const RESERVED = new Set([
@@ -58,17 +59,10 @@ export function deleteRuntimeSecret(name) {
   const { withDb, run } = requireDb();
   return withDb((db) => run(db, 'DELETE FROM settings WHERE key=?', [settingKey(n)]).changes > 0);
 }
-function requireDb() {
-  // Static import would be cleaner, but this tiny indirection avoids exposing
-  // DB primitives as part of the public vault contract.
-  return { withDb: globalThis.__MEDBOT_WITH_DB, run: globalThis.__MEDBOT_RUN };
-}
 export function listRuntimeSecrets() {
-  return Object.keys(process.env).filter(() => false); // vault names are loaded below
+  return getRuntimeSecretNames();
 }
 export function loadRuntimeSecrets() {
-  const { withDb } = requireDb();
-  if (!withDb) return [];
   const loaded = [];
   withDb((db) => {
     for (const row of db.prepare("SELECT key FROM settings WHERE key LIKE 'secret.v1.%' ORDER BY key").all()) {
@@ -84,7 +78,5 @@ export function loadRuntimeSecrets() {
   return loaded;
 }
 export function getRuntimeSecretNames() {
-  const { withDb } = requireDb();
-  if (!withDb) return [];
   return withDb((db) => db.prepare("SELECT key FROM settings WHERE key LIKE 'secret.v1.%' ORDER BY key").all().map((row)=>String(row[0]).slice(PREFIX.length)));
 }
