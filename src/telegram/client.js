@@ -239,6 +239,10 @@ export class TelegramTransport {
   }
 
   /** One member's status/permissions. Used by the archive health diagnostic. */
+  deleteMessage(chatId, messageId) {
+    return this.call('deleteMessage', { chat_id: chatId, message_id: messageId });
+  }
+
   getChatMember(chatId, userId) {
     return this.call('getChatMember', { chat_id: chatId, user_id: userId });
   }
