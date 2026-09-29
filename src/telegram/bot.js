@@ -25,7 +25,7 @@ import * as workflowModule from '../workflow.js';
 import * as backup from './adminBackup.js';
 import * as secrets from './adminSecrets.js';
 import { buildFullBotBundle } from '../backup/fullBundle.js';
-import { hydrateRuntimeConfig } from '../security/runtimeConfig.js';
+import { loadRuntimeSecrets } from '../security/secretVault.js';
 import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { btn, keyboard } from './ui.js';
@@ -497,7 +497,7 @@ async function unhandledText(ctx) {
 export async function createBot({ token = null, transport = null } = {}) {
   db.setDbPath();
   db.initDb();
-  hydrateRuntimeConfig();
+  loadRuntimeSecrets();
 
   // If the deployment recreated an empty filesystem, recover the latest durable
   // snapshot before handlers start serving users. Existing non-empty databases
