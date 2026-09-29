@@ -48,6 +48,7 @@ export async function handleSecretText(ctx) {
     if (!match) { await ctx.reply('⚠️ الصيغة غير صحيحة. استخدم NAME=VALUE.'); return true; }
     try {
       const name=setRuntimeSecret(match[1],match[2]);
+      if (ctx.message?.message_id) await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(()=>{});
       await ctx.reply(`✅ تم حفظ <code>${name}</code> مشفّراً. القيمة لا يمكن عرضها من البوت.`,{parse_mode:'HTML'});
     } catch (error) { await ctx.reply(`❌ لم يتم الحفظ: ${error.message}`); }
     return true;
