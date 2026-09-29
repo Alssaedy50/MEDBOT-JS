@@ -43,6 +43,7 @@ export const BOT_METHODS = Object.freeze([
   'sendDocumentBytes',
   'getFile',
   'downloadFile',
+  'deleteMessage',
   'editMessageText',
   'answerCallbackQuery',
 ]);
@@ -199,6 +200,7 @@ export function buildCallbackContext({
           bot.sendDocumentBytes(chatId, bytes, localizeOptions(options)),
         getFile: (fileId) => bot.getFile(fileId),
         downloadFile: (filePath) => bot.downloadFile(filePath),
+        deleteMessage: (chatId, messageId) => bot.deleteMessage(chatId, messageId),
         editMessageText: (text, options = {}) =>
           bot.editMessageText(text, localizeOptions(options)),
       };
