@@ -45,6 +45,7 @@ export function setRuntimeSecret(name, value) {
   const n = validateName(name);
   if (String(value ?? '').length > 10000) throw new Error('secret_too_long');
   setSetting(settingKey(n), encrypt(value));
+  process.env[n] = String(value);
   return n;
 }
 export function getRuntimeSecret(name) {
@@ -56,7 +57,9 @@ export function deleteRuntimeSecret(name) {
   const n = validateName(name);
   // Keep the encrypted value out of generic settings by replacing it with an
   // empty marker; actual row deletion is handled by the dedicated helper below.
-  return withDb((db) => db.prepare('DELETE FROM settings WHERE key=?').run(settingKey(n)).changes > 0);
+  const deleted = withDb((db) => db.prepare('DELETE FROM settings WHERE key=?').run(settingKey(n)).changes > 0);
+  if (deleted) delete process.env[n];
+  return deleted;
 }
 export function listRuntimeSecrets() {
   return getRuntimeSecretNames();
