@@ -116,7 +116,7 @@ function registryRowToProvider(row) {
 }
 
 /** Register candidates in the registry without promoting them. */
-async function ensureCandidateRegistryIds(candidates, storage = defaultAiStorage) {
+async function ensureCandidateRegistryIds(candidates, storage = defaultAiStorage, env = undefined) {
   for (const item of candidates) {
     const { provider, model, endpoint } = item;
     if (!provider || !model || !endpoint) continue;
@@ -127,7 +127,7 @@ async function ensureCandidateRegistryIds(candidates, storage = defaultAiStorage
         model,
         endpoint,
         'DISCOVERED',
-        providers.hasKey(provider) ? 'valid' : null,
+        providers.hasKey(provider, env) ? 'valid' : null,
         'text_generation',
       );
       if (registryId) {
@@ -171,7 +171,7 @@ async function probeModel(item, fetchImpl, storage = defaultAiStorage) {
 
   try {
     const started = Date.now();
-    const answer = await providers.request({ item, prompt: probePrompt, fetchImpl });
+    const answer = await providers.request({ item, prompt: probePrompt, fetchImpl, env });
     const latencyMs = Math.round(Date.now() - started);
 
     if (!answer.trim()) throw new Error('EMPTY_MODEL_RESPONSE');
@@ -362,15 +362,15 @@ export function orderCandidatesForQuestion(candidates, { complex = false } = {})
 }
 
 /** Discover, register, verify, then build the active pool (uncached). */
-export async function buildCandidatesUncached(fetchImpl = fetch, storage = defaultAiStorage) {
+export async function buildCandidatesUncached(fetchImpl = fetch, storage = defaultAiStorage, env = undefined) {
   const candidates = [];
 
   // A. Fresh provider discovery (independent providers run concurrently).
   try {
     const [gemini, groq, openrouter] = await Promise.allSettled([
-      providers.discoverGeminiModels(fetchImpl),
-      providers.discoverGroqModels(fetchImpl),
-      providers.discoverOpenrouterModels(fetchImpl),
+      providers.discoverGeminiModels(fetchImpl, env),
+      providers.discoverGroqModels(fetchImpl, env),
+      providers.discoverOpenrouterModels(fetchImpl, env),
     ]);
 
     for (const result of [gemini, groq, openrouter]) {
@@ -393,7 +393,7 @@ export async function buildCandidatesUncached(fetchImpl = fetch, storage = defau
     for (const row of await storage.aiRegistryGetHealthy()) {
       const item = registryRowToProvider(row);
       if (!item.provider || !item.model) continue;
-      if (!providers.hasKey(item.provider)) continue;
+      if (!providers.hasKey(item.provider, env)) continue;
       if (!providers.isModelSuitableForMedbot(item)) continue;
 
       // OpenRouter registry rows do not persist pricing metadata, so only
@@ -426,7 +426,7 @@ export async function buildCandidatesUncached(fetchImpl = fetch, storage = defau
   }
 
   // C. Register without promoting.
-  await ensureCandidateRegistryIds(candidates, storage);
+  await ensureCandidateRegistryIds(candidates, storage, env);
 
   // D. Probe a small rotating sample.
   await refreshDiscoveredModels(candidates, fetchImpl, storage);
@@ -435,7 +435,7 @@ export async function buildCandidatesUncached(fetchImpl = fetch, storage = defau
   const verified = candidates.filter(
     (item) =>
       item.availability === 'VERIFIED' &&
-      providers.hasKey(item.provider) &&
+      providers.hasKey(item.provider, env) &&
       !isInCooldown(item),
   );
 
@@ -491,6 +491,7 @@ export async function providerFailover({
   sourcesFooter = '',
   fetchImpl = fetch,
   storage = defaultAiStorage,
+  env,
 }) {
   const validator = new GroundingValidator();
 
@@ -502,6 +503,7 @@ export async function providerFailover({
         prompt: groundedPrompt,
         systemPrompt,
         fetchImpl,
+        env,
       });
 
       if (!validator.allows(answer)) throw new Error('Validator rejected empty answer');
@@ -515,6 +517,7 @@ export async function providerFailover({
             prompt: `${groundedPrompt}${REPETITION_RETRY_INSTRUCTION}`,
             systemPrompt,
             fetchImpl,
+            env,
           });
           if (validator.allows(retry)) {
             const guarded = guardAnswer(retry);
@@ -539,6 +542,7 @@ export async function providerFailover({
           prompt: `${groundedPrompt}${FINAL_ANSWER_ONLY_INSTRUCTION}`,
           systemPrompt,
           fetchImpl,
+          env,
         });
         const guarded = guardAnswer(retry);
         const cleanRetry = sanitizeModelAnswer(guarded);
