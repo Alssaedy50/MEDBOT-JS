@@ -18,6 +18,7 @@
  * callers; the Telegram layer selects a mode explicitly.
  */
 
+import * as db from '../db/index.js';
 import { createNodeAiStorage } from './nodeStorage.js';
 import * as searchEngine from '../searchEngine.js';
 import * as medicalSources from '../medicalSources.js';
