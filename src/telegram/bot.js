@@ -22,6 +22,8 @@ import * as adminSettings from '../ui/adminSettings.js';
 import * as adminFolders from '../ui/adminFolders.js';
 import * as homeUi from '../ui/home.js';
 import * as workflowModule from '../workflow.js';
+import * as backup from './adminBackup.js';
+import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { btn, keyboard } from './ui.js';
 import { TelegramTransport } from './client.js';
@@ -99,6 +101,7 @@ export function registerHandlers() {
   registerRoute({ name: 'language', prefixes: ['language', 'lang_set:'], handler: languageRoute });
   registerRoute({ name: 'account', prefixes: ['account'], handler: accountRoute });
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
+  registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
 
   setCatchAll(async (ctx) => {
@@ -130,6 +133,11 @@ export function registerHandlers() {
 
   // ---- Media handler (uploads) ------------------------------------
   setMediaHandler(async (ctx) => {
+    if (ctx.userData?.restore_waiting && ctx.message?.document?.file_id) {
+      await backup.restoreFromUploadedFile(ctx, ctx.message.document.file_id);
+      delete ctx.userData.restore_waiting;
+      return;
+    }
     if (await adminFolders.handleUploadMedia(ctx)) return;
     if (await contributions.handleContributionMedia(ctx)) return;
     if (await contributions.handleResubmitMedia(ctx)) return;
@@ -144,6 +152,8 @@ export function registerHandlers() {
   registerCommand('search', searchCommand);
   registerCommand('ask', askCommand);
   registerCommand('contact', messages.contactCommand);
+  registerCommand('backup', backupCommand);
+  registerCommand('restore', restoreCommand);
   registerCommand('cancel', cancelCommand);
   registerCommand('text', unhandledText);
 }
@@ -175,6 +185,14 @@ async function languageRoute(ctx) {
 async function accountRoute(ctx) {
   await ctx.answer();
   await homeUi.showAccount(ctx);
+}
+
+async function backupRoute(ctx) {
+  await ctx.answer();
+  const data = ctx.data ?? '';
+  if (data === 'backup_menu') return backup.showBackupMenu(ctx);
+  if (data === 'backup_chat') return backup.sendDatabaseBackup(ctx, { toChannel: false });
+  if (data === 'backup_channel') return backup.sendDatabaseBackup(ctx, { toChannel: true });
 }
 
 async function aboutRoute(ctx) {
@@ -407,6 +425,19 @@ async function askCommand(ctx) {
   await assistant.handleAssistantText(ctx);
 }
 
+async function backupCommand(ctx) {
+  await backup.sendDatabaseBackup(ctx);
+}
+
+async function restoreCommand(ctx) {
+  if (!backup.isOwnerForCommand(ctx.from.id)) {
+    await ctx.reply('🔒 استعادة البيانات متاحة للمالك فقط.');
+    return;
+  }
+  ctx.userData.restore_waiting = true;
+  await ctx.reply('♻️ أرسل الآن ملف MEDBOT Data Backup بصيغة JSON.\n\nلن يتم تعديل البيانات حتى يتم التحقق من الملف بالكامل.\n\nلإلغاء العملية أرسل /cancel.');
+}
+
 async function cancelCommand(ctx) {
   // Clear every armed workflow so no stale state consumes the next message.
   workflowModule.clearAll(ctx);
@@ -439,6 +470,19 @@ async function unhandledText(ctx) {
 export async function createBot({ token = null, transport = null } = {}) {
   db.setDbPath();
   db.initDb();
+
+  // If the deployment recreated an empty filesystem, recover the latest durable
+  // snapshot before handlers start serving users. Existing non-empty databases
+  // are never overwritten.
+  try {
+    const result = await restoreRemoteSnapshotIfEmpty({
+      url: process.env.MEDBOT_BACKUP_URL,
+      token: process.env.MEDBOT_BACKUP_TOKEN,
+    });
+    if (result.restored) console.log(`MEDBOT restored durable state from ${result.exported_at ?? 'remote backup'}`);
+  } catch (error) {
+    console.error('MEDBOT durable restore skipped:', error.message);
+  }
 
   registerHandlers();
 

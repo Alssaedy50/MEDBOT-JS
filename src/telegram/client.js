@@ -242,4 +242,39 @@ export class TelegramTransport {
   getChatMember(chatId, userId) {
     return this.call('getChatMember', { chat_id: chatId, user_id: userId });
   }
+
+  async getFile(fileId) {
+    return this.call('getFile', { file_id: fileId });
+  }
+
+  async downloadFile(filePath) {
+    const response = await this.fetchImpl(
+      `${this.apiBase}/file/bot${this.token}/${filePath}`,
+      { method: 'GET', signal: AbortSignal.timeout(35000) },
+    );
+    if (!response.ok) throw new BotApiError('downloadFile', response.status, response.statusText);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  async sendDocumentBytes(chatId, bytes, { filename = 'document.bin', caption, parse_mode, reply_markup, message_thread_id } = {}) {
+    const form = new globalThis.FormData();
+    form.set('chat_id', String(chatId));
+    form.set('document', new globalThis.Blob([bytes], { type: 'application/octet-stream' }), filename);
+    if (caption !== undefined) form.set('caption', String(caption));
+    if (parse_mode !== undefined) form.set('parse_mode', String(parse_mode));
+    if (reply_markup !== undefined) form.set('reply_markup', JSON.stringify(normalizeReplyMarkup(reply_markup)));
+    if (message_thread_id !== undefined) form.set('message_thread_id', String(message_thread_id));
+
+    let response;
+    try {
+      response = await this.fetchImpl(this.url('sendDocument'), { method: 'POST', body: form });
+    } catch (error) {
+      throw new BotApiError('sendDocument', 0, `network error: ${error.message}`);
+    }
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.ok) {
+      throw new BotApiError('sendDocument', response.status, data?.description ?? response.statusText ?? 'unknown error', data?.parameters ?? null);
+    }
+    return data.result;
+  }
 }

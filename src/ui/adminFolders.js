@@ -124,6 +124,7 @@ export async function showAdminPanel(ctx) {
     capabilityButtons.push(btn('👥 إدارة المشرفين', 'admin_admins'));
     capabilityButtons.push(btn('👑 نقل الملكية', 'admin_transfer'));
     capabilityButtons.push(btn('📜 سجل التدقيق', 'admin_audit'));
+    capabilityButtons.push(btn('🛡 نسخة بيانات MEDBOT', 'backup_menu'));
   }
 
   const rows = [...chunkButtons(capabilityButtons, 2, { maxLabelLength: 20 })];

@@ -30,7 +30,7 @@ export async function buildWorkerHome(db, user) {
   const hidden = await getHiddenFeatures(db);
   const rows = MENU.filter(([feature]) => !hidden.has(feature))
     .map(([, key, callback]) => [{ text: t(key, language), callback_data: callback }]);
-  const admin = await get(db, 'SELECT 1 FROM admins WHERE user_id=? AND role IN (?,?,?)', [id, 'owner', 'admin', 'reviewer']);
+  const admin = await get(db, 'SELECT 1 FROM admins WHERE telegram_id=? AND role IN (?,?,?)', [id, 'owner', 'admin', 'reviewer']);
   if (admin && !hidden.has('admin_panel')) rows.push([{ text: t('menu_admin', language), callback_data: 'admin' }]);
   const platform = await setting(db, 'platform_name');
   const name = String(user?.first_name ?? '').trim() || (language === 'en' ? 'Doctor' : 'دكتور');
