@@ -3,7 +3,7 @@
  *
  * Values are encrypted at rest in SQLite with AES-256-GCM. The encryption key
  * is derived from the bot token, so the vault survives redeploys when the same
- * bot token is restored. The Telegram bot token itself is never stored here.
+ * bot token is restored; a different bot identity requires explicit vault re-keying. The Telegram bot token itself is never stored here.
  */
 import crypto from 'node:crypto';
 import { getSetting, setSetting } from '../db/settings.js';
