@@ -10,6 +10,7 @@ import { buildWorkerContributionStart, prepareWorkerContribution, handleWorkerCo
 import { answerWorkerAi } from './telegram/workerAi.js';
 import { buildWorkerAdmin, buildWorkerPending, buildWorkerContributionReview, reviewWorkerContribution, buildWorkerAiAdmin, buildWorkerAdmins, buildWorkerAdminUser, applyWorkerAdminRole, buildWorkerRuntime } from './telegram/workerAdmin.js';
 import { ensureConfiguredAdmin } from './db/d1/admins.js';
+import { get } from './db/d1/core.js';
 
 function json(data, status = 200) {
   return new globalThis.Response(JSON.stringify(data), {
