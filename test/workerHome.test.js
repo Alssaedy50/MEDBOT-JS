@@ -7,7 +7,7 @@ function db() {
   return {
     prepare(sql) {
       return {
-        bind(...params) {
+        bind(..._params) {
           return {
             async run() { return { meta: { changes: 1, last_row_id: 1 } }; },
             async first() {
