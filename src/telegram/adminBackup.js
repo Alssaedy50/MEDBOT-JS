@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import * as db from '../db/index.js';
+import { isOwner } from '../db/admins.js';
 import {
   exportDatabaseSnapshot,
   snapshotToJson,
@@ -12,7 +12,7 @@ let timer = null;
 let running = false;
 
 function ownerOnly(userId) {
-  try { return db.isOwner(userId); } catch { return false; }
+  try { return isOwner(userId); } catch { return false; }
 }
 
 function caption(snapshot) {
