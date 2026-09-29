@@ -115,6 +115,7 @@ export async function handleTelegramWebhook(request, {
   if (!claimed) return jsonResponse({ ok: true, duplicate: true });
 
   if (typeof dispatch !== 'function') {
+    await idempotency.fail(updateId);
     return jsonResponse({ ok: false, error: 'dispatch_not_configured' }, 503);
   }
 
