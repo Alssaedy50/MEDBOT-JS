@@ -1,3 +1,4 @@
+/* global Request */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryIdempotencyStore, handleTelegramWebhook } from '../src/telegram/webhook.js';
