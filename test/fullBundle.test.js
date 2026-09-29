@@ -39,10 +39,10 @@ test('full bundle contains a consistent database snapshot and excludes plaintext
     if (oldBackupToken === undefined) delete process.env.MEDBOT_BACKUP_TOKEN;
     else process.env.MEDBOT_BACKUP_TOKEN = oldBackupToken;
     if (bundlePath) {
-      try { fs.rmSync(path.dirname(bundlePath), { recursive: true, force: true }); } catch {}
+      try { fs.rmSync(path.dirname(bundlePath), { recursive: true, force: true }); } catch { /* cleanup is best-effort */ }
     }
     for (const suffix of ['', '-wal', '-shm']) {
-      try { fs.rmSync(`${dbFile}${suffix}`, { force: true }); } catch {}
+      try { fs.rmSync(`${dbFile}${suffix}`, { force: true }); } catch { /* cleanup is best-effort */ }
     }
   }
 });
