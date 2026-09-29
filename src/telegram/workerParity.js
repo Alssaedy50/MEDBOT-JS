@@ -16,7 +16,7 @@ export async function buildWorkerLanguage(db, user) {
 }
 export async function applyWorkerLanguage(db, userId, language) { if (!SUPPORTED_LANGUAGES.includes(language)) return false; await setUserLanguage(db, Number(userId), language); return true; }
 export async function buildWorkerAbout(db, user) { const lang=await getUserLanguage(db,Number(user.id)); return { text:'ℹ️ <b>'+esc(await setting(db,'platform_name'))+'</b>\n\n'+esc(await setting(db,'platform_about')), reply_markup:keyboard([[btn(t('home',lang),'home')]]) }; }
-export async function buildWorkerContact(db, user) { const lang=await getUserLanguage(db,Number(user.id)); return { text:'📬 <b>'+(lang==='en'?'Contact the platform':'تواصل مع المنصة')+'</b>\n\n'+esc(await setting(db,'contact_text')), reply_markup:keyboard([[btn(t('home',lang),'home')]]) }; }
+export async function buildWorkerContact(db, user) { const lang=await getUserLanguage(db,Number(user.id)); return { text:'📬 <b>'+(lang==='en'?'Contact the platform':'تواصل مع المنصة')+'</b>\n\n'+esc(await setting(db,'contact_text'))+'\n\n'+(lang==='en'?'Choose the type of message:':'اختر نوع الرسالة التي تريد إرسالها:'), reply_markup:keyboard([[btn('💬 رسالة','msg_cat:message')],[btn('📑 طلب ملخص','msg_cat:summary')],[btn('💡 اقتراح','msg_cat:suggestion')],[btn('🚩 بلاغ','msg_cat:report')],[btn('📥 رسائلي','msg_mine')],[btn(t('home',lang),'home')]]) }; }
 export async function buildWorkerNews(db,user,offset=0) {
  const lang=await getUserLanguage(db,Number(user.id)); const rows=await listNews(db,{status:'published',limit:5,offset:Math.max(0,Number(offset)||0)});
  const lines=[lang==='en'?'📰 <b>News</b>':'📰 <b>الأخبار</b>','']; const buttons=[];
