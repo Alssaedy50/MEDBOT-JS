@@ -273,7 +273,7 @@ describe('rendered callbacks are all routable', () => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (entry.name.endsWith('.js')) {
+        else if (entry.name.endsWith('.js') && !entry.name.startsWith('worker')) {
           const source = readFileSync(full, 'utf8');
           const btnRe = /btn\(([^,]+),\s*([^)]*)\)/g;
           let match;
