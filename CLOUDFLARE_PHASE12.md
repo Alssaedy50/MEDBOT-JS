@@ -3,13 +3,16 @@
 ## Owner-only secret manager
 
 The owner can open **🔐 المتغيرات السرية** or use `/secrets`.
-- Add/update: send `NAME=VALUE`.
+- Add/update: send `NAME=VALUE`; only the first `=` separates the name from the value.
+- Values may contain additional `=` characters, spaces, or newlines and are preserved as supplied.
+- Secret names are normalized to uppercase and must match the environment-variable pattern `[A-Z_][A-Z0-9_]*` (up to 64 characters).
+- Bootstrap/security variables such as `BOT_TOKEN`, `ADMIN_ID`, `ADMIN_IDS`, and database/process controls remain reserved.
 - The input message is deleted after capture.
 - Values are encrypted at rest with AES-256-GCM.
 - Values are never displayed back by the bot.
-- On startup, encrypted values are loaded into `process.env` before the bot starts.
+- After database startup/recovery, encrypted values are loaded into `process.env` before handlers and AI warm-up run.
 - BOT_TOKEN, ADMIN_ID, ADMIN_IDS, MEDBOT_SECRETS_KEY, and core process variables are reserved.
-- The encryption key is derived from BOT_TOKEN; the same bot token is required to decrypt the vault after migration.
+- The encryption key is derived from BOT_TOKEN. A bundle moved to a different bot therefore requires an explicit secret re-key using both the source and destination bot tokens.
 
 Typical managed values: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, MEDBOT_BACKUP_URL, MEDBOT_BACKUP_TOKEN.
 
@@ -25,6 +28,12 @@ For a different Telegram bot, embedded resources must be rebound because file_id
 `BOT_TOKEN=... ADMIN_ID=... npm run restore:resources`
 
 This uploads embedded resources to the destination bot and replaces the copied database file IDs.
+
+Before that, re-key the encrypted vault when the bot identity changes:
+
+`OLD_BOT_TOKEN=... BOT_TOKEN=... npm run restore:secrets`
+
+The source token is required only for in-memory decryption/re-encryption. It is never stored in the bundle, database, logs, or environment files committed to Git.
 
 ## Security boundary
 
