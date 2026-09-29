@@ -17,7 +17,8 @@
     "cf:dev": "npx wrangler dev",
     "cf:deploy": "npx wrangler deploy",
     "cf:export-data": "node scripts/d1-export-data.mjs",
-    "restore:resources": "node scripts/rebind-bundle-resources.mjs"
+    "restore:resources": "node scripts/rebind-bundle-resources.mjs",
+    "restore:secrets": "node scripts/rekey-bundle-secrets.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5"
