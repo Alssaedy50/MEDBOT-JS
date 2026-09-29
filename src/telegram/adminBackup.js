@@ -25,6 +25,22 @@ function caption(snapshot) {
   );
 }
 
+export async function showBackupMenu(ctx) {
+  if (!ownerOnly(ctx.from.id)) { await ctx.editMessageText('🔒 النسخ الاحتياطي الكامل متاح للمالك فقط.'); return; }
+  const configured = Boolean((process.env.MEDBOT_BACKUP_CHAT_ID || '').trim());
+  await ctx.editMessageText(
+    '🛡 <b>نسخ بيانات MEDBOT</b>\\n\\n' +
+    'النسخة تحتوي بيانات المنصة والإعدادات والمشرفين وسجل التدقيق والمساهمات والأخبار والموارد المسجلة.\\n\\n' +
+    (configured ? '🟢 قناة النسخ الاحتياطي مضبوطة.' : '🟡 لم تُضبط قناة النسخ الاحتياطي؛ يمكنك الحفظ في محادثتك الآن.'),
+    { reply_markup: { inline_keyboard: [
+      [{ text:'📥 تنزيل إلى محادثتي', callback_data:'backup_chat' }],
+      [{ text:'📢 إرسال إلى قناة النسخ', callback_data:'backup_channel' }],
+      [{ text:'⬅️ إدارة المنصة', callback_data:'admin' }],
+      [{ text:'🏠 الرئيسية', callback_data:'home' }],
+    ] } },
+  );
+}
+
 export async function sendDatabaseBackup(ctx, { toChannel = false } = {}) {
   if (!ownerOnly(ctx.from.id)) {
     await ctx.reply('🔒 النسخ الاحتياطي الكامل متاح للمالك فقط.');
