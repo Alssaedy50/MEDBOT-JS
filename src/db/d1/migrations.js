@@ -1,12 +1,12 @@
 /**
- * Fresh D1 schema contract for MEDBOT schema version 17.
+ * Fresh D1 schema contract for MEDBOT schema version 18.
  *
  * This is intentionally separate from the existing SQLite migration runner.
  * It creates the final schema on an empty D1 database; it does not import or
  * delete production data.
  */
 
-export const D1_SCHEMA_VERSION = 17;
+export const D1_SCHEMA_VERSION = 18;
 
 export const D1_SCHEMA_SQL = [
   "PRAGMA foreign_keys = ON",
@@ -166,8 +166,10 @@ export const D1_SCHEMA_SQL = [
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_news_auto_resource_unique ON news(resource_id) WHERE source = 'resource' AND resource_id IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS idx_admin_scopes_admin ON admin_scopes(admin_id)",
   "CREATE INDEX IF NOT EXISTS idx_admin_scopes_target ON admin_scopes(scope_type, scope_id)",
+  "CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'processing', claimed_at INTEGER NOT NULL, completed_at INTEGER, expires_at INTEGER NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_telegram_updates_expires ON telegram_updates(expires_at)",
 
-  "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '17') " +
+  "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '18') " +
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 ].join(";\n") + ";\n";
 

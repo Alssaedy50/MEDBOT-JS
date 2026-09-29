@@ -43,6 +43,7 @@ const EXPECTED_TABLES = [
   'news_subscriptions',
   'news_deliveries',
   'admin_scopes',
+  'telegram_updates',
 ];
 
 const MAX_STATEMENT_BYTES = 90_000;

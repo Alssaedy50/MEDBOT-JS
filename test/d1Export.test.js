@@ -10,7 +10,7 @@ const TABLES = [
   'users','folders','content','contributions','about_us','settings',
   'daily_ai_usage','admins','ai_registry','ai_model_usage','messages',
   'audit_log','topics','topic_folders','notifications','archive_sync',
-  'news','news_reads','news_subscriptions','news_deliveries','admin_scopes',
+  'news','news_reads','news_subscriptions','news_deliveries','admin_scopes','telegram_updates',
 ];
 
 test('D1 exporter reads SQLite read-only and preserves row data', () => {

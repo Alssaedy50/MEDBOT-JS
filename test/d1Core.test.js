@@ -110,10 +110,10 @@ test('createD1Adapter exposes dependency-injected async primitives', async () =>
   assert.equal(typeof adapter.batch, 'function');
 });
 
-test('D1 schema contract is version 17 and contains core MEDBOT tables', () => {
+test('D1 schema contract is version 18 and contains core MEDBOT tables', () => {
   const sql = getD1SchemaSql();
 
-  assert.equal(D1_SCHEMA_VERSION, 17);
+  assert.equal(D1_SCHEMA_VERSION, 18);
   for (const table of [
     'users',
     'folders',
@@ -124,6 +124,7 @@ test('D1 schema contract is version 17 and contains core MEDBOT tables', () => {
     'news',
     'news_deliveries',
     'admin_scopes',
+    'telegram_updates',
     'schema_meta',
   ]) {
     assert.match(sql, new RegExp('CREATE TABLE IF NOT EXISTS ' + table));
