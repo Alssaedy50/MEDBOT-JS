@@ -4,6 +4,7 @@ import { createR2Storage } from './storage/r2.js';
 import { createWorkerTelegramDispatcher } from './telegram/workerDispatcher.js';
 import { buildWorkerHome, buildWorkerAccount } from './telegram/workerHome.js';
 import { buildWorkerLibraryRoot, buildWorkerFolder, findWorkerResources, buildWorkerFile } from './telegram/workerResources.js';
+import { buildWorkerLanguage, applyWorkerLanguage, buildWorkerAbout, buildWorkerContact, buildWorkerNews, buildWorkerNewsDetail, buildWorkerMyContributions, buildWorkerUnsupported } from './telegram/workerParity.js';
 
 function json(data, status = 200) {
   return new globalThis.Response(JSON.stringify(data), {
@@ -30,7 +31,7 @@ async function backupEndpoint(request, env) {
 function healthResponse(env = {}) {
   return json({
     ok: true, service: 'MEDBOT', runtime: 'cloudflare-worker', phase: 11,
-    telegram_webhook: 'adapter_enabled', telegram_domain_router: 'partial',
+    telegram_webhook: 'adapter_enabled', telegram_domain_router: 'phase14-student-parity',
     database: env.DB ? 'd1-bound' : 'd1-missing',
     object_storage: env.FILES ? 'r2-bound' : 'r2-missing',
   });
@@ -63,8 +64,10 @@ async function dispatchTelegramUpdate(update, { env }) {
   if (!bot) throw new Error('telegram_bot_token_not_configured');
   const handlers = {
     command: async (ctx) => {
-      const command = String(ctx.text).trim().split(/\\s+/, 1)[0].split('@', 1)[0].slice(1);
+      const command = String(ctx.text).trim().split(/\s+/, 1)[0].split('@', 1)[0].slice(1);
       if (command === 'start') { const menu = await buildWorkerHome(ctx.db, ctx.from); return ctx.reply(menu.text, { reply_markup: menu.reply_markup }); }
+      if (command === 'help') { const menu=await buildWorkerAbout(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
+      if (command === 'quota') { const menu=await buildWorkerAccount(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
       if (command === 'search') {
         ctx.userData.library_search = true;
         return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\\n\\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
@@ -72,6 +75,15 @@ async function dispatchTelegramUpdate(update, { env }) {
       throw new Error('worker_command_not_migrated');
     },
     callback: async (ctx) => {
+      if (ctx.data === 'language') { const menu=await buildWorkerLanguage(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data.startsWith('lang_set:')) { const ok=await applyWorkerLanguage(ctx.db,ctx.from.id,ctx.data.split(':')[1]); const menu=await buildWorkerHome(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(ok?menu.text:'⚠️ لغة غير مدعومة.',{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'about') { const menu=await buildWorkerAbout(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'contact') { const menu=await buildWorkerContact(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'news') { const menu=await buildWorkerNews(ctx.db,ctx.from,0); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data.startsWith('news_page:')) { const menu=await buildWorkerNews(ctx.db,ctx.from,Number(ctx.data.split(':')[1])||0); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data.startsWith('news:')) { const menu=await buildWorkerNewsDetail(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'my_contributions') { const menu=await buildWorkerMyContributions(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'assistant' || ctx.data === 'topics' || ctx.data === 'contributions' || ctx.data === 'admin') { const menu=await buildWorkerUnsupported(ctx.db,ctx.from,ctx.data); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data === 'resources') {
         const menu = await buildWorkerLibraryRoot(ctx.db, ctx.from);
         await ctx.answer();
@@ -125,7 +137,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       const result = await findWorkerResources(ctx.db, ctx.from, ctx.text);
       return ctx.reply(result.text, { reply_markup: result.reply_markup, parse_mode: 'HTML' });
     }
-    throw new Error('worker_message_not_migrated');
+    return ctx.reply('ℹ️ استخدم أزرار MEDBOT للتنقل، أو /search للبحث داخل الموارد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
   };
   const dispatch = createWorkerTelegramDispatcher({ bot, db: env.DB, handlers });
   return dispatch(update);
