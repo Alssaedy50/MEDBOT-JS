@@ -20,6 +20,7 @@ for (const file of [
   'src/db/d1/migrations.js',
   'src/db/d1/telegramUpdates.js',
   'src/storage/r2.js',
+  'scripts/d1-apply-schema.mjs',
   'package-lock.json',
 ]) {
   add('file:' + file, exists(file) ? 'PASS' : 'FAIL', exists(file) ? 'present' : 'missing');
