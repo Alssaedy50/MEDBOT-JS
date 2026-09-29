@@ -11,7 +11,7 @@ import {
 let timer = null;
 let running = false;
 
-function ownerOnly(userId) {
+export function isOwnerForCommand(userId) {
   try { return isOwner(userId); } catch { return false; }
 }
 
