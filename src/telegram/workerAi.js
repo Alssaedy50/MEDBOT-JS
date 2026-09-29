@@ -27,7 +27,7 @@ export async function answerWorkerAi(db,user,question,env){
  if(!prompt)return {text:lang==='en'?'Please write a clear question.':'يرجى كتابة سؤال واضح.'};
  const [allowed,remaining]=await checkAndIncrementQuota(db,uid,AI_DAILY_LIMIT);
  if(!allowed)return {text:lang==='en'?'Daily AI allowance reached.':'لقد استنفدت الحد اليومي للمساعد الذكي.',remaining:0};
- let sources=[];try{sources=await searchRelevantPubmed(prompt,3);}catch(error){sources=[];}
+ let sources=[];try{sources=await searchRelevantPubmed(prompt,3);}catch{sources=[];}
  const pool=await candidates(db,env);
  if(!pool.length)return {text:lang==='en'?'The AI service is temporarily unavailable.':'المساعد الذكي غير متاح مؤقتاً.',remaining};
  for(const item of pool){
