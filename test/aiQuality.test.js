@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 
 import * as ai from '../src/ai/index.js';
 import * as router from '../src/ai/router.js';
+import { createNodeAiStorage } from '../src/ai/nodeStorage.js';
 import * as providers from '../src/ai/providers.js';
 import * as medicalSources from '../src/medicalSources.js';
 import { classifyQuestionType, QUESTION_TYPES } from '../src/ai/questionType.js';
@@ -22,6 +23,7 @@ import { safeTruncate } from '../src/truncate.js';
 import { cleanupDb, freshDb } from './helpers/harness.js';
 
 let dbPath;
+const aiStorage = createNodeAiStorage();
 
 before(() => {
   dbPath = freshDb('ai-quality');
@@ -317,6 +319,7 @@ describe('medical answer delivery (V2)', () => {
         { provider: 'groq', model: 'llama-3.3-70b-versatile', endpoint: 'https://api.groq.com/openai/v1/chat/completions' },
       ],
       fetchImpl: leaking,
+      storage: aiStorage,
     });
     assert.equal(answer, '');
   });
@@ -333,6 +336,7 @@ describe('medical answer delivery (V2)', () => {
         { provider: 'groq', model: 'llama-3.3-70b-versatile', endpoint: 'https://api.groq.com/openai/v1/chat/completions' },
       ],
       fetchImpl: withCitation,
+      storage: aiStorage,
     });
     assert.doesNotMatch(answer, /PMID\s*\d/i);
     assert.doesNotMatch(answer, /doi\s*:/i);
