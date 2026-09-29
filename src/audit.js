@@ -9,6 +9,7 @@
  */
 
 import * as db from './db/index.js';
+import { scheduleAutomaticBackup } from './telegram/adminBackup.js';
 
 // Important admin operations worth recording. Extend by adding entries here.
 export const AUDIT_ACTIONS = Object.freeze([
@@ -139,7 +140,7 @@ export async function logAction(
       numericActor = Number.isNaN(parsed) ? null : parsed;
     }
 
-    return db.addAuditEntry(
+    const saved = db.addAuditEntry(
       numericActor,
       actorRole,
       String(action),
@@ -147,6 +148,8 @@ export async function logAction(
       targetId,
       details === null ? null : String(details),
     );
+    if (saved) scheduleAutomaticBackup();
+    return saved;
   } catch {
     // Auditing is best-effort: swallow everything, including a bad actor_id.
     return false;
