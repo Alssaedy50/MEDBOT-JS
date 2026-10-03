@@ -17,6 +17,7 @@ import { DatabaseSync } from 'node:sqlite';
 import worker from '../src/worker.js';
 import { getD1SchemaSql } from '../src/db/d1/migrations.js';
 import { ensureConfiguredAdmin } from '../src/db/d1/admins.js';
+import { get, run } from '../src/db/d1/core.js';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';
 const BOT_TOKEN = '123456:TEST_BOT_TOKEN';
