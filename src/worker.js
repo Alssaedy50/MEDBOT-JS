@@ -15,7 +15,6 @@ import { all, get, run } from './db/d1/core.js';
 import { adminHasScopes, folderInAdminScope } from './db/d1/scopes.js';
 import { isOwner } from './db/d1/admins.js';
 import { listWorkerSecrets, parseSecretAssignment, setWorkerSecret, deleteWorkerSecret } from './telegram/workerSecrets.js';
-import { adminManagementCallbackHandler, ADMIN_MGMT_PREFIXES } from './ui/adminManagement.js';
 
 function json(data, status = 200) {
   return new globalThis.Response(JSON.stringify(data), {
@@ -112,7 +111,6 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (ctx.data.startsWith('contrib_folder:')) { const folderId=Number(ctx.data.split(':')[1]); const result=await prepareWorkerContribution(ctx.db,ctx.from,folderId); if(result.ok)ctx.userData.contribution_folder=folderId; await ctx.answer(); return ctx.editMessageText(result.text,{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
       if (ctx.data === 'assistant') { ctx.userData.ai_chat=true; await ctx.answer(); return ctx.editMessageText('🤖 <b>المساعد الذكي</b>\n\nاكتب سؤالك الطبي الآن.',{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
       if (ctx.data === 'admin') { const menu=await buildWorkerAdmin(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
-      if (ADMIN_MGMT_PREFIXES.some((prefix) => ctx.data === prefix || ctx.data.startsWith(prefix))) { return adminManagementCallbackHandler(ctx); }
       if (ctx.data === 'admin_pending') { const menu=await buildWorkerPending(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_contrib:')) { const menu=await buildWorkerContributionReview(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_approve:')||ctx.data.startsWith('admin_reject:')) { const action=ctx.data.startsWith('admin_approve:')?'approve':'reject'; const id=Number(ctx.data.split(':')[1]); const result=await reviewWorkerContribution(ctx.db,ctx.from,id,action); await ctx.answer(); return ctx.editMessageText(result.text,{reply_markup:{inline_keyboard:[[ {text:'📥 المساهمات',callback_data:'admin_pending'},{text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
