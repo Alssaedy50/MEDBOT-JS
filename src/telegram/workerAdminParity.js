@@ -6,6 +6,29 @@ import { getTopics, getTopic, getTopicFolders, getTopicResourceCount } from '../
 import { listNews, getNewsDetail, publishNews, deleteNews } from '../db/d1/news.js';
 import { PLATFORM_SETTING_DEFAULTS, PLATFORM_SETTING_KEYS, PLATFORM_SETTING_LABELS } from '../constants.js';
 const kb=rows=>({inline_keyboard:rows});const btn=(text,callback_data)=>({text,callback_data});const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');const home=()=>[[btn('🏠 الرئيسية','home')],[btn('⬅️ إدارة المنصة','admin')]];
+export async function buildWorkerNotifications(db,user){
+  if(!(await hasPermission(db,user.id,'can_notifications'))) return {text:'🔒 غير مصرح.',reply_markup:kb(home())};
+  const rows=await getNotifications(db,10);
+  const lines=['🔔 <b>الإشعارات والبث</b>','', 'إرسال إعلان عام إلى المستخدمين المسجلين.'];
+  if(rows.length){
+    lines.push('','📜 <b>آخر الإشعارات:</b>');
+    for(const r of rows) lines.push('• '+String(r[2]||'إشعار')+' — '+r[6]+'/'+r[5]+' · '+String(r[7]||''));
+  }
+  return {text:lines.join('\n'),reply_markup:kb([[btn('📢 إرسال إشعار','admin_notify_send')],[btn('⬅️ أدوات الإدارة','admin_surfaces'),btn('🏠 الرئيسية','home')]])};
+}
+export async function sendWorkerNotification(db,user,bot,title,body){
+  if(!(await hasPermission(db,user.id,'can_notifications'))) return {text:'🔒 غير مصرح.'};
+  const clean=String(body??'').trim().slice(0,3000), cleanTitle=String(title??'').trim().slice(0,200);
+  if(!clean) return {text:'⚠️ نص الإشعار فارغ.'};
+  const users=await all(db,'SELECT telegram_id FROM users ORDER BY telegram_id ASC',[]);
+  let delivered=0;
+  for(const row of users){
+    try{ await bot.sendMessage(row[0], '🔔 <b>'+esc(cleanTitle||'إشعار من إدارة المنصة')+'</b>\n\n'+esc(clean), {parse_mode:'HTML'}); delivered++; }catch{}
+  }
+  await recordNotification(db,user.id,cleanTitle,clean,'all',users.length,delivered);
+  await addAuditEntry(db,user.id,'admin','notification_broadcast','notification',null,JSON.stringify({recipients:users.length,delivered}));
+  return {text:'✅ <b>تم إرسال الإشعار.</b>\n\nالمستلمون: '+users.length+'\nتم التسليم: '+delivered};
+}
 export async function buildWorkerAdminSurfaces(db,user){const id=Number(user.id),rows=[];if(await hasPermission(db,id,'can_folders'))rows.push([btn('📁 إدارة الأقسام','admin_folders')]);if(await hasPermission(db,id,'can_content'))rows.push([btn('📄 إدارة الموارد','admin_content')]);if(await hasPermission(db,id,'can_messages'))rows.push([btn('📬 رسائل الطلاب','admin_messages')]);if(await hasPermission(db,id,'can_news'))rows.push([btn('📰 إدارة الأخبار','admin_news')]);if(await hasPermission(db,id,'can_topics'))rows.push([btn('🧭 إدارة المواضيع','admin_topics')]);if(await hasPermission(db,id,'can_visibility'))rows.push([btn('👁 إظهار/إخفاء الأقسام','admin_visibility')]);if(await hasPermission(db,id,'can_settings'))rows.push([btn('⚙️ إعدادات المنصة','admin_settings')]);rows.push([btn('⬅️ إدارة المنصة','admin'),btn('🏠 الرئيسية','home')]);return{text:'🧰 <b>أدوات إدارة المنصة</b>\n\nاختر القسم الذي تريد إدارته:',reply_markup:kb(rows)};}
 export async function buildWorkerFolders(db,user,parentId=0){if(!(await hasPermission(db,user.id,'can_folders')))return{text:'🔒 غير مصرح.',reply_markup:kb(home())};const scoped=await adminHasScopes(db,user.id);if(scoped&&parentId&&!(await folderInAdminScope(db,user.id,parentId)))return{text:'🚫 هذا القسم خارج نطاق مسؤوليتك.',reply_markup:kb(home())};let rows=await getFolders(db,parentId||null);if(scoped){const allowed=await Promise.all(rows.map(r=>folderInAdminScope(db,user.id,r[0])));rows=rows.filter((_,i)=>allowed[i]);}const buttons=rows.map(r=>[btn('📁 '+String(r[1]).slice(0,36),'admin_folder:'+r[0])]);buttons.push([btn('➕ قسم جديد','admin_folder_create:'+Number(parentId||0))]);if(parentId)buttons.push([btn('⬅️ رجوع','admin_folders:0')]);buttons.push([btn('🏠 الرئيسية','home')]);return{text:'📁 <b>إدارة الأقسام</b>\n\n'+(rows.length?'اختر قسماً:':'لا توجد أقسام في هذا المستوى.'),reply_markup:kb(buttons)};}
 export async function buildWorkerFolderAdmin(db,user,id){if(!(await hasPermission(db,user.id,'can_folders')))return{text:'🔒 غير مصرح.',reply_markup:kb(home())};if(await adminHasScopes(db,user.id)&&!(await folderInAdminScope(db,user.id,Number(id))))return{text:'🚫 هذا القسم خارج نطاق مسؤوليتك.',reply_markup:kb(home())};const view=await getFolderView(db,Number(id));if(!view?.folder)return{text:'⚠️ القسم غير موجود.',reply_markup:kb(home())};const f=view.folder;return{text:'📁 <b>'+esc(f[1])+'</b>\n\nالنوع: '+esc(f[2]??'general')+'\nالمساهمات: '+(f[3]?'مفعلة':'غير مفعلة')+'\nالعناصر: '+view.files.length+'\nالأقسام الفرعية: '+view.children.length,reply_markup:kb([[btn('➕ قسم فرعي','admin_folder_create:'+id)],[btn('✏️ إعادة تسمية','admin_folder_rename:'+id)],[btn('🗑 حذف القسم','admin_folder_delete:'+id)],[btn('📂 فتح','admin_folders:'+id)],[btn('⬅️ الأقسام','admin_folders:0'),btn('🏠 الرئيسية','home')]])};}
