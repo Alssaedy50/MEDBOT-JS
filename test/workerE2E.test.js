@@ -480,3 +480,32 @@ test('an unknown command is answered instead of failing the delivery', async () 
     telegram.restore();
   }
 });
+
+
+test('scoped news admin cannot view or mutate news outside its folder scope', async () => {
+  const db = createD1Binding();
+  const telegram = captureTelegramCalls();
+  try {
+    const { addFolder } = await import('../src/db/d1/registry.js');
+    await addFolder(db, null, 'Allowed', 'general', 0);
+    await addFolder(db, null, 'Outside', 'general', 0);
+    await run(db, "INSERT INTO admins(telegram_id,username,role,permissions) VALUES(?,?,?,?)", [600, 'scoped', 'admin', 'can_news']);
+    await run(db, "INSERT INTO admin_scopes(admin_id,scope_type,scope_id,created_by) VALUES(?,?,?,?)", [600, 'folder', 1, 500]);
+    await run(db, "INSERT INTO news(news_type,title,body,section_folder_id,folder_id,status,visibility,source) VALUES(?,?,?,?,?,?,?,?)", ['section', 'Allowed news', 'ok', 1, 1, 'draft', 'public', 'manual']);
+    await run(db, "INSERT INTO news(news_type,title,body,section_folder_id,folder_id,status,visibility,source) VALUES(?,?,?,?,?,?,?,?)", ['section', 'Outside news', 'blocked', 2, 2, 'draft', 'public', 'manual']);
+
+    await post(db, callbackUpdate(600, 'admin_news'));
+    const listText = telegram.editedTexts().join('\n');
+    assert.ok(listText.includes('Allowed news'));
+    assert.ok(!listText.includes('Outside news'));
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_news_publish:2'));
+    const denial = telegram.editedTexts().join('\n');
+    assert.ok(denial.includes('خارج نطاق مسؤوليتك'));
+    const outside = await get(db, 'SELECT status FROM news WHERE id=?', [2]);
+    assert.equal(outside[0], 'draft');
+  } finally {
+    telegram.restore();
+  }
+});
