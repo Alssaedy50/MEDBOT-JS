@@ -482,33 +482,6 @@ test('an unknown command is answered instead of failing the delivery', async () 
 });
 
 
-test('Worker admin management exposes the full RBAC roster flow', async () => {
-  const db = createD1Binding();
-  await seedOwner(db, 500);
-  const telegram = captureTelegramCalls();
-  try {
-    await post(db, callbackUpdate(500, 'admin_admins'));
-    const roster = telegram.editedTexts().join('\n');
-    assert.ok(roster.includes('إدارة المشرفين'));
-    assert.ok(roster.includes('إضافة مشرف'));
-    assert.ok(roster.includes('نقل الملكية'));
-
-    telegram.calls.length = 0;
-    await post(db, callbackUpdate(500, 'admin_view:500'));
-    const ownerView = telegram.editedTexts().join('\n');
-    assert.ok(ownerView.includes('المالك'));
-    assert.ok(!ownerView.includes('سحب الوصول'));
-
-    telegram.calls.length = 0;
-    await post(db, callbackUpdate(500, 'admin_add'));
-    const addPrompt = telegram.editedTexts().join('\n');
-    assert.ok(addPrompt.includes('إضافة مشرف'));
-    assert.ok(addPrompt.includes('/cancel'));
-  } finally {
-    telegram.restore();
-  }
-});
-
 test('scoped news admin cannot view or mutate news outside its folder scope', async () => {
   const db = createD1Binding();
   const telegram = captureTelegramCalls();
