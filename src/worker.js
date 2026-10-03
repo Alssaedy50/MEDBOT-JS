@@ -12,6 +12,7 @@ import { buildWorkerAdmin, buildWorkerPending, buildWorkerContributionReview, re
 import { ensureConfiguredAdmin, hasPermission } from './db/d1/admins.js';
 import { buildWorkerAdminSurfaces, buildWorkerFolders, buildWorkerFolderAdmin, createFolderFromText, renameFolderFromText, deleteFolder, buildWorkerContentAdmin, buildWorkerFileAdmin, renameFileFromText, deleteFileWorker, handleWorkerAdminMedia, buildWorkerMessages, buildWorkerMessage, closeWorkerMessage, replyWorkerMessage, buildWorkerTopicsAdmin, buildWorkerTopicAdmin, toggleWorkerTopic, buildWorkerSettings, settingPrompt, saveSetting, buildWorkerNewsAdmin, buildWorkerNewsItem, publishWorkerNews, deleteWorkerNews, buildWorkerVisibility, toggleWorkerVisibility } from './telegram/workerAdminParity.js';
 import { all, get, run } from './db/d1/core.js';
+import { adminHasScopes, folderInAdminScope } from './db/d1/scopes.js';
 import { isOwner } from './db/d1/admins.js';
 import { listWorkerSecrets, parseSecretAssignment, setWorkerSecret, deleteWorkerSecret } from './telegram/workerSecrets.js';
 
