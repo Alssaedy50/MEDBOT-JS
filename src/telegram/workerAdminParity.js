@@ -6,6 +6,14 @@ import { getTopics, getTopic, getTopicFolders, getTopicResourceCount } from '../
 import { listNews, getNewsDetail, publishNews, deleteNews } from '../db/d1/news.js';
 import { PLATFORM_SETTING_DEFAULTS, PLATFORM_SETTING_KEYS, PLATFORM_SETTING_LABELS } from '../constants.js';
 const kb=rows=>({inline_keyboard:rows});const btn=(text,callback_data)=>({text,callback_data});const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');const home=()=>[[btn('🏠 الرئيسية','home')],[btn('⬅️ إدارة المنصة','admin')]];
+export async function buildWorkerAudit(db,user){
+  if(!(await hasPermission(db,user.id,'can_settings'))) return {text:'🔒 غير مصرح.',reply_markup:kb(home())};
+  const rows=await getAuditEntries(db,30);
+  const lines=['🧾 <b>سجل التدقيق</b>',''];
+  if(!rows.length) lines.push('لا توجد عمليات مسجلة بعد.');
+  for(const r of rows) lines.push('• #'+r[0]+' · '+String(r[3])+' · '+String(r[1])+' · '+String(r[7]||''));
+  return {text:lines.join('\n'),reply_markup:kb([[btn('⬅️ أدوات الإدارة','admin_surfaces'),btn('🏠 الرئيسية','home')]])};
+}
 export async function buildWorkerNotifications(db,user){
   if(!(await hasPermission(db,user.id,'can_notifications'))) return {text:'🔒 غير مصرح.',reply_markup:kb(home())};
   const rows=await getNotifications(db,10);
