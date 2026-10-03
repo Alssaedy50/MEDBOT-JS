@@ -5,6 +5,8 @@ import { getFolders, getFolderView, addFolder, updateFolderName, deleteFile, upd
 import { getTopics, getTopic, getTopicFolders, getTopicResourceCount } from '../db/d1/topics.js';
 import { listNews, getNewsDetail, publishNews, deleteNews } from '../db/d1/news.js';
 import { PLATFORM_SETTING_DEFAULTS, PLATFORM_SETTING_KEYS, PLATFORM_SETTING_LABELS } from '../constants.js';
+import { getAuditEntries, addAuditEntry } from '../db/d1/audit.js';
+import { getNotifications, recordNotification } from '../db/d1/notifications.js';
 const kb=rows=>({inline_keyboard:rows});const btn=(text,callback_data)=>({text,callback_data});const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');const home=()=>[[btn('🏠 الرئيسية','home')],[btn('⬅️ إدارة المنصة','admin')]];
 export async function buildWorkerAudit(db,user){
   if(!(await hasPermission(db,user.id,'can_settings'))) return {text:'🔒 غير مصرح.',reply_markup:kb(home())};
@@ -31,7 +33,7 @@ export async function sendWorkerNotification(db,user,bot,title,body){
   const users=await all(db,'SELECT telegram_id FROM users ORDER BY telegram_id ASC',[]);
   let delivered=0;
   for(const row of users){
-    try{ await bot.sendMessage(row[0], '🔔 <b>'+esc(cleanTitle||'إشعار من إدارة المنصة')+'</b>\n\n'+esc(clean), {parse_mode:'HTML'}); delivered++; }catch{}
+    try{ await bot.sendMessage(row[0], '🔔 <b>'+esc(cleanTitle||'إشعار من إدارة المنصة')+'</b>\n\n'+esc(clean), {parse_mode:'HTML'}); delivered++; }catch { /* continue broadcast when an individual delivery fails */ }
   }
   await recordNotification(db,user.id,cleanTitle,clean,'all',users.length,delivered);
   await addAuditEntry(db,user.id,'admin','notification_broadcast','notification',null,JSON.stringify({recipients:users.length,delivered}));
