@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - 'cloudflare/staging-finalize-*'
 
 permissions:
   contents: read

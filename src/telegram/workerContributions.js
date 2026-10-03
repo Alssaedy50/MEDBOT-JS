@@ -10,7 +10,7 @@ export async function buildWorkerContributionStart(db,user){
  const lines=[lang==='en'?'📤 <b>Contribute a resource</b>':'📤 <b>إضافة مساهمة</b>','',lang==='en'?'Choose a section that accepts contributions:':'اختر القسم الذي يستقبل المساهمات:'];
  const buttons=eligible.map(f=>[btn('📂 '+String(f[1]).slice(0,40),'contrib_folder:'+f[0])]);
  if(!eligible.length)lines.push(lang==='en'?'No section is currently accepting contributions.':'لا يوجد قسم يستقبل مساهمات حالياً.');
- buttons.push([btn(lang==='en'?'🏠 Home':'🏠 الرئيسية','home')]);return {text:lines.join('\\n'),reply_markup:kb(buttons)};
+ buttons.push([btn(lang==='en'?'🏠 Home':'🏠 الرئيسية','home')]);return {text:lines.join('\n'),reply_markup:kb(buttons)};
 }
 export async function prepareWorkerContribution(db,user,folderId){
  const lang=await getUserLanguage(db,Number(user.id));const row=await (await import('../db/d1/core.js')).get(db,'SELECT id,name,accepts_contributions FROM folders WHERE id=?',[Number(folderId)]);
