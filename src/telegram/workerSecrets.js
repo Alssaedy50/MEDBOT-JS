@@ -78,8 +78,8 @@ export function parseSecretAssignment(input) {
   return { name, value };
 }
 export async function listWorkerSecrets(db) {
-  const rows = await all(db, "SELECT key FROM settings WHERE key LIKE 'secret.v2.%' ORDER BY key");
-  return rows.map(r => String(r[0]).slice(PREFIX.length));
+  const rows = await all(db, "SELECT key FROM settings WHERE key LIKE 'secret.v2.%' OR key LIKE 'secret.v1.%' ORDER BY key");
+  return [...new Set(rows.map(r => String(r[0]).replace(/^secret\.v(?:1|2)\./, '')))];
 }
 export async function setWorkerSecret(db, secretsKey, name, value) {
   const n = validateName(name);
