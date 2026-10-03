@@ -29,7 +29,7 @@ export async function answerWorkerAi(db,user,question,env){
  const [allowed,remaining]=await checkAndIncrementQuota(db,uid,AI_DAILY_LIMIT);
  if(!allowed)return {text:lang==='en'?'Daily AI allowance reached.':'لقد استنفدت الحد اليومي للمساعد الذكي.',remaining:0};
  let sources=[];try{sources=await searchRelevantPubmed(prompt,3);}catch{sources=[];}
- const runtimeSecrets=await loadWorkerSecrets(db,env.TELEGRAM_BOT_TOKEN).catch(()=>({}));
+ const runtimeSecrets=await loadWorkerSecrets(db,env.MEDBOT_SECRETS_KEY,env.TELEGRAM_BOT_TOKEN).catch(()=>({}));
  const aiEnv=new Proxy(env,{get(target,prop){return Object.prototype.hasOwnProperty.call(runtimeSecrets,prop)?runtimeSecrets[prop]:target[prop];}});
  const pool=await candidates(db,aiEnv);
  if(!pool.length)return {text:lang==='en'?'The AI service is temporarily unavailable.':'المساعد الذكي غير متاح مؤقتاً.',remaining};
