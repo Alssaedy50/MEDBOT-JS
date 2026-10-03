@@ -110,7 +110,7 @@ function captureTelegramCalls() {
 }
 
 function env(db) {
-  return { DB: db, TELEGRAM_BOT_TOKEN: BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET, ADMIN_ID: '500' };
+  return { DB: db, TELEGRAM_BOT_TOKEN: BOT_TOKEN, MEDBOT_SECRETS_KEY: 'test-vault-key-stable', TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET, ADMIN_ID: '500' };
 }
 
 async function post(db, update) {
