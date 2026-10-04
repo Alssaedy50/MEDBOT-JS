@@ -673,3 +673,21 @@ test('scoped admin authorization blocks folder, resource and topic mutations out
     telegram.restore();
   }
 });
+
+test('owner secret vault stores ciphertext and recovers the original value with the stable vault key', async () => {
+  const db = createD1Binding();
+  await ensureConfiguredAdmin(db, 500, 'owner');
+  const { setWorkerSecret, getWorkerSecret, deleteWorkerSecret } = await import('../src/telegram/workerSecrets.js');
+  const vaultKey = 'test-vault-key-stable';
+  await setWorkerSecret(db, vaultKey, 'GEMINI_API_KEY', 'super-secret-value');
+  const stored = await get(db, 'SELECT value FROM settings WHERE key=?', ['secret.v2.GEMINI_API_KEY']);
+  assert.ok(stored?.[0], 'ciphertext must be persisted');
+  assert.ok(!String(stored[0]).includes('super-secret-value'), 'plaintext secret must never be persisted');
+  const parsed = JSON.parse(stored[0]);
+  assert.equal(parsed.v, 2);
+  assert.ok(parsed.iv && parsed.data);
+  assert.equal(await getWorkerSecret(db, vaultKey, 'GEMINI_API_KEY'), 'super-secret-value');
+  assert.equal(await getWorkerSecret(db, 'wrong-vault-key', 'GEMINI_API_KEY'), null);
+  assert.equal(await deleteWorkerSecret(db, 'GEMINI_API_KEY'), true);
+  assert.equal(await get(db, 'SELECT value FROM settings WHERE key=?', ['secret.v2.GEMINI_API_KEY']), null);
+});
