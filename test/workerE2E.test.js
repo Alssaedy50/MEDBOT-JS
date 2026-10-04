@@ -391,6 +391,24 @@ test('the topics screen renders a well-formed keyboard even with no active topic
   }
 });
 
+test('admin screens render real newlines instead of literal backslash-n', async () => {
+  const db = createD1Binding();
+  await seedOwner(db, 500);
+  const telegram = captureTelegramCalls();
+  try {
+    for (const data of ['admin_add', `admin_perm:600:can_admins`]) {
+      telegram.calls.length = 0;
+      const response = await post(db, callbackUpdate(500, data));
+      assert.equal(response.status, 200, `${data} must be acknowledged`);
+      const rendered = [...telegram.editedTexts(), ...telegram.sentTexts()].join('\n');
+      assert.ok(rendered.length > 0, `${data} must render something`);
+      assert.ok(!rendered.includes('\\n'), `${data} must use real newlines, not literal backslash-n`);
+    }
+  } finally {
+    telegram.restore();
+  }
+});
+
 test('a non-admin is denied scoped admin routes', async () => {
   const db = createD1Binding();
   const telegram = captureTelegramCalls();
