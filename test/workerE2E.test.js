@@ -343,6 +343,54 @@ test('admin runtime, resources, upload, messages, topics, settings, news and vis
   }
 });
 
+test('every home-menu button opens a real screen instead of the stale-button notice', async () => {
+  const db = createD1Binding();
+  await seedOwner(db, 500);
+  const telegram = captureTelegramCalls();
+  try {
+    await post(db, commandUpdate(500, '/start'));
+    const homePayload = telegram.calls.find((c) => c.method === 'sendMessage');
+    const homeButtons = (homePayload?.payload?.reply_markup?.inline_keyboard ?? [])
+      .flat()
+      .map((b) => b.callback_data);
+    assert.ok(
+      homeButtons.includes('contribute'),
+      `the home menu must emit the contributions button: ${JSON.stringify(homeButtons)}`,
+    );
+
+    for (const data of homeButtons) {
+      telegram.calls.length = 0;
+      const response = await post(db, callbackUpdate(500, data));
+      assert.equal(response.status, 200, `home button ${data} must be acknowledged`);
+      const rendered = [...telegram.editedTexts(), ...telegram.sentTexts()].join('\n');
+      assert.ok(
+        !rendered.includes('انتهت صلاحية هذا الزر'),
+        `home button ${data} must not fall through to the stale-button notice`,
+      );
+    }
+  } finally {
+    telegram.restore();
+  }
+});
+
+test('the topics screen renders a well-formed keyboard even with no active topics', async () => {
+  const db = createD1Binding();
+  await seedOwner(db, 500);
+  const telegram = captureTelegramCalls();
+  try {
+    const response = await post(db, callbackUpdate(500, 'topics'));
+    assert.equal(response.status, 200, 'the topics screen must not fail the webhook delivery');
+    const payload = telegram.calls.find((c) => c.method === 'editMessageText');
+    const rows = payload?.payload?.reply_markup?.inline_keyboard ?? [];
+    assert.ok(Array.isArray(rows) && rows.length > 0, 'topics must render at least the home button');
+    for (const row of rows) {
+      assert.ok(Array.isArray(row), `each keyboard row must be an array, got ${JSON.stringify(row)}`);
+    }
+  } finally {
+    telegram.restore();
+  }
+});
+
 test('a non-admin is denied scoped admin routes', async () => {
   const db = createD1Binding();
   const telegram = captureTelegramCalls();
