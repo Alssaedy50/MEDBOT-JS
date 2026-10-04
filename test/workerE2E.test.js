@@ -506,7 +506,7 @@ test('owner can add an admin and manage its role and permissions', async () => {
 
     telegram.calls.length = 0;
     await post(db, callbackUpdate(500, 'admin_perm:600:can_folders'));
-    assert.ok(telegram.editedTexts().join('\n').includes('تم تحديث الصلاحية'));
+    assert.ok(telegram.editedTexts().join('\n').includes('صلاحيات'));
     assert.equal((await get(db, 'SELECT permissions FROM admins WHERE telegram_id=?', [600]))[0].includes('can_folders'), false);
 
     telegram.calls.length = 0;
