@@ -125,5 +125,10 @@ export async function loadWorkerSecrets(db, secretsKey, legacyToken = '') {
 export async function getWorkerSecret(db, secretsKey, name) {
   const n = validateName(name);
   const row = await get(db, 'SELECT value FROM settings WHERE key=?', [PREFIX + n]);
-  return row ? await decryptV2(row[0], secretsKey) : null;
+  if (!row) return null;
+  try {
+    return await decryptV2(row[0], secretsKey);
+  } catch {
+    return null;
+  }
 }
