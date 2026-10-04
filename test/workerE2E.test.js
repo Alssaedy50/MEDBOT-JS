@@ -503,7 +503,7 @@ test('owner can add an admin and manage its role and permissions', async () => {
     telegram.calls.length = 0;
     await post(db, callbackUpdate(500, 'admin_perms:600'));
     const permissionsCall = telegram.calls.find((call) => call.method === 'editMessageText');
-    const permissionsMarkup = JSON.stringify(permissionsCall?.args?.[2]?.reply_markup ?? {});
+    const permissionsMarkup = JSON.stringify(permissionsCall?.payload?.reply_markup ?? {});
     assert.ok(permissionsMarkup.includes('إدارة المجلدات'));
 
     telegram.calls.length = 0;
