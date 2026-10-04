@@ -612,3 +612,64 @@ test('scoped news admin cannot view or mutate news outside its folder scope', as
     telegram.restore();
   }
 });
+
+test('scoped admin authorization blocks folder, resource and topic mutations outside scope', async () => {
+  const db = createD1Binding();
+  await ensureConfiguredAdmin(db, 500, 'owner');
+  const { addFolder, addContent } = await import('../src/db/d1/registry.js');
+  const allowedFolder = await addFolder(db, null, 'Allowed', 'general', 0);
+  const outsideFolder = await addFolder(db, null, 'Outside', 'general', 0);
+  const allowedId = Number(allowedFolder?.lastInsertRowid ?? allowedFolder?.id ?? 1);
+  const outsideId = Number(outsideFolder?.lastInsertRowid ?? outsideFolder?.id ?? 2);
+  await addFolder(db, allowedId, 'Child', 'general', 0);
+  await addContent(db, allowedId, 'Allowed resource', 'file-allowed', 'document', 'direct', null, 500);
+  await addContent(db, outsideId, 'Outside resource', 'file-outside', 'document', 'direct', null, 500);
+
+  await run(db, "INSERT INTO topics(name,description,icon,display_order,active) VALUES(?,?,?,?,?)", ['Allowed topic', 'ok', '🧭', 1, 1]);
+  await run(db, "INSERT INTO topics(name,description,icon,display_order,active) VALUES(?,?,?,?,?)", ['Outside topic', 'blocked', '🧭', 2, 1]);
+  const allowedTopic = await get(db, 'SELECT id FROM topics WHERE name=?', ['Allowed topic']);
+  const outsideTopic = await get(db, 'SELECT id FROM topics WHERE name=?', ['Outside topic']);
+  const allowedTopicId = Number(allowedTopic[0]);
+  const outsideTopicId = Number(outsideTopic[0]);
+
+  await run(db, "INSERT INTO admins(telegram_id,username,role,permissions) VALUES(?,?,?,?)", [600, 'scoped', 'admin', 'can_folders,can_content,can_topics']);
+  await run(db, "INSERT INTO admin_scopes(admin_id,scope_type,scope_id,created_by) VALUES(?,?,?,?)", [600, 'folder', allowedId, 500]);
+  await run(db, "INSERT INTO admin_scopes(admin_id,scope_type,scope_id,created_by) VALUES(?,?,?,?)", [600, 'topic', allowedTopicId, 500]);
+
+  const telegram = captureTelegramCalls();
+  try {
+    await post(db, callbackUpdate(600, 'admin_folder:'+outsideId));
+    assert.ok(telegram.editedTexts().join('\n').includes(' خارج نطاق مسؤوليتك'));
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_folder_delete:'+outsideId));
+    assert.ok(telegram.editedTexts().join('\n').includes(' خارج نطاق مسؤوليتك'));
+    assert.ok((await get(db, 'SELECT COUNT(*) FROM folders WHERE id=?', [outsideId]))[0] === 1);
+
+    const outsideResource = await get(db, 'SELECT id FROM content WHERE title=?', ['Outside resource']);
+    const outsideResourceId = Number(outsideResource[0]);
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_file:'+outsideResourceId));
+    assert.ok(telegram.editedTexts().join('\n').includes(' خارج نطاق مسؤوليتك'));
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_file_delete:'+outsideResourceId));
+    assert.ok(telegram.editedTexts().join('\n').includes(' خارج نطاق مسؤوليتك'));
+    assert.ok((await get(db, 'SELECT COUNT(*) FROM content WHERE id=?', [outsideResourceId]))[0] === 1);
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_topic:'+outsideTopicId));
+    assert.ok(telegram.editedTexts().join('\n').includes(' خارج نطاق مسؤوليتك'));
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_topic_toggle:'+outsideTopicId));
+    assert.ok(telegram.editedTexts().join('\n').includes(' خارج نطاق مسؤوليتك'));
+    assert.equal((await get(db, 'SELECT active FROM topics WHERE id=?', [outsideTopicId]))[0], 1);
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_topic:'+allowedTopicId));
+    assert.ok(telegram.editedTexts().join('\n').includes('Allowed topic'));
+  } finally {
+    telegram.restore();
+  }
+});
