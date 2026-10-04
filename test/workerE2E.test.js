@@ -524,7 +524,7 @@ test('owner can add an admin and manage its role and permissions', async () => {
 test('owner can broadcast a notification and verify its audit trail', async () => {
   const db = createD1Binding();
   await ensureConfiguredAdmin(db, 500, 'owner');
-  await run(db, 'INSERT INTO users(telegram_id,username,language) VALUES(?,?,?)', [701, 'student1', 'ar']);
+  await run(db, 'INSERT INTO users(user_id,username,language) VALUES(?,?,?)', [701, 'student1', 'ar']);
   await run(db, 'INSERT INTO users(telegram_id,username,language) VALUES(?,?,?)', [702, 'student2', 'ar']);
   const telegram = captureTelegramCalls();
   try {
