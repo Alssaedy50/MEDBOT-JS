@@ -519,6 +519,60 @@ test('owner can add an admin and manage its role and permissions', async () => {
   }
 });
 
+
+
+test('owner can broadcast a notification and verify its audit trail', async () => {
+  const db = createD1Binding();
+  await ensureConfiguredAdmin(db, 500, 'owner');
+  await run(db, 'INSERT INTO users(telegram_id,username,language) VALUES(?,?,?)', [701, 'student1', 'ar']);
+  await run(db, 'INSERT INTO users(telegram_id,username,language) VALUES(?,?,?)', [702, 'student2', 'ar']);
+  const telegram = captureTelegramCalls();
+  try {
+    await post(db, callbackUpdate(500, 'admin_notifications'));
+    const panel = telegram.editedTexts().join('\n');
+    assert.ok(panel.includes('الإشعارات والبث'), 'expected notification panel, got '+panel);
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(500, 'admin_notify_send'));
+    assert.ok(telegram.editedTexts().join('\n').includes('العنوان | نص الإشعار'));
+    telegram.calls.length = 0;
+    const response = await post(db, commandUpdate(500, 'تنبيه مهم | سيتم تحديث موارد المنصة اليوم'));
+    assert.equal(response.status, 200);
+    const sent = telegram.sentTexts();
+    assert.ok(sent.some((text) => text.includes('تنبيه مهم')), 'expected broadcast delivery, got '+JSON.stringify(sent));
+    assert.ok(sent.some((text) => text.includes('تم إرسال الإشعار')), 'expected admin confirmation, got '+JSON.stringify(sent));
+    const notification = await get(db, 'SELECT title,body,audience,recipients,delivered FROM notifications ORDER BY id DESC LIMIT 1');
+    assert.equal(notification[0], 'تنبيه مهم');
+    assert.equal(notification[1], 'سيتم تحديث موارد المنصة اليوم');
+    assert.equal(notification[2], 'all');
+    assert.equal(notification[3], 2);
+    assert.equal(notification[4], 2);
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(500, 'admin_audit'));
+    const audit = telegram.editedTexts().join('\n');
+    assert.ok(audit.includes('notification_broadcast'), 'expected broadcast audit entry, got '+audit);
+    assert.ok(audit.includes('500'), 'expected owner actor in audit, got '+audit);
+  } finally {
+    telegram.restore();
+  }
+});
+
+test('admin notification permission is enforced for a reviewer without can_notifications', async () => {
+  const db = createD1Binding();
+  await ensureConfiguredAdmin(db, 500, 'owner');
+  await run(db, "INSERT INTO admins(telegram_id,username,role,permissions) VALUES(?,?,?,?)", [600, 'reviewer', 'reviewer', 'can_messages']);
+  const telegram = captureTelegramCalls();
+  try {
+    await post(db, callbackUpdate(600, 'admin_notifications'));
+    const panel = telegram.editedTexts().join('\n');
+    assert.ok(panel.includes('غير مصرح'), 'reviewer without notification permission must be denied: '+panel);
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(600, 'admin_notify_send'));
+    assert.equal(telegram.calls.filter((call) => call.method === 'sendMessage').length, 0);
+  } finally {
+    telegram.restore();
+  }
+});
+
 test('scoped news admin cannot view or mutate news outside its folder scope', async () => {
   const db = createD1Binding();
   const telegram = captureTelegramCalls();
