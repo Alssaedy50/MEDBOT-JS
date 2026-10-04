@@ -500,15 +500,23 @@ test('scoped news admin cannot view or mutate news outside its folder scope', as
     const outsideNewsId = Number(outsideNewsRow[0]);
 
     await post(db, callbackUpdate(600, 'admin_news'));
-    const listText = telegram.editedTexts().join('\n');
-    assert.ok(listText.includes('Allowed news'));
-    assert.ok(!listText.includes('Outside news'));
+    const renderedAdminNews = telegram.calls
+      .filter((call) => call.method === 'editMessageText')
+      .map((call) => ({
+        text: call.payload.text ?? '',
+        markup: JSON.stringify(call.payload.reply_markup ?? {}),
+      }));
+    const listText = renderedAdminNews.map((item) => item.text).join('\n');
+    const listMarkup = renderedAdminNews.map((item) => item.markup).join('\n');
+    assert.ok(listText.includes('مسودات: 1'), `expected one visible draft, got ${listText}`);
+    assert.ok(listMarkup.includes('Allowed news'), `scoped news must expose the allowed item button: ${listMarkup}`);
+    assert.ok(!listMarkup.includes('Outside news'), `scoped news must hide the outside item button: ${listMarkup}`);
 
     telegram.calls.length = 0;
     await post(db, callbackUpdate(600, `admin_news_publish:${outsideNewsId}`));
     const denial = telegram.editedTexts().join('\n');
     assert.ok(denial.includes('خارج نطاق مسؤوليتك'));
-    const outside = await get(db, 'SELECT status FROM news WHERE id=?', [2]);
+    const outside = await get(db, 'SELECT status FROM news WHERE id=?', [outsideNewsId]);
     assert.equal(outside[0], 'draft');
   } finally {
     telegram.restore();
