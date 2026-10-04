@@ -30,7 +30,7 @@ export async function sendWorkerNotification(db,user,bot,title,body){
   if(!(await hasPermission(db,user.id,'can_notifications'))) return {text:'🔒 غير مصرح.'};
   const clean=String(body??'').trim().slice(0,3000), cleanTitle=String(title??'').trim().slice(0,200);
   if(!clean) return {text:'⚠️ نص الإشعار فارغ.'};
-  const users=await all(db,'SELECT telegram_id FROM users ORDER BY telegram_id ASC',[]);
+  const users=await all(db,'SELECT user_id FROM users ORDER BY user_id ASC',[]);
   let delivered=0;
   for(const row of users){
     try{ await bot.sendMessage(row[0], '🔔 <b>'+esc(cleanTitle||'إشعار من إدارة المنصة')+'</b>\n\n'+esc(clean), {parse_mode:'HTML'}); delivered++; }catch { /* continue broadcast when an individual delivery fails */ }
