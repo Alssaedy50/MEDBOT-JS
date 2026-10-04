@@ -384,6 +384,19 @@ test('Owner Secrets round-trip stores an encrypted value and never echoes it', a
   }
 });
 
+test('non-owner cannot open the Worker secret management surface', async () => {
+  const db = createD1Binding();
+  await seedOwner(db, 500);
+  const telegram = captureTelegramCalls();
+  try {
+    const response = await post(db, callbackUpdate(600, 'admin_secrets'));
+    assert.equal(response.status, 200);
+    assert.equal(telegram.editedTexts().length, 0, 'a non-owner must not receive the secret-management screen');
+  } finally {
+    telegram.restore();
+  }
+});
+
 test('the settings workflow stores a new value and rejects unknown keys', async () => {
   const db = createD1Binding();
   await seedOwner(db, 500);
