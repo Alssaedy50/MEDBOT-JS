@@ -483,6 +483,40 @@ test('an unknown command is answered instead of failing the delivery', async () 
 });
 
 
+test('owner can add an admin and manage its role and permissions', async () => {
+  const db = createD1Binding();
+  await ensureConfiguredAdmin(db, 500, 'owner');
+  const telegram = captureTelegramCalls();
+  try {
+    await post(db, callbackUpdate(500, 'admin_admins'));
+    assert.ok(telegram.editedTexts().join('\n').includes('إدارة المشرفين'));
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(500, 'admin_add'));
+    assert.ok(telegram.editedTexts().join('\n').includes('إضافة مشرف'));
+
+    telegram.calls.length = 0;
+    await post(db, commandUpdate(500, '600 | scoped | admin'));
+    assert.ok(telegram.sentTexts().join('\n').includes('تم إضافة المشرف'));
+    assert.equal((await get(db, 'SELECT role FROM admins WHERE telegram_id=?', [600]))[0], 'admin');
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(500, 'admin_perms:600'));
+    assert.ok(telegram.editedTexts().join('\n').includes('إدارة المجلدات'));
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(500, 'admin_perm:600:can_folders'));
+    assert.ok(telegram.editedTexts().join('\n').includes('تم تحديث الصلاحية'));
+    assert.equal((await get(db, 'SELECT permissions FROM admins WHERE telegram_id=?', [600]))[0].includes('can_folders'), false);
+
+    telegram.calls.length = 0;
+    await post(db, callbackUpdate(500, 'admin_role:600:reviewer'));
+    assert.equal((await get(db, 'SELECT role FROM admins WHERE telegram_id=?', [600]))[0], 'reviewer');
+  } finally {
+    telegram.restore();
+  }
+});
+
 test('scoped news admin cannot view or mutate news outside its folder scope', async () => {
   const db = createD1Binding();
   const telegram = captureTelegramCalls();
