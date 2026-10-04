@@ -2,7 +2,7 @@ import { all, get, run } from '../db/d1/core.js';
 import { hasPermission, isAdmin, isOwner, getAdminRecord, getAdminsFullRecords, setAdminRole } from '../db/d1/admins.js';
 import { getPendingContributionsCount, getReviewableContributionsList, approveContribution, rejectContribution } from '../db/d1/contributions.js';
 import { aiUsageStats, aiRegistryGetAll } from '../db/d1/aiRegistry.js';
-import { adminHasScopes, folderInAdminScope, getAdminScopes, addAdminScope, removeAdminScope } from '../db/d1/scopes.js';
+import { adminHasScopes, folderInAdminScope, getAdminScopes } from '../db/d1/scopes.js';
 import { PERMISSION_KEYS, PERMISSION_LABELS, ROLE_LABELS, ROLE_PERMISSION_PRESETS, permissionsToString } from '../constants.js';
 const kb=rows=>({inline_keyboard:rows});const btn=(text,callback_data)=>({text,callback_data});
 const home=[[btn('🏠 الرئيسية','home')]];
