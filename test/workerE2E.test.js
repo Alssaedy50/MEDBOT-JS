@@ -689,5 +689,5 @@ test('owner secret vault stores ciphertext and recovers the original value with 
   assert.equal(await getWorkerSecret(db, vaultKey, 'GEMINI_API_KEY'), 'super-secret-value');
   assert.equal(await getWorkerSecret(db, 'wrong-vault-key', 'GEMINI_API_KEY'), null);
   assert.equal(await deleteWorkerSecret(db, 'GEMINI_API_KEY'), true);
-  assert.equal(await get(db, 'SELECT value FROM settings WHERE key=?', ['secret.v2.GEMINI_API_KEY']), null);
+  assert.equal(await get(db, 'SELECT value FROM settings WHERE key=?', ['secret.v2.GEMINI_API_KEY']), undefined);
 });
