@@ -1,5 +1,5 @@
 import { all, get, run } from '../db/d1/core.js';
-import { hasPermission, isAdmin, isOwner, getAdminsFullRecords, setAdminRole } from '../db/d1/admins.js';
+import { hasPermission, isAdmin, isOwner, getAdminRecord, getAdminsFullRecords, setAdminRole } from '../db/d1/admins.js';
 import { getPendingContributionsCount, getReviewableContributionsList, approveContribution, rejectContribution } from '../db/d1/contributions.js';
 import { aiUsageStats, aiRegistryGetAll } from '../db/d1/aiRegistry.js';
 import { adminHasScopes, folderInAdminScope, getAdminScopes, addAdminScope, removeAdminScope } from '../db/d1/scopes.js';
