@@ -343,6 +343,21 @@ test('admin runtime, resources, upload, messages, topics, settings, news and vis
   }
 });
 
+test('a stale file callback degrades gracefully instead of failing the webhook', async () => {
+  const db = createD1Binding();
+  await seedOwner(db, 500);
+  const telegram = captureTelegramCalls();
+  try {
+    telegram.calls.length = 0;
+    const response = await post(db, callbackUpdate(500, 'file:999999'));
+    assert.equal(response.status, 200, 'a deleted resource must be acknowledged, not retried forever');
+    const rendered = [...telegram.editedTexts(), ...telegram.sentTexts()].join('\n');
+    assert.ok(rendered.includes('لم يعد متاحاً'), `expected a graceful notice, got: ${rendered.slice(0, 80)}`);
+  } finally {
+    telegram.restore();
+  }
+});
+
 test('every home-menu button opens a real screen instead of the stale-button notice', async () => {
   const db = createD1Binding();
   await seedOwner(db, 500);

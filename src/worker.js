@@ -181,7 +181,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (ctx.data.startsWith('file:')) {
         const contentId = Number.parseInt(ctx.data.split(':')[1], 10);
         const file = await buildWorkerFile(ctx.db, contentId);
-        if (!file) throw new Error('worker_resource_not_found');
+        if (!file) { await ctx.answer(); return ctx.editMessageText('⚠️ هذا المورد لم يعد متاحاً. افتح المكتبة من جديد.', { reply_markup: { inline_keyboard: [[ { text:'📚 المكتبة', callback_data:'resources' }, { text:'🏠 الرئيسية', callback_data:'home' } ]] }, parse_mode:'HTML' }); }
         const options = { caption: `📄 <b>${String(file.title).replace(/</g,'&lt;').replace(/>/g,'&gt;')}</b>\n🗂 ${String(file.breadcrumb).replace(/</g,'&lt;').replace(/>/g,'&gt;')}`, parse_mode:'HTML' };
         if (file.fileType === 'photo') await bot.sendPhoto(ctx.from.id, file.fileId, options);
         else if (file.fileType === 'video') await bot.sendVideo(ctx.from.id, file.fileId, options);
