@@ -15,6 +15,16 @@ import { MAX_OUTPUT_TOKENS, SYSTEM_PROMPT } from './prompts.js';
 export const REQUEST_TIMEOUT_MS = 30000;
 export const DISCOVERY_TIMEOUT_MS = 12000;
 
+/**
+ * A caller-supplied signal (e.g. the Worker's per-attempt budget) layered on the
+ * adapter's own timeout, so whichever fires first aborts the request.
+ */
+function requestSignal(signal, ms) {
+  if (!signal) return AbortSignal.timeout(ms);
+  if (signal.aborted) return signal;
+  return AbortSignal.any([signal, AbortSignal.timeout(ms)]);
+}
+
 /** Provider -> environment variable holding its API key. */
 function runtimeEnv(env) {
   if (env) return env;
@@ -82,7 +92,7 @@ async function throwForResponse(provider, response) {
 }
 
 /** Gemini `generateContent`. Returns the concatenated text parts. */
-export async function geminiRequest({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch, env }) {
+export async function geminiRequest({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch, env, signal }) {
   const response = await fetchImpl(geminiEndpoint(item), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': keyFor('google_gemini', env) },
@@ -91,7 +101,7 @@ export async function geminiRequest({ item, prompt, systemPrompt = SYSTEM_PROMPT
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: { temperature: 0.2, maxOutputTokens: MAX_OUTPUT_TOKENS },
     }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: requestSignal(signal, REQUEST_TIMEOUT_MS),
   });
 
   if (!response.ok) await throwForResponse('Gemini', response);
@@ -117,6 +127,7 @@ export async function openAiCompatibleRequest({
   systemPrompt = SYSTEM_PROMPT,
   fetchImpl = fetch,
   env,
+  signal,
 }) {
   const provider = item.provider;
   const apiKey = keyFor(provider, env);
@@ -143,7 +154,7 @@ export async function openAiCompatibleRequest({
       temperature: 0.2,
       max_tokens: MAX_OUTPUT_TOKENS,
     }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: requestSignal(signal, REQUEST_TIMEOUT_MS),
   });
 
   if (!response.ok) await throwForResponse(provider, response);
@@ -161,12 +172,12 @@ export async function openAiCompatibleRequest({
 }
 
 /** Route to the right adapter for `item.provider`. */
-export async function request({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch, env }) {
+export async function request({ item, prompt, systemPrompt = SYSTEM_PROMPT, fetchImpl = fetch, env, signal }) {
   if (item.provider === 'google_gemini') {
-    return geminiRequest({ item, prompt, systemPrompt, fetchImpl, env });
+    return geminiRequest({ item, prompt, systemPrompt, fetchImpl, env, signal });
   }
   if (item.provider === 'groq' || item.provider === 'openrouter') {
-    return openAiCompatibleRequest({ item, prompt, systemPrompt, fetchImpl, env });
+    return openAiCompatibleRequest({ item, prompt, systemPrompt, fetchImpl, env, signal });
   }
   throw new Error(`Unsupported AI provider: ${item.provider}`);
 }
