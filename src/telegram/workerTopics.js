@@ -7,7 +7,7 @@ export async function buildWorkerTopics(db,user){
  const lang=await getUserLanguage(db,Number(user.id)); const topics=await getTopics(db,true);
  const lines=[lang==='en'?'🧭 <b>Topics</b>':'🧭 <b>المواضيع</b>','']; const buttons=[];
  for(const row of topics){lines.push((row[3]||'🧭')+' <b>'+esc(row[1])+'</b>'+(row[2]?' — '+esc(row[2]):''));buttons.push([btn((row[3]||'🧭')+' '+String(row[1]).slice(0,36),'topic:'+row[0])]);}
- if(!topics.length)lines.push(lang==='en'?'No active topics.':'لا توجد مواضيع نشطة حالياً.'); buttons.push(nav(lang)[0]); return {text:lines.join('\n'),reply_markup:kb(buttons)};
+ if(!topics.length)lines.push(lang==='en'?'No active topics.':'لا توجد مواضيع نشطة حالياً.'); buttons.push(nav(lang)); return {text:lines.join('\n'),reply_markup:kb(buttons)};
 }
 export async function buildWorkerTopic(db,user,topicId){
  const lang=await getUserLanguage(db,Number(user.id)); const topic=await getTopic(db,topicId);

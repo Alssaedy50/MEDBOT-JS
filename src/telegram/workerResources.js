@@ -35,7 +35,7 @@ export async function buildWorkerLibraryRoot(db, user) {
   const roots = await getFolders(db, 0);
   const rows = roots.map(([folderId,name,nodeType]) => [btn(`${icon(nodeType)} ${String(name).slice(0,36)}`,`folder:${folderId}`)]);
   rows.push([btn('🔎 بحث في الموارد','search')],[btn('🏠 الرئيسية','home')]);
-  return { text: roots.length ? `${t('library_title',lang)}\\n\\n${t('library_pick_year',lang)}` : `${t('library_title',lang)}\\n\\n${t('library_empty',lang)}`, reply_markup:keyboard(rows) };
+  return { text: roots.length ? `${t('library_title',lang)}\n\n${t('library_pick_year',lang)}` : `${t('library_title',lang)}\n\n${t('library_empty',lang)}`, reply_markup:keyboard(rows) };
 }
 export async function buildWorkerFolder(db,user,folderId) {
   const lang=await language(db,Number(user?.id)); const view=await getFolderView(db,Number(folderId));
@@ -45,14 +45,14 @@ export async function buildWorkerFolder(db,user,folderId) {
   for(const [id,n,type] of view.children) rows.push([btn(`${icon(type)} ${String(n).slice(0,36)}`,`folder:${id}`)]);
   for(const [id,title,,type] of view.files) rows.push([btn(`${contentIcon(type)} ${String(title).slice(0,36)}`,`file:${id}`)]);
   rows.push([btn('⬅️ رجوع',`library:${view.parentId||0}`)],[btn('🔎 بحث في الموارد','search')],[btn('🏠 الرئيسية','home')]);
-  return {text:lines.join('\\n'),reply_markup:keyboard(rows)};
+  return {text:lines.join('\n'),reply_markup:keyboard(rows)};
 }
 export async function findWorkerResources(db,user,query) {
   const lang=await language(db,Number(user?.id)); const results=await searchContent(db,query); const rows=[]; const lines=[`🔎 <b>نتائج البحث عن: ${esc(query)}</b>`,`📊 ${results.length} نتيجة`,''];
-  for(const [id,title,type,,folder,path] of results.slice(0,10)){lines.push(`${contentIcon(type)} <b>${esc(title)}</b>\\n   📍 ${esc(path??folder??'')}`);rows.push([btn(`${contentIcon(type)} ${String(title).slice(0,34)}`,`file:${id}`)]);}
+  for(const [id,title,type,,folder,path] of results.slice(0,10)){lines.push(`${contentIcon(type)} <b>${esc(title)}</b>\n   📍 ${esc(path??folder??'')}`);rows.push([btn(`${contentIcon(type)} ${String(title).slice(0,34)}`,`file:${id}`)]);}
   if(!results.length) lines.push(t('search_empty',lang));
   rows.push([btn('🔎 بحث آخر','search')],[btn('📚 الموارد','resources')],[btn('🏠 الرئيسية','home')]);
-  return {text:lines.join('\\n'),reply_markup:keyboard(rows)};
+  return {text:lines.join('\n'),reply_markup:keyboard(rows)};
 }
 export async function getWorkerFile(db,contentId){ return get(db,'SELECT id,folder_id,title,file_id,file_type FROM content WHERE id=?',[Number(contentId)]); }
 export async function buildWorkerFile(db,contentId){ const row=await getWorkerFile(db,contentId); if(!row)return null; return {id:row[0],folderId:row[1],title:row[2],fileId:row[3],fileType:row[4],breadcrumb:await getBreadcrumbs(db,row[1])}; }
