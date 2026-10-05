@@ -35,7 +35,7 @@ export async function buildWorkerHome(db, user) {
   const platform = await setting(db, 'platform_name');
   const name = String(user?.first_name ?? '').trim() || (language === 'en' ? 'Doctor' : 'دكتور');
   const unread = await getUnreadNewsCount(db, id);
-  const badge = unread ? (language === 'en' ? `\\n\\n📰 You have ${unread} unread news item${unread === 1 ? '' : 's'}.` : `\\n\\n📰 لديك ${unread} خبر غير مقروء.`) : '';
+  const badge = unread ? (language === 'en' ? `\n\n📰 You have ${unread} unread news item${unread === 1 ? '' : 's'}.` : `\n\n📰 لديك ${unread} خبر غير مقروء.`) : '';
   return { language, text: t('welcome', language, { platform, name }) + badge, reply_markup: { inline_keyboard: rows } };
 }
 
@@ -50,8 +50,8 @@ export async function buildWorkerAccount(db, user) {
   const percent = total ? Math.round(((total - unread) / total) * 100) : 100;
   const handle = user?.username ? '@' + user.username : '—';
   const text = language === 'en'
-    ? `${t('account_title', language)}\\n\\n👤 ${user?.first_name ?? ''}\\n🆔 <code>${id}</code>\\n🔗 ${handle}\\n\\n🤖 AI allowance remaining today: ${quota}/${AI_DAILY_LIMIT}\\n📤 My contributions: ${Number(contributions?.[0] ?? 0)}\\n📰 News read: ${percent}%\\n🌐 🇬🇧 English`
-    : `${t('account_title', language)}\\n\\n👤 ${user?.first_name ?? ''}\\n🆔 <code>${id}</code>\\n🔗 ${handle}\\n\\n🤖 استهلاك المساعد اليوم: ${quota}/${AI_DAILY_LIMIT} متبقٍ\\n📤 مساهماتي: ${Number(contributions?.[0] ?? 0)}\\n📰 نسبة الأخبار المقروءة: ${percent}%\\n🌐 🇸🇦 العربية`;
+    ? `${t('account_title', language)}\n\n👤 ${user?.first_name ?? ''}\n🆔 <code>${id}</code>\n🔗 ${handle}\n\n🤖 AI allowance remaining today: ${quota}/${AI_DAILY_LIMIT}\n📤 My contributions: ${Number(contributions?.[0] ?? 0)}\n📰 News read: ${percent}%\n🌐 🇬🇧 English`
+    : `${t('account_title', language)}\n\n👤 ${user?.first_name ?? ''}\n🆔 <code>${id}</code>\n🔗 ${handle}\n\n🤖 استهلاك المساعد اليوم: ${quota}/${AI_DAILY_LIMIT} متبقٍ\n📤 مساهماتي: ${Number(contributions?.[0] ?? 0)}\n📰 نسبة الأخبار المقروءة: ${percent}%\n🌐 🇸🇦 العربية`;
   return { language, text, reply_markup: { inline_keyboard: [
     [{ text: t('menu_my_contributions', language), callback_data: 'my_contributions' }],
     [{ text: t('menu_language', language), callback_data: 'language' }],
