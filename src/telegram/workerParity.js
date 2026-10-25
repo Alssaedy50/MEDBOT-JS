@@ -1,4 +1,4 @@
-import { get } from '../db/d1/core.js';
+import { get, run } from '../db/d1/core.js';
 import { getUserLanguage, setUserLanguage } from '../db/d1/users.js';
 import { getUserContributions } from '../db/d1/contributions.js';
 import { listNews, getNewsDetail, markNewsRead } from '../db/d1/news.js';
@@ -12,11 +12,51 @@ async function setting(db, key) { const row = await get(db, 'SELECT value FROM s
 
 export async function buildWorkerLanguage(db, user) {
   const lang = await getUserLanguage(db, Number(user.id));
-  return { text: lang === 'en' ? '🌐 <b>Language</b>\n\nChoose your language:' : '🌐 <b>اللغة</b>\n\nاختر لغة الواجهة:', reply_markup: keyboard([[btn('🇸🇦 العربية','lang_set:ar'),btn('🇬🇧 English','lang_set:en')],[btn(t('home',lang),'home')]]) };
+  return {
+    text: lang === 'en' ? '🌐 <b>Language</b>\n\nChoose your language:' : '🌐 <b>اللغة</b>\n\nاختر لغة الواجهة:',
+    reply_markup: keyboard([
+      [btn(`${lang === 'ar' ? '✅ ' : ''}🇸🇦 العربية`, 'lang_set:ar'), btn(`${lang === 'en' ? '✅ ' : ''}🇬🇧 English`, 'lang_set:en')],
+      [btn(t('home', lang), 'home')],
+    ]),
+  };
 }
 export async function applyWorkerLanguage(db, userId, language) { if (!SUPPORTED_LANGUAGES.includes(language)) return false; await setUserLanguage(db, Number(userId), language); return true; }
 export async function buildWorkerAbout(db, user) { const lang=await getUserLanguage(db,Number(user.id)); return { text:'ℹ️ <b>'+esc(await setting(db,'platform_name'))+'</b>\n\n'+esc(await setting(db,'platform_about')), reply_markup:keyboard([[btn(t('home',lang),'home')]]) }; }
-export async function buildWorkerContact(db, user) { const lang=await getUserLanguage(db,Number(user.id)); return { text:'📬 <b>'+(lang==='en'?'Contact the platform':'تواصل مع المنصة')+'</b>\n\n'+esc(await setting(db,'contact_text')), reply_markup:keyboard([[btn(t('home',lang),'home')]]) }; }
+export async function buildWorkerContact(db, user) {
+  const lang = await getUserLanguage(db, Number(user.id));
+  const sendLabel = lang === 'en' ? '✉️ Send a message to Admin' : '✉️ إرسال رسالة أو اقتراح للإدارة';
+  return {
+    text: '📬 <b>' + (lang === 'en' ? 'Contact the platform' : 'تواصل مع المنصة') + '</b>\n\n' + esc(await setting(db, 'contact_text')),
+    reply_markup: keyboard([
+      [btn(sendLabel, 'contact_send')],
+      [btn(t('home', lang), 'home')],
+    ]),
+  };
+}
+export async function submitWorkerContactMessage(db, user, text) {
+  const lang = await getUserLanguage(db, Number(user.id));
+  const body = String(text ?? '').trim();
+  if (!body) {
+    return {
+      ok: false,
+      text: lang === 'en' ? '⚠️ Please write a non-empty message.' : '⚠️ يرجى كتابة نص الرسالة.',
+      reply_markup: keyboard([[btn(t('home', lang), 'home')]]),
+    };
+  }
+  const userName = user?.username ? `@${user.username}` : ([user?.first_name, user?.last_name].filter(Boolean).join(' ') || String(user.id));
+  await run(
+    db,
+    "INSERT INTO messages (user_id, user_name, category, body, status) VALUES (?, ?, 'message', ?, 'NEW')",
+    [Number(user.id), userName, body.slice(0, 2000)],
+  );
+  return {
+    ok: true,
+    text: lang === 'en'
+      ? '✅ Your message has been sent to the platform administration. You will be notified when they reply.'
+      : '✅ تم إرسال رسالتك إلى إدارة المنصة بنجاح، وسيتم إشعارك فور الرد عليها.',
+    reply_markup: keyboard([[btn(t('home', lang), 'home')]]),
+  };
+}
 export async function buildWorkerNews(db,user,offset=0) {
  const lang=await getUserLanguage(db,Number(user.id)); const rows=await listNews(db,{status:'published',limit:5,offset:Math.max(0,Number(offset)||0)});
  const lines=[lang==='en'?'📰 <b>News</b>':'📰 <b>الأخبار</b>','']; const buttons=[];

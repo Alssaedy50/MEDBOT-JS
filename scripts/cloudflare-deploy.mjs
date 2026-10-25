@@ -147,6 +147,7 @@ async function main() {
   putWorkerSecret('TELEGRAM_BOT_TOKEN', botToken);
   putWorkerSecret('ADMIN_ID', process.env.ADMIN_ID);
   putWorkerSecret('TELEGRAM_WEBHOOK_SECRET', webhookSecret);
+  putWorkerSecret('MEDBOT_ARCHIVE_CHANNEL', process.env.MEDBOT_ARCHIVE_CHANNEL || process.env.ARCHIVE_CHANNEL_ID);
   putWorkerSecret('GEMINI_API_KEY', process.env.GEMINI_API_KEY);
   putWorkerSecret('GROQ_API_KEY', process.env.GROQ_API_KEY);
   putWorkerSecret('OPENROUTER_API_KEY', process.env.OPENROUTER_API_KEY);
