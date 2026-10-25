@@ -33,6 +33,7 @@ jobs:
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           MEDBOT_ARCHIVE_CHANNEL: ${{ secrets.MEDBOT_ARCHIVE_CHANNEL }}
+          ARCHIVE_CHANNEL_ID: ${{ secrets.ARCHIVE_CHANNEL_ID }}
           CLOUDFLARE_WORKER_URL: ${{ secrets.CLOUDFLARE_WORKER_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

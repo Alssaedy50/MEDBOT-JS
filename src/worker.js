@@ -33,6 +33,11 @@ import {
   buildWorkerArchiveAdmin,
   syncWorkerArchiveAll,
   resolveWorkerArchiveChannel,
+  resolveWorkerArchiveChannelAsync,
+  saveWorkerArchiveChannel,
+  publishWorkerCloudBackupToArchive,
+  restoreWorkerFromArchiveChannelAuto,
+  importWorkerArchiveInput,
   buildWorkerPending,
   buildWorkerContributionReview,
   reviewWorkerContribution,
@@ -140,6 +145,36 @@ function telegramBot(token) {
     sendPhoto: (chatId, photo, options = {}) => call('sendPhoto', { chat_id: chatId, photo, ...options }),
     sendVideo: (chatId, video, options = {}) => call('sendVideo', { chat_id: chatId, video, ...options }),
     sendAudio: (chatId, audio, options = {}) => call('sendAudio', { chat_id: chatId, audio, ...options }),
+    getChat: (chatId) => call('getChat', { chat_id: chatId }),
+    getMe: () => call('getMe', {}),
+    getChatMember: (chatId, userId) => call('getChatMember', { chat_id: chatId, user_id: userId }),
+    pinChatMessage: (chatId, messageId, options = {}) =>
+      call('pinChatMessage', { chat_id: chatId, message_id: messageId, disable_notification: true, ...options }),
+    getFile: (fileId) => call('getFile', { file_id: fileId }),
+    downloadFileText: async (fileId) => {
+      const f = await call('getFile', { file_id: fileId });
+      if (!f?.file_path) throw new Error('telegram_file_path_missing');
+      const res = await fetch(`https://api.telegram.org/file/bot${token}/${f.file_path}`);
+      if (!res.ok) throw new Error(`telegram_file_download_failed_${res.status}`);
+      return res.text();
+    },
+    sendBufferDocument: async (chatId, filename, contentString, options = {}) => {
+      const form = new globalThis.FormData();
+      form.append('chat_id', String(chatId));
+      if (options.caption) form.append('caption', String(options.caption));
+      if (options.parse_mode) form.append('parse_mode', String(options.parse_mode));
+      const blob = new globalThis.Blob([String(contentString ?? '')], { type: 'application/json; charset=utf-8' });
+      form.append('document', blob, filename || 'medbot-cloud-backup.json');
+      const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+        method: 'POST',
+        body: form,
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body?.ok) {
+        throw new Error(body?.description || 'telegram_sendBufferDocument_failed');
+      }
+      return body.result;
+    },
   };
 }
 
@@ -159,6 +194,8 @@ function clearPendingStates(userData) {
   userData.admin_topic_new = false;
   userData.admin_set_edit = null;
   userData.admin_add_new = false;
+  userData.admin_archive_set_channel = false;
+  userData.admin_archive_import = false;
 }
 
 async function sendMediaByType(bot, chatId, fileType, fileId, options = {}) {
@@ -187,6 +224,26 @@ async function sendMediaByType(bot, chatId, fileType, fileId, options = {}) {
 async function dispatchTelegramUpdate(update, { env }) {
   const bot = telegramBot(env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN);
   if (!bot) throw new Error('telegram_bot_token_not_configured');
+
+  // Support direct channel posts in the Archive Channel (e.g. /connect_archive or direct uploads)
+  const channelPost = update?.channel_post || update?.edited_channel_post;
+  if (channelPost && channelPost.chat?.id) {
+    const postText = String(channelPost.text || channelPost.caption || '').trim();
+    if (/^\/(connect_archive|link_archive)\b/i.test(postText)) {
+      const chId = String(channelPost.chat.id);
+      await run(
+        env.DB,
+        "INSERT INTO settings(key,value) VALUES('archive_channel_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [chId],
+      ).catch(() => {});
+      await bot.sendMessage(
+        channelPost.chat.id,
+        `✅ <b>تم ربط هذه القناة كقناة أرشيف واسترداد سحابي رسمية لبوت MEDBOT!</b>\n📡 معرّف القناة: <code>${chId}</code>`,
+      ).catch(() => {});
+      return null;
+    }
+  }
+
   const handlers = {
     command: async (ctx) => {
       clearPendingStates(ctx.userData);
@@ -331,7 +388,7 @@ async function dispatchTelegramUpdate(update, { env }) {
         return ctx.editMessageText(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
       if (ctx.data === 'admin_runtime') {
-        const channel = resolveWorkerArchiveChannel(env);
+        const channel = await resolveWorkerArchiveChannelAsync(ctx.db, env);
         await ctx.answer();
         return ctx.editMessageText(
           `📊 <b>حالة التشغيل (Cloudflare Worker)</b>\n\n` +
@@ -431,9 +488,9 @@ async function dispatchTelegramUpdate(update, { env }) {
         return ctx.editMessageText(`✅ تم حذف الملف.\n\n${menu.text}`, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
 
-      // Admin Archive
+      // Admin Archive & Cloud Disaster Recovery
       if (ctx.data === 'admin_archive') {
-        const menu = await buildWorkerArchiveAdmin(ctx.db, ctx.from, env);
+        const menu = await buildWorkerArchiveAdmin(ctx.db, ctx.from, env, bot);
         await ctx.answer();
         return ctx.editMessageText(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
@@ -441,6 +498,80 @@ async function dispatchTelegramUpdate(update, { env }) {
         await ctx.answer();
         const result = await syncWorkerArchiveAll(ctx.db, ctx.from, bot, env);
         return ctx.editMessageText(result.text, { reply_markup: result.reply_markup, parse_mode: 'HTML' });
+      }
+      if (ctx.data === 'admin_archive_backup') {
+        await ctx.answer();
+        try {
+          const res = await publishWorkerCloudBackupToArchive(ctx.db, bot, env, { pin: true });
+          if (res.ok) {
+            return ctx.editMessageText(
+              `✅ <b>تم حفظ وتثبيت نسخة الاسترداد السحابية الشاملة في قناة الأرشيف بنجاح!</b>\n\n` +
+              `📁 الأقسام والمستويات المحفوظة: ${res.counts?.folders ?? 0}\n` +
+              `📄 الموارد والملفات المحفوظة: ${res.counts?.content ?? 0}\n` +
+              `📌 تم تثبيت ملف النسخة في القناة لاسترداده تلقائياً في أي وقت بضغطة زر.`,
+              {
+                reply_markup: { inline_keyboard: [[{ text: '⬅️ أرشيف القناة', callback_data: 'admin_archive' }, { text: '🏠 الرئيسية', callback_data: 'home' }]] },
+                parse_mode: 'HTML',
+              },
+            );
+          }
+          return ctx.editMessageText('⚠️ لم يتم ربط قناة الأرشيف بعد.', {
+            reply_markup: { inline_keyboard: [[{ text: '⬅️ أرشيف القناة', callback_data: 'admin_archive' }]] },
+            parse_mode: 'HTML',
+          });
+        } catch (err) {
+          return ctx.editMessageText(`⚠️ تعذر رفع النسخة للقناة: <code>${String(err?.message || err).slice(0, 180)}</code>`, {
+            reply_markup: { inline_keyboard: [[{ text: '⬅️ أرشيف القناة', callback_data: 'admin_archive' }]] },
+            parse_mode: 'HTML',
+          });
+        }
+      }
+      if (ctx.data === 'admin_archive_restore_auto') {
+        await ctx.answer();
+        const result = await restoreWorkerFromArchiveChannelAuto(ctx.db, ctx.from, bot, env);
+        return ctx.editMessageText(result.text, { reply_markup: result.reply_markup, parse_mode: 'HTML' });
+      }
+      if (ctx.data === 'admin_archive_export_chat') {
+        await ctx.answer();
+        try {
+          await publishWorkerCloudBackupToArchive(ctx.db, bot, env, { targetChatId: ctx.from.id, pin: false });
+          return ctx.reply('✅ تم تصدير وإرسال ملف النسخة الاحتياطية الشاملة (<code>medbot-cloud-backup.json</code>) إلى محادثتك.', {
+            reply_markup: { inline_keyboard: [[{ text: '⬅️ أرشيف القناة', callback_data: 'admin_archive' }]] },
+            parse_mode: 'HTML',
+          });
+        } catch (err) {
+          return ctx.reply(`⚠️ تعذر تصدير النسخة: ${String(err?.message || err).slice(0, 150)}`);
+        }
+      }
+      if (ctx.data === 'admin_archive_import') {
+        ctx.userData.admin_archive_import = true;
+        await ctx.answer();
+        return ctx.editMessageText(
+          `📥 <b>الاستيراد الشامل من قناة الأرشيف (بأي صيغة)</b>\n\n` +
+          `يمكنك الآن استرداد واستيراد كافة البيانات بأي طريقة من الطرق التالية:\n` +
+          `1️⃣ <b>توجيه (Forward) الرسائل والملفات من قناة الأرشيف:</b> حدد رسالة أو عدة رسائل (ملفات PDF، صور، فيديوهات، صوتيات، أو بطاقات أقسام) من القناة ووجّهها إلى هنا مباشرةً، وسيقوم البوت بقراءة بياناتها (المستوى، الترم، البلوك، المادة، القسم) وإعادة بناء الأقسام والموارد تلقائياً.\n` +
+          `2️⃣ <b>إرسال ملف نسخة احتياطية:</b> أرسل ملف <code>.json</code> أو <code>.sql</code> أو <code>.txt</code> لاستعادة قاعدة البيانات بالكامل فوراً.`,
+          {
+            reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء والعودة للأرشيف', callback_data: 'admin_archive' }]] },
+            parse_mode: 'HTML',
+          },
+        );
+      }
+      if (ctx.data === 'admin_archive_set_channel') {
+        ctx.userData.admin_archive_set_channel = true;
+        await ctx.answer();
+        return ctx.editMessageText(
+          `⚙️ <b>ربط أو تغيير قناة الأرشيف والطوارئ</b>\n\n` +
+          `تأكد أولاً من إضافة البوت كمشرف (<b>Admin</b>) داخل القناة، ثم اختر إحدى الطرق التالية:\n` +
+          `• أرسل معرّف القناة العام مثل: <code>@my_archive_channel</code> أو رابطها <code>https://t.me/...</code>\n` +
+          `• أو أرسل المعرّف الرقمي للقناة السرية مثل: <code>-1001234567890</code>\n` +
+          `• أو قم بتوجيه (<b>Forward</b>) أي رسالة من القناة إلى هنا مباشرةً\n` +
+          `• أو اكتب الأمر <code>/connect_archive</code> داخل القناة نفسها!`,
+          {
+            reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'admin_archive' }]] },
+            parse_mode: 'HTML',
+          },
+        );
       }
 
       // Admin Pending Contributions
@@ -798,12 +929,32 @@ async function dispatchTelegramUpdate(update, { env }) {
       const menu = await buildWorkerAdmins(ctx.db, ctx.from);
       return ctx.reply(`${res.text}\n\n${menu.text}`, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
     }
+    if (ctx.userData?.admin_archive_set_channel) {
+      ctx.userData.admin_archive_set_channel = false;
+      const res = await saveWorkerArchiveChannel(ctx.db, ctx.from, ctx.message || ctx.text, bot);
+      const menu = await buildWorkerArchiveAdmin(ctx.db, ctx.from, env, bot);
+      return ctx.reply(`${res.text}\n\n${menu.text}`, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
+    }
+    if (ctx.userData?.admin_archive_import) {
+      const res = await importWorkerArchiveInput(ctx.db, ctx.from, ctx.message, bot);
+      return ctx.reply(res.text, { reply_markup: res.reply_markup, parse_mode: 'HTML' });
+    }
     return ctx.reply('ℹ️ استخدم أزرار MEDBOT للتنقل، أو /search للبحث داخل الموارد.', {
       reply_markup: { inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]] },
     });
   };
 
   handlers.media = async (ctx) => {
+    if (ctx.userData?.admin_archive_set_channel) {
+      ctx.userData.admin_archive_set_channel = false;
+      const res = await saveWorkerArchiveChannel(ctx.db, ctx.from, ctx.message, bot);
+      const menu = await buildWorkerArchiveAdmin(ctx.db, ctx.from, env, bot);
+      return ctx.reply(`${res.text}\n\n${menu.text}`, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
+    }
+    if (ctx.userData?.admin_archive_import) {
+      const res = await importWorkerArchiveInput(ctx.db, ctx.from, ctx.message, bot);
+      return ctx.reply(res.text, { reply_markup: res.reply_markup, parse_mode: 'HTML' });
+    }
     if (ctx.userData?.admin_upload_folder) {
       const fid = Number(ctx.userData.admin_upload_folder);
       const result = await uploadWorkerAdminMedia(ctx.db, ctx.from, ctx.message, fid, bot, env);

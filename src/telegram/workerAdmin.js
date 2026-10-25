@@ -322,7 +322,7 @@ export async function uploadWorkerAdminMedia(db, user, message, folderId, bot = 
     ok: true,
     contentId,
     folderId: fid,
-    text: `✅ <b>تم رفع ونشر المورد للطلاب بنجاح!</b>\n\n📄 <b>${esc(title)}</b>${archived ? '\n🗄 تم أرشفته تلقائياً في قناة الأرشيف.' : ''}\n\nيمكنك إرسال ملف آخر لنفس القسم الآن، أو العودة للقسم:`,
+    text: `✅ <b>تم رفع ونشر المورد للطلاب بنجاح!</b>\n\n📄 <b>${esc(title)}</b>${archived ? '\n🗄 تم أرشفته وتحديث نسخة الاسترداد في قناة الأرشيف تلقائياً.' : ''}\n\nيمكنك إرسال ملف آخر لنفس القسم الآن، أو العودة للقسم:`,
     reply_markup: kb([
       [btn('⬅️ عرض القسم', `admin_folder:${fid}`), btn('🏠 الرئيسية', 'home')],
     ]),
@@ -330,7 +330,7 @@ export async function uploadWorkerAdminMedia(db, user, message, folderId, bot = 
 }
 
 // ---------------------------------------------------------------------------
-// 2. Archive Channel Sync (نجاح عمل القناة والأرشفة)
+// 2. Archive Channel Sync & Cloud Disaster Recovery (نجاح عمل القناة والاسترداد الشامل)
 // ---------------------------------------------------------------------------
 
 export function resolveWorkerArchiveChannel(env = {}) {
@@ -346,25 +346,370 @@ export function resolveWorkerArchiveChannel(env = {}) {
   return val;
 }
 
-export async function publishResourceToWorkerArchive(db, bot, env, contentId) {
-  const channel = resolveWorkerArchiveChannel(env);
+export async function resolveWorkerArchiveChannelAsync(db, env = {}) {
+  if (db) {
+    const row = await get(
+      db,
+      "SELECT value FROM settings WHERE key IN ('archive_channel_id', 'MEDBOT_ARCHIVE_CHANNEL') AND TRIM(value) != '' ORDER BY CASE WHEN key='archive_channel_id' THEN 0 ELSE 1 END LIMIT 1",
+    ).catch(() => null);
+    if (row?.[0]) {
+      const normalized = resolveWorkerArchiveChannel({ MEDBOT_ARCHIVE_CHANNEL: row[0] });
+      if (normalized) return normalized;
+    }
+  }
+  return resolveWorkerArchiveChannel(env);
+}
+
+export async function saveWorkerArchiveChannel(db, user, inputOrMessage, bot = null) {
+  if (!(await hasPermission(db, Number(user.id), 'can_archive'))) {
+    return { ok: false, text: '🔒 غير مصرح.' };
+  }
+  let candidate = '';
+  if (inputOrMessage && typeof inputOrMessage === 'object') {
+    const fwdChat = inputOrMessage.forward_from_chat || inputOrMessage.forward_origin?.chat || inputOrMessage.sender_chat;
+    if (fwdChat?.id) {
+      candidate = String(fwdChat.id);
+    } else if (fwdChat?.username) {
+      candidate = `@${fwdChat.username}`;
+    } else {
+      candidate = String(inputOrMessage.text || inputOrMessage.caption || '').trim();
+    }
+  } else {
+    candidate = String(inputOrMessage ?? '').trim();
+  }
+
+  const normalized = resolveWorkerArchiveChannel({ MEDBOT_ARCHIVE_CHANNEL: candidate });
+  if (!normalized || (/^\d+$/.test(normalized) && !normalized.startsWith('-'))) {
+    return {
+      ok: false,
+      text: '⚠️ معرّف القناة غير صالح.\nأرسل معرّف القناة بصيغة <code>@channel_username</code> أو معرّف رقمي سالب مثل <code>-1001234567890</code>، أو قم بتوجيه (Forward) أي رسالة من القناة إلى هنا مباشرةً.',
+    };
+  }
+
+  await run(
+    db,
+    "INSERT INTO settings(key,value) VALUES('archive_channel_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    [normalized],
+  );
+
+  let verifyNote = '';
+  if (bot?.getChat) {
+    try {
+      const target = /^-\d+$/.test(normalized) ? Number(normalized) : normalized;
+      const chat = await bot.getChat(target);
+      verifyNote = `\n✅ تم التحقق من الوصول للقناة: <b>${esc(chat?.title || normalized)}</b>`;
+    } catch {
+      verifyNote = '\n⚠️ تم حفظ القناة، لكن تأكد من إضافة البوت كمشرف (Admin) داخل القناة مع صلاحية النشر وتثبيت الرسائل.';
+    }
+  }
+
+  return {
+    ok: true,
+    channel: normalized,
+    text: `✅ <b>تم ربط قناة الأرشيف بنجاح!</b>\n\n📡 القناة: <code>${esc(normalized)}</code>${verifyNote}`,
+  };
+}
+
+async function getFolderHierarchyChain(db, folderId) {
+  const allFolders = await all(db, 'SELECT id, parent_id, name, node_type FROM folders');
+  const byId = new Map(allFolders.map((r) => [Number(r[0]), {
+    id: Number(r[0]),
+    parent_id: r[1] === null || r[1] === undefined ? 0 : Number(r[1]),
+    name: String(r[2] || '').trim(),
+    node_type: String(r[3] || 'general').trim(),
+  }]));
+  const chain = [];
+  const visited = new Set();
+  let cur = byId.get(Number(folderId));
+  while (cur && !visited.has(cur.id)) {
+    visited.add(cur.id);
+    chain.unshift(cur);
+    cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+  }
+  return chain;
+}
+
+export function analyzeAcademicHierarchy(chain = []) {
+  let level = '';
+  let term = '';
+  let block = '';
+  let subject = '';
+  let section = '';
+  const used = new Set();
+
+  for (let i = 0; i < chain.length; i++) {
+    const f = chain[i];
+    const t = String(f.node_type || '').toLowerCase();
+    const n = String(f.name || '').trim();
+    if (!level && (t === 'year' || /سنة|السنة|مستوى|المستوى|اولى|أولى|ثانية|ثالثة|رابعة|خامسة|سادسة|سابع|امتياز|level|year/i.test(n))) {
+      level = n;
+      used.add(i);
+    } else if (!term && (t === 'term' || /ترم|الترم|فصل|الفصل|سيميستر|semester|term/i.test(n))) {
+      term = n;
+      used.add(i);
+    } else if (!block && (t === 'block' || /بلوك|البلوك|موديول|الموديول|وحدة|جهاز|block|module|system/i.test(n))) {
+      block = n;
+      used.add(i);
+    } else if (!subject && (t === 'subject' || /مادة|المادة|تشريح|فسيولوجي|باثولوجي|فارما|ميكرو|بارا|باطنة|جراحة|أطفال|نساء|كيمياء|هستولوجي|أجنة|مناعة|طب|عظام|عيون|أنف|جلدية|نفسية|طوارئ|أشعة|تخدير|سموم|شرعي|مجتمع|إحصاء|anatomy|physiology|pathology|pharmacology|microbiology|biochemistry|histology|surgery|medicine|pediatrics/i.test(n))) {
+      subject = n;
+      used.add(i);
+    } else if (!section && (t === 'section' || /قسم|محاضرات|عملي|سيميوليشن|ملخصات|اختبارات|امتحانات|تجميعات|بنوك|أسئلة|مراجع|كتب|تسجيلات|فيديوهات|صور|شيتات|تحديدات|مناقشات|ندوات|سلايدات|دفاتر/i.test(n))) {
+      section = n;
+      used.add(i);
+    }
+  }
+
+  const remaining = chain.filter((_, idx) => !used.has(idx));
+  if (chain.length === 1 && !level && !subject && !section) {
+    subject = chain[0].name;
+    section = chain[0].name;
+  } else {
+    if (!level && remaining.length > 0 && !used.has(0)) {
+      level = chain[0].name;
+      used.add(0);
+    }
+    if (!section && chain.length > 0 && !used.has(chain.length - 1)) {
+      section = chain[chain.length - 1].name;
+      used.add(chain.length - 1);
+    }
+    if (!subject && chain.length >= 2) {
+      const idx = chain.length - 2;
+      if (!used.has(idx)) {
+        subject = chain[idx].name;
+        used.add(idx);
+      }
+    }
+    for (let i = 0; i < chain.length; i++) {
+      if (used.has(i)) continue;
+      if (!term) {
+        term = chain[i].name;
+        used.add(i);
+      } else if (!block) {
+        block = chain[i].name;
+        used.add(i);
+      } else if (!subject) {
+        subject = chain[i].name;
+        used.add(i);
+      } else if (!section) {
+        section = chain[i].name;
+        used.add(i);
+      }
+    }
+  }
+
+  const fullPath = chain.map((c) => c.name).join(' / ');
+  return {
+    level: level || 'غير محدد',
+    term: term || 'عام',
+    block: block || 'عام',
+    subject: subject || (chain[chain.length - 1]?.name || 'عام'),
+    section: section || (chain[chain.length - 1]?.name || 'عام'),
+    fullPath: fullPath || 'موارد عامة',
+  };
+}
+
+function toHashtag(text) {
+  const clean = String(text || '')
+    .trim()
+    .replace(/[^\p{L}\p{N}_]+/gu, '_')
+    .replace(/^_+|_+$/g, '');
+  return clean && clean !== 'غير_محدد' && clean !== 'عام' ? `#${clean.slice(0, 28)}` : '';
+}
+
+function encodeArchiveMeta(obj) {
+  try {
+    const jsonStr = JSON.stringify(obj);
+    const bytes = new TextEncoder().encode(jsonStr);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return globalThis.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export function decodeArchiveMeta(text) {
+  const match = String(text || '').match(/MEDBOT_META:([A-Za-z0-9_-]+)/);
+  if (!match) return null;
+  try {
+    const b64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
+    const binary = globalThis.atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+}
+
+function fileTypeLabel(fileType) {
+  const kind = String(fileType || 'doc').toLowerCase();
+  if (kind === 'photo' || kind === 'image') return '🖼 صورة توضيحية (Photo)';
+  if (kind === 'video') return '🎬 مقطع فيديو (Video)';
+  if (kind === 'audio') return '🎧 ملف صوتي (Audio)';
+  return '📕 مستند / ملف (Document)';
+}
+
+export function buildStructuredArchiveCaption({
+  id,
+  folderId,
+  title,
+  fileType,
+  chain,
+  sourceType,
+  contributorName,
+  contributorId,
+  createdAt,
+}) {
+  const h = analyzeAcademicHierarchy(chain);
+  const sourceLabel = sourceType === 'contribution'
+    ? `🌟 مساهمة طالب: ${contributorName || 'طالب'}${contributorId ? ` (#${contributorId})` : ''}`
+    : `🛡 رفع إداري: ${contributorName || 'إدارة المنصة'}${contributorId ? ` (#${contributorId})` : ''}`;
+  const dateLabel = String(createdAt || new Date().toISOString()).slice(0, 16).replace('T', ' ');
+  const tags = Array.from(new Set([
+    toHashtag(h.level),
+    toHashtag(h.term),
+    toHashtag(h.block),
+    toHashtag(h.subject),
+    toHashtag(h.section),
+  ].filter(Boolean))).join(' ');
+
+  const metaToken = encodeArchiveMeta({
+    c: chain.map((f) => [f.name, f.node_type || 'general']),
+    t: String(title || '').slice(0, 120),
+    y: String(fileType || 'doc'),
+    s: String(sourceType || 'direct'),
+    u: contributorId || null,
+    n: contributorName ? String(contributorName).slice(0, 40) : null,
+  });
+
+  const lines = [
+    '🗄 <b>أرشيف موارد منصة MEDBOT</b>',
+    '━━━━━━━━━━━━━━━━━━',
+    `📄 <b>اسم المورد:</b> ${esc(String(title || '').slice(0, 140))}`,
+    `🗂 <b>نوع الداتا:</b> ${esc(fileTypeLabel(fileType))}`,
+    '',
+    `🎓 <b>المستوى الدراسي:</b> ${esc(h.level)}`,
+    `📅 <b>الفصل الدراسي (الترم):</b> ${esc(h.term)}`,
+    `🧩 <b>البلوك / الموديول:</b> ${esc(h.block)}`,
+    `📚 <b>المادة الدراسية:</b> ${esc(h.subject)}`,
+    `📂 <b>القسم:</b> ${esc(h.section)}`,
+    `🧭 <b>المسار الكامل:</b> ${esc(h.fullPath)}`,
+    '',
+    `👤 <b>المشارك / المصدر:</b> ${esc(sourceLabel)}`,
+    `🕒 <b>تاريخ الحفظ:</b> <code>${esc(dateLabel)}</code> | 🆔 <code>#${id || 0}</code> (قسم <code>#${folderId || 0}</code>)`,
+  ];
+  if (tags) lines.push(`🏷 ${esc(tags)}`);
+  if (metaToken && lines.join('\n').length + metaToken.length < 960) {
+    lines.push(`🔖 <code>MEDBOT_META:${metaToken}</code>`);
+  }
+  return lines.join('\n').slice(0, 1000);
+}
+
+async function publishSectionHeaderToArchive(db, bot, channel, folderId, chain) {
+  if (!folderId || !chain?.length || !bot?.sendMessage) return;
+  const fp = `folder:${folderId}`;
+  const existing = await get(db, "SELECT status FROM archive_sync WHERE content_fingerprint=? AND status='published'", [fp]).catch(() => null);
+  if (existing) return;
+
+  const h = analyzeAcademicHierarchy(chain);
+  const tags = Array.from(new Set([
+    toHashtag(h.level),
+    toHashtag(h.term),
+    toHashtag(h.block),
+    toHashtag(h.subject),
+    toHashtag(h.section),
+  ].filter(Boolean))).join(' ');
+
+  const text = [
+    '📁 <b>بطاقة فهرسة قسم دراسي — MEDBOT</b>',
+    '━━━━━━━━━━━━━━━━━━',
+    `🎓 <b>المستوى الدراسي:</b> ${esc(h.level)}`,
+    `📅 <b>الفصل الدراسي (الترم):</b> ${esc(h.term)}`,
+    `🧩 <b>البلوك / الموديول:</b> ${esc(h.block)}`,
+    `📚 <b>المادة الدراسية:</b> ${esc(h.subject)}`,
+    `📂 <b>القسم:</b> ${esc(h.section)}`,
+    `🧭 <b>المسار:</b> ${esc(h.fullPath)}`,
+    tags ? `\n🏷 ${esc(tags)}` : '',
+  ].filter(Boolean).join('\n');
+
+  const target = /^-\d+$/.test(channel) ? Number(channel) : channel;
+  try {
+    const sent = await bot.sendMessage(target, text, { parse_mode: 'HTML' });
+    await run(
+      db,
+      `INSERT INTO archive_sync (object_type, content_fingerprint, folder_id, channel_id, channel_message_id, status, attempts, published_at)
+       VALUES ('folder', ?, ?, ?, ?, 'published', 1, CURRENT_TIMESTAMP)
+       ON CONFLICT(content_fingerprint) DO UPDATE SET status='published', channel_id=excluded.channel_id, channel_message_id=excluded.channel_message_id, error=NULL, updated_at=CURRENT_TIMESTAMP, published_at=CURRENT_TIMESTAMP`,
+      [fp, Number(folderId), String(channel), sent?.message_id ?? null],
+    ).catch(() => {});
+  } catch {
+    // Non-fatal
+  }
+}
+
+export async function publishResourceToWorkerArchive(db, bot, env, contentId, { skipAutoBackup = false } = {}) {
+  const channel = await resolveWorkerArchiveChannelAsync(db, env);
   if (!channel || !bot) return { ok: false, reason: 'not_configured' };
   const snap = await getResourceSnapshot(db, Number(contentId));
   if (!snap) return { ok: false, reason: 'not_found' };
-  const [id, folderId, title, fileId, fileType, path] = snap;
+  const [id, folderId, title, fileId, fileType] = snap;
   const fingerprint = `${fileType}:${fileId}:${title}`.slice(0, 240);
 
   const existing = await get(db, "SELECT status FROM archive_sync WHERE content_fingerprint=? AND status='published'", [fingerprint]).catch(() => null);
   if (existing) return { ok: true, skipped: true };
 
-  const caption = `🗄 <b>MEDBOT Emergency Resource Archive</b>\n\n📄 <b>${esc(title)}</b>\n📍 ${esc(path)}\n🆔 #${id}`;
+  const chain = await getFolderHierarchyChain(db, folderId);
+  const detailsRow = await get(
+    db,
+    'SELECT c.source_type, c.source_contribution_id, c.created_by, c.created_at, u.full_name, u.username, ct.user_name, ct.user_id FROM content c LEFT JOIN users u ON u.user_id = c.created_by LEFT JOIN contributions ct ON ct.id = c.source_contribution_id WHERE c.id = ?',
+    [Number(id)],
+  ).catch(() => null);
+
+  const sourceType = detailsRow?.[0] || 'direct';
+  const contributorId = detailsRow?.[7] || detailsRow?.[2] || null;
+  const contributorName = detailsRow?.[6] || detailsRow?.[4] || (detailsRow?.[5] ? `@${detailsRow[5]}` : null);
+  const createdAt = detailsRow?.[3] || new Date().toISOString();
+
+  await publishSectionHeaderToArchive(db, bot, channel, folderId, chain);
+
+  const caption = buildStructuredArchiveCaption({
+    id,
+    folderId,
+    title,
+    fileType,
+    chain,
+    sourceType,
+    contributorName,
+    contributorId,
+    createdAt,
+  });
+
   const target = /^-\d+$/.test(channel) ? Number(channel) : channel;
+  const kind = String(fileType || 'doc').toLowerCase();
+  const primary = kind === 'photo' || kind === 'image'
+    ? 'sendPhoto'
+    : kind === 'video'
+      ? 'sendVideo'
+      : kind === 'audio'
+        ? 'sendAudio'
+        : 'sendDocument';
+  const order = [primary, 'sendDocument', 'sendPhoto', 'sendVideo', 'sendAudio'].filter(
+    (m, idx, arr) => arr.indexOf(m) === idx && typeof bot[m] === 'function',
+  );
+
   try {
     let sent = null;
-    if (fileType === 'photo') sent = await bot.sendPhoto(target, fileId, { caption, parse_mode: 'HTML' });
-    else if (fileType === 'video') sent = await bot.sendVideo(target, fileId, { caption, parse_mode: 'HTML' });
-    else if (fileType === 'audio') sent = await bot.sendAudio(target, fileId, { caption, parse_mode: 'HTML' });
-    else sent = await bot.sendDocument(target, fileId, { caption, parse_mode: 'HTML' });
+    let lastErr = null;
+    for (const method of order) {
+      try {
+        sent = await bot[method](target, fileId, { caption, parse_mode: 'HTML' });
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!sent && lastErr) throw lastErr;
 
     await run(
       db,
@@ -373,7 +718,11 @@ export async function publishResourceToWorkerArchive(db, bot, env, contentId) {
        ON CONFLICT(content_fingerprint) DO UPDATE SET status='published', channel_id=excluded.channel_id, channel_message_id=excluded.channel_message_id, error=NULL, updated_at=CURRENT_TIMESTAMP, published_at=CURRENT_TIMESTAMP`,
       [fingerprint, folderId, String(id), String(channel), sent?.message_id ?? null],
     );
-    return { ok: true };
+
+    if (!skipAutoBackup) {
+      await publishWorkerCloudBackupToArchive(db, bot, env, { pin: true }).catch(() => {});
+    }
+    return { ok: true, message_id: sent?.message_id ?? null };
   } catch (err) {
     await run(
       db,
@@ -386,27 +735,595 @@ export async function publishResourceToWorkerArchive(db, bot, env, contentId) {
   }
 }
 
-export async function buildWorkerArchiveAdmin(db, user, env = {}) {
+export async function exportWorkerCloudSnapshot(db) {
+  const folders = await all(db, 'SELECT id, parent_id, name, node_type, accepts_contributions, description, keywords FROM folders ORDER BY COALESCE(parent_id, 0) ASC, id ASC').catch(() => []);
+  const content = await all(db, 'SELECT id, folder_id, title, file_id, file_type, created_at, source_type, source_contribution_id, created_by, description, keywords FROM content ORDER BY id ASC').catch(() => []);
+  const topics = await all(db, 'SELECT id, name, description, icon, display_order, active, created_at FROM topics ORDER BY id ASC').catch(() => []);
+  const topic_folders = await all(db, 'SELECT topic_id, folder_id FROM topic_folders').catch(() => []);
+  const admins = await all(db, 'SELECT telegram_id, username, added_at, role, permissions FROM admins').catch(() => []);
+  const admin_scopes = await all(db, 'SELECT id, admin_id, scope_type, scope_id, created_at, created_by FROM admin_scopes').catch(() => []);
+  const settings = await all(db, "SELECT key, value FROM settings WHERE key NOT LIKE 'worker_state:%'").catch(() => []);
+  const about_us = await all(db, 'SELECT id, content, updated_at FROM about_us').catch(() => []);
+  const news = await all(db, 'SELECT id, news_type, title, body, sender_id, subject_folder_id, section_folder_id, folder_id, status, created_at, published_at FROM news ORDER BY id ASC').catch(() => []);
+  const contributions = await all(db, 'SELECT id, user_id, user_name, folder_id, title, file_id, file_type, status, created_at, reviewed_by, reviewed_at FROM contributions ORDER BY id ASC').catch(() => []);
+
+  return {
+    format: 'medbot-cloud-snapshot-v1',
+    exported_at: new Date().toISOString(),
+    counts: {
+      folders: folders.length,
+      content: content.length,
+      topics: topics.length,
+      admins: admins.length,
+      news: news.length,
+      contributions: contributions.length,
+    },
+    data: {
+      folders,
+      content,
+      topics,
+      topic_folders,
+      admins,
+      admin_scopes,
+      settings,
+      about_us,
+      news,
+      contributions,
+    },
+  };
+}
+
+export async function publishWorkerCloudBackupToArchive(db, bot, env = {}, { targetChatId = null, pin = true } = {}) {
+  if (!bot?.sendBufferDocument) return { ok: false, reason: 'bot_missing_buffer_upload' };
+  const channel = targetChatId || (await resolveWorkerArchiveChannelAsync(db, env));
+  if (!channel) return { ok: false, reason: 'not_configured' };
+
+  const snapshot = await exportWorkerCloudSnapshot(db);
+  const jsonText = JSON.stringify(snapshot, null, 2);
+  const dateTag = snapshot.exported_at.slice(0, 19).replace('T', ' ');
+  const caption = [
+    '📦 <b>نسخة الاسترداد السحابي الشاملة — MEDBOT Cloud Backup</b>',
+    '━━━━━━━━━━━━━━━━━━',
+    `📁 <b>المجلدات والأقسام الدراسية:</b> ${snapshot.counts.folders}`,
+    `📄 <b>الموارد والملفات المسجلة:</b> ${snapshot.counts.content}`,
+    `🧭 <b>مواضيع البحث:</b> ${snapshot.counts.topics}`,
+    `👮 <b>المشرفون والإعدادات:</b> ${snapshot.counts.admins}`,
+    `🕒 <b>تاريخ النسخة:</b> <code>${esc(dateTag)} UTC</code>`,
+    '',
+    '♻️ <i>تُستخدم هذه النسخة المثبتة لاسترداد كافة بيانات البوت وهيكلته وموارده تلقائياً بضغطة زر في حال فقدان البيانات السحابية.</i>',
+    '#MEDBOT_BACKUP #نسخة_احتياطية',
+  ].join('\n');
+
+  const target = /^-\d+$/.test(String(channel)) ? Number(channel) : channel;
+  const sent = await bot.sendBufferDocument(target, 'medbot-cloud-backup.json', jsonText, {
+    caption,
+    parse_mode: 'HTML',
+  });
+
+  if (pin && sent?.message_id && typeof bot.pinChatMessage === 'function') {
+    await bot.pinChatMessage(target, sent.message_id, { disable_notification: true }).catch(() => {});
+  }
+  if (sent?.message_id && !targetChatId) {
+    await run(
+      db,
+      "INSERT INTO settings(key,value) VALUES('last_archive_backup_msg_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      [String(sent.message_id)],
+    ).catch(() => {});
+  }
+  return { ok: true, message_id: sent?.message_id ?? null, counts: snapshot.counts };
+}
+
+async function ensureFolderChainInD1(db, chainSpecs = []) {
+  let parentId = null;
+  for (const spec of chainSpecs) {
+    const rawName = String(Array.isArray(spec) ? spec[0] : (spec?.name ?? spec ?? '')).trim();
+    const nodeType = String(Array.isArray(spec) ? (spec[1] || 'general') : (spec?.node_type || 'general')).trim();
+    if (!rawName) continue;
+    const existing = parentId === null
+      ? await get(db, 'SELECT id FROM folders WHERE (parent_id IS NULL OR parent_id = 0) AND name = ? LIMIT 1', [rawName])
+      : await get(db, 'SELECT id FROM folders WHERE parent_id = ? AND name = ? LIMIT 1', [parentId, rawName]);
+    if (existing?.[0]) {
+      parentId = Number(existing[0]);
+    } else {
+      const ins = await run(
+        db,
+        'INSERT INTO folders (parent_id, name, node_type, accepts_contributions) VALUES (?, ?, ?, ?)',
+        [parentId, rawName, nodeType, nodeType === 'section' ? 1 : 0],
+      );
+      parentId = Number(ins.lastInsertRowid);
+    }
+  }
+  return parentId;
+}
+
+export async function restoreWorkerBackupPayload(db, payload) {
+  let foldersRestored = 0;
+  let contentRestored = 0;
+  let topicsRestored = 0;
+  let settingsRestored = 0;
+
+  const data = payload?.data || payload?.tables || payload;
+  if (!data) return { ok: false, foldersRestored: 0, contentRestored: 0 };
+
+  const rawFolders = Array.isArray(data.folders) ? data.folders : (Array.isArray(data.folders?.rows) ? data.folders.rows : []);
+  const rawContent = Array.isArray(data.content) ? data.content : (Array.isArray(data.content?.rows) ? data.content.rows : []);
+  const rawTopics = Array.isArray(data.topics) ? data.topics : (Array.isArray(data.topics?.rows) ? data.topics.rows : []);
+  const rawTopicFolders = Array.isArray(data.topic_folders) ? data.topic_folders : (Array.isArray(data.topic_folders?.rows) ? data.topic_folders.rows : []);
+  const rawSettings = Array.isArray(data.settings) ? data.settings : (Array.isArray(data.settings?.rows) ? data.settings.rows : []);
+  const rawAdmins = Array.isArray(data.admins) ? data.admins : (Array.isArray(data.admins?.rows) ? data.admins.rows : []);
+  const rawAbout = Array.isArray(data.about_us) ? data.about_us : (Array.isArray(data.about_us?.rows) ? data.about_us.rows : []);
+  const rawNews = Array.isArray(data.news) ? data.news : (Array.isArray(data.news?.rows) ? data.news.rows : []);
+
+  for (const r of rawFolders) {
+    const id = Array.isArray(r) ? r[0] : r.id;
+    const parentId = Array.isArray(r) ? r[1] : r.parent_id;
+    const name = Array.isArray(r) ? r[2] : r.name;
+    const nodeType = (Array.isArray(r) ? r[3] : r.node_type) || 'general';
+    const accepts = Number((Array.isArray(r) ? r[4] : r.accepts_contributions) ?? 0);
+    const desc = (Array.isArray(r) ? r[5] : r.description) ?? null;
+    const kw = (Array.isArray(r) ? r[6] : r.keywords) ?? null;
+    if (!name) continue;
+    await run(
+      db,
+      `INSERT INTO folders (id, parent_id, name, node_type, accepts_contributions, description, keywords)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id, name=excluded.name, node_type=excluded.node_type, accepts_contributions=excluded.accepts_contributions`,
+      [Number(id), parentId ? Number(parentId) : null, String(name), String(nodeType), accepts, desc, kw],
+    ).catch(() => {});
+    foldersRestored++;
+  }
+
+  for (const r of rawContent) {
+    const id = Array.isArray(r) ? r[0] : r.id;
+    const folderId = Array.isArray(r) ? r[1] : r.folder_id;
+    const title = Array.isArray(r) ? r[2] : r.title;
+    const fileId = Array.isArray(r) ? r[3] : r.file_id;
+    const fileType = (Array.isArray(r) ? r[4] : r.file_type) || 'doc';
+    const createdAt = (Array.isArray(r) ? r[5] : r.created_at) || new Date().toISOString();
+    const sourceType = (Array.isArray(r) ? r[6] : r.source_type) || 'direct';
+    const sourceContribId = (Array.isArray(r) ? r[7] : r.source_contribution_id) ?? null;
+    const createdBy = (Array.isArray(r) ? r[8] : r.created_by) ?? null;
+    if (!folderId || !title || !fileId) continue;
+    if (id) {
+      await run(
+        db,
+        `INSERT INTO content (id, folder_id, title, file_id, file_type, created_at, source_type, source_contribution_id, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET folder_id=excluded.folder_id, title=excluded.title, file_id=excluded.file_id, file_type=excluded.file_type`,
+        [Number(id), Number(folderId), String(title), String(fileId), String(fileType), String(createdAt), String(sourceType), sourceContribId, createdBy],
+      ).catch(() => {});
+    } else {
+      const dup = await get(db, 'SELECT id FROM content WHERE folder_id=? AND file_id=? LIMIT 1', [Number(folderId), String(fileId)]);
+      if (!dup) {
+        await addContent(db, Number(folderId), String(title), String(fileId), String(fileType), String(sourceType), sourceContribId, createdBy).catch(() => {});
+      }
+    }
+    contentRestored++;
+  }
+
+  for (const r of rawTopics) {
+    const id = Array.isArray(r) ? r[0] : r.id;
+    const name = Array.isArray(r) ? r[1] : r.name;
+    const desc = (Array.isArray(r) ? r[2] : r.description) ?? null;
+    const icon = (Array.isArray(r) ? r[3] : r.icon) ?? null;
+    const order = Number((Array.isArray(r) ? r[4] : r.display_order) ?? 0);
+    const active = Number((Array.isArray(r) ? r[5] : r.active) ?? 1);
+    if (!name) continue;
+    await run(
+      db,
+      `INSERT INTO topics (id, name, description, icon, display_order, active)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, active=excluded.active`,
+      [Number(id), String(name), desc, icon, order, active],
+    ).catch(() => {});
+    topicsRestored++;
+  }
+
+  for (const r of rawTopicFolders) {
+    const tid = Array.isArray(r) ? r[0] : r.topic_id;
+    const fid = Array.isArray(r) ? r[1] : r.folder_id;
+    if (!tid || !fid) continue;
+    await run(db, 'INSERT OR IGNORE INTO topic_folders (topic_id, folder_id) VALUES (?, ?)', [Number(tid), Number(fid)]).catch(() => {});
+  }
+
+  for (const r of rawSettings) {
+    const k = Array.isArray(r) ? r[0] : r.key;
+    const v = Array.isArray(r) ? r[1] : r.value;
+    if (!k || String(k).startsWith('worker_state:')) continue;
+    await run(db, 'INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [String(k), String(v ?? '')]).catch(() => {});
+    settingsRestored++;
+  }
+
+  for (const r of rawAdmins) {
+    const tid = Array.isArray(r) ? r[0] : r.telegram_id;
+    const uname = (Array.isArray(r) ? r[1] : r.username) ?? null;
+    const role = (Array.isArray(r) ? r[3] : r.role) || 'admin';
+    const perms = (Array.isArray(r) ? r[4] : r.permissions) || '';
+    if (!tid) continue;
+    await run(
+      db,
+      'INSERT INTO admins(telegram_id,username,role,permissions) VALUES(?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET role=excluded.role, permissions=excluded.permissions',
+      [Number(tid), uname, String(role), String(perms)],
+    ).catch(() => {});
+  }
+
+  for (const r of rawAbout) {
+    const contentText = Array.isArray(r) ? r[1] : r.content;
+    if (!contentText) continue;
+    await run(db, 'INSERT INTO about_us(id,content) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET content=excluded.content', [String(contentText)]).catch(() => {});
+  }
+
+  for (const r of rawNews) {
+    const id = Array.isArray(r) ? r[0] : r.id;
+    const ntype = (Array.isArray(r) ? r[1] : r.news_type) || 'notify';
+    const title = Array.isArray(r) ? r[2] : r.title;
+    const body = (Array.isArray(r) ? r[3] : r.body) ?? '';
+    const status = (Array.isArray(r) ? r[8] : r.status) || 'published';
+    if (!title) continue;
+    await run(
+      db,
+      'INSERT OR IGNORE INTO news (id, news_type, title, body, status) VALUES (?, ?, ?, ?, ?)',
+      [Number(id), String(ntype), String(title), String(body), String(status)],
+    ).catch(() => {});
+  }
+
+  return { ok: true, foldersRestored, contentRestored, topicsRestored, settingsRestored };
+}
+
+function parseCaptionHierarchyAndTitle(captionText, fallbackTitle) {
+  const meta = decodeArchiveMeta(captionText);
+  if (meta && Array.isArray(meta.c) && meta.c.length > 0) {
+    return {
+      chain: meta.c.map((item) => [String(item[0] || '').trim(), String(item[1] || 'general').trim()]),
+      title: String(meta.t || fallbackTitle || 'مورد مسترد').trim(),
+      sourceType: String(meta.s || 'direct'),
+      createdBy: meta.u || null,
+    };
+  }
+
+  const lines = String(captionText || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  let title = '';
+  let fullPath = '';
+  let level = '';
+  let term = '';
+  let block = '';
+  let subject = '';
+  let section = '';
+
+  for (const line of lines) {
+    const clean = line.replace(/^[🗄📄🗂🎓📅🧩📚📂🧭👤🕒🏷🔖📍🆔━\s]+/u, '').trim();
+    if (/^اسم المورد\s*:/u.test(clean)) title = clean.replace(/^اسم المورد\s*:/u, '').trim();
+    else if (!title && line.startsWith('📄')) title = clean;
+    else if (/^المسار(?: الكامل)?\s*:/u.test(clean)) fullPath = clean.replace(/^المسار(?: الكامل)?\s*:/u, '').trim();
+    else if (!fullPath && line.startsWith('📍')) fullPath = clean;
+    else if (/^المستوى الدراسي\s*:/u.test(clean)) level = clean.replace(/^المستوى الدراسي\s*:/u, '').trim();
+    else if (/^الفصل الدراسي(?:\s*\(الترم\))?\s*:|^الترم\s*:/u.test(clean)) term = clean.replace(/^الفصل الدراسي(?:\s*\(الترم\))?\s*:|^الترم\s*:/u, '').trim();
+    else if (/^البلوك(?:\s*\/\s*الموديول)?\s*:/u.test(clean)) block = clean.replace(/^البلوك(?:\s*\/\s*الموديول)?\s*:/u, '').trim();
+    else if (/^المادة(?: الدراسية)?\s*:/u.test(clean)) subject = clean.replace(/^المادة(?: الدراسية)?\s*:/u, '').trim();
+    else if (/^القسم\s*:/u.test(clean)) section = clean.replace(/^القسم\s*:/u, '').trim();
+  }
+
+  const chain = [];
+  if (fullPath) {
+    const parts = fullPath.split(/\s*(?:\/|⬅️|->|>|\|)\s*/).map((p) => p.trim()).filter(Boolean);
+    parts.forEach((p, idx) => {
+      const ntype = idx === 0 ? 'year' : idx === parts.length - 1 ? 'section' : 'general';
+      chain.push([p, ntype]);
+    });
+  } else {
+    const addPart = (val, ntype) => {
+      if (val && val !== 'غير محدد' && val !== 'عام' && !chain.some((c) => c[0] === val)) {
+        chain.push([val, ntype]);
+      }
+    };
+    addPart(level, 'year');
+    addPart(term, 'term');
+    addPart(block, 'block');
+    addPart(subject, 'subject');
+    addPart(section, 'section');
+  }
+
+  if (chain.length === 0) {
+    const tags = Array.from(String(captionText || '').matchAll(/#([\p{L}\p{N}_]{2,40})/gu)).map((m) => m[1].replace(/_/g, ' '));
+    const filteredTags = tags.filter((t) => !/MEDBOT|نسخة_احتياطية/i.test(t));
+    if (filteredTags.length > 0) {
+      filteredTags.slice(0, 5).forEach((t, idx, arr) => {
+        chain.push([t, idx === 0 ? 'year' : idx === arr.length - 1 ? 'section' : 'general']);
+      });
+    } else {
+      chain.push(['موارد مستردة من الأرشيف', 'section']);
+    }
+  }
+
+  if (!title) {
+    const firstNormal = lines.find((l) => !/MEDBOT|أرشيف|━━|المستوى|الفصل|البلوك|المادة|القسم|المسار|المشارك|تاريخ|#/.test(l));
+    title = firstNormal || fallbackTitle || 'مورد تعليمي مسترد';
+  }
+
+  return {
+    chain,
+    title: String(title).slice(0, 160),
+    sourceType: 'direct',
+    createdBy: null,
+  };
+}
+
+export async function importWorkerArchiveInput(db, user, message, bot = null) {
+  if (!(await hasPermission(db, Number(user.id), 'can_archive'))) {
+    return { ok: false, text: '🔒 غير مصرح.' };
+  }
+
+  // 1. Check if the message is a JSON or SQL backup document
+  const docName = String(message?.document?.file_name || '').toLowerCase();
+  const docMime = String(message?.document?.mime_type || '').toLowerCase();
+  const isBackupFile = message?.document && (
+    docName.endsWith('.json') ||
+    docName.endsWith('.sql') ||
+    docName.endsWith('.txt') ||
+    docMime.includes('json') ||
+    docMime.includes('sql') ||
+    /MEDBOT_BACKUP|medbot-cloud-backup/i.test(String(message?.caption || '') + ' ' + docName)
+  );
+
+  if (isBackupFile && bot?.downloadFileText) {
+    try {
+      const rawText = await bot.downloadFileText(message.document.file_id);
+      const trimmed = String(rawText || '').trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        const parsed = JSON.parse(trimmed);
+        const res = await restoreWorkerBackupPayload(db, parsed);
+        return {
+          ok: true,
+          text:
+            `✅ <b>تم استرداد النسخة السحابية بنجاح من الملف!</b>\n\n` +
+            `📁 المجلدات والأقسام المستردة: ${res.foldersRestored}\n` +
+            `📄 الموارد والملفات المستردة: ${res.contentRestored}\n` +
+            `🧭 مواضيع البحث: ${res.topicsRestored}\n` +
+            `⚙️ الإعدادات: ${res.settingsRestored}`,
+          reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive'), btn('🏠 الرئيسية', 'home')]]),
+        };
+      }
+      if (/INSERT\s+INTO/i.test(trimmed)) {
+        const stmts = trimmed
+          .split(/;\s*\r?\n/)
+          .map((s) => s.trim())
+          .filter((s) => /^INSERT\s+INTO/i.test(s));
+        let executed = 0;
+        for (const sql of stmts) {
+          await run(db, sql).catch(() => {});
+          executed++;
+        }
+        return {
+          ok: true,
+          text: `✅ <b>تم استيراد ملف قاعدة البيانات SQL بنجاح!</b>\n\n📊 السجلات المنفذة: ${executed}`,
+          reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive'), btn('🏠 الرئيسية', 'home')]]),
+        };
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        text: `⚠️ تعذر قراءة ملف النسخة الاحتياطية: ${esc(err?.message || String(err))}`,
+        reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive')]]),
+      };
+    }
+  }
+
+  // 2. Check if plain text message is JSON or SQL
+  const rawMsgText = String(message?.text || '').trim();
+  if (!message?.document && !message?.photo && !message?.video && !message?.audio && rawMsgText) {
+    if (rawMsgText.startsWith('{') || rawMsgText.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(rawMsgText);
+        const res = await restoreWorkerBackupPayload(db, parsed);
+        return {
+          ok: true,
+          text: `✅ <b>تم استرداد البيانات من نص JSON بنجاح!</b>\n📁 الأقسام: ${res.foldersRestored} | 📄 الموارد: ${res.contentRestored}`,
+          reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive'), btn('🏠 الرئيسية', 'home')]]),
+        };
+      } catch {
+        // Continue
+      }
+    }
+    if (/INSERT\s+INTO/i.test(rawMsgText)) {
+      const stmts = rawMsgText.split(/;\s*\r?\n/).map((s) => s.trim()).filter((s) => /^INSERT\s+INTO/i.test(s));
+      let executed = 0;
+      for (const sql of stmts) {
+        await run(db, sql).catch(() => {});
+        executed++;
+      }
+      return {
+        ok: true,
+        text: `✅ <b>تم تنفيذ أوامر الاسترداد SQL بنجاح!</b> (${executed} سجل)`,
+        reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive'), btn('🏠 الرئيسية', 'home')]]),
+      };
+    }
+    if (/بطاقة فهرسة قسم دراسي|المستوى الدراسي|المسار/u.test(rawMsgText)) {
+      const parsedHeader = parseCaptionHierarchyAndTitle(rawMsgText, '');
+      const fid = await ensureFolderChainInD1(db, parsedHeader.chain);
+      const pathStr = parsedHeader.chain.map((c) => c[0]).join(' / ');
+      return {
+        ok: true,
+        text: `✅ <b>تم استرداد وبناء هيكلة القسم الدراسي بنجاح!</b>\n🧭 المسار: <b>${esc(pathStr)}</b> (#${fid})\n\nأرسل أو وجّه باقي منشورات القناة للاستمرار، أو اضغط رجوع:`,
+        reply_markup: kb([[btn('✅ إنهاء الاستيراد والعودة للأرشيف', 'admin_archive')]]),
+      };
+    }
+  }
+
+  // 3. Media post forwarded or sent from the Archive Channel (Document, Photo, Video, Audio)
+  let fileId = null;
+  let fileType = 'doc';
+  let fallbackTitle = 'مورد تعليمي';
+  if (message?.document) {
+    fileId = message.document.file_id;
+    fileType = 'doc';
+    fallbackTitle = message.document.file_name || fallbackTitle;
+  } else if (Array.isArray(message?.photo) && message.photo.length) {
+    fileId = message.photo[message.photo.length - 1].file_id;
+    fileType = 'photo';
+    fallbackTitle = 'صورة تعليمية';
+  } else if (message?.video) {
+    fileId = message.video.file_id;
+    fileType = 'video';
+    fallbackTitle = message.video.file_name || 'فيديو تعليمي';
+  } else if (message?.audio) {
+    fileId = message.audio.file_id;
+    fileType = 'audio';
+    fallbackTitle = message.audio.file_name || 'ملف صوتي';
+  }
+
+  if (!fileId) {
+    return {
+      ok: false,
+      text: '⚠️ يرجى توجيه (Forward) منشورات الموارد من قناة الأرشيف، أو إرسال ملف النسخة الاحتياطية (<code>.json</code> / <code>.sql</code>).',
+      reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive')]]),
+    };
+  }
+
+  const caption = String(message?.caption || message?.text || '');
+  const parsed = parseCaptionHierarchyAndTitle(caption, fallbackTitle);
+  const folderId = await ensureFolderChainInD1(db, parsed.chain);
+  const pathStr = parsed.chain.map((c) => c[0]).join(' / ');
+
+  const existing = await get(
+    db,
+    'SELECT id FROM content WHERE folder_id = ? AND (file_id = ? OR title = ?) LIMIT 1',
+    [Number(folderId), String(fileId), String(parsed.title)],
+  );
+  let contentId = existing?.[0] ? Number(existing[0]) : null;
+  if (!contentId) {
+    contentId = await addContent(
+      db,
+      Number(folderId),
+      parsed.title,
+      fileId,
+      fileType,
+      parsed.sourceType || 'direct',
+      null,
+      parsed.createdBy || Number(user.id),
+    );
+  }
+
+  return {
+    ok: true,
+    contentId,
+    folderId,
+    text:
+      `✅ <b>تم قراءة واستيراد المورد من الأرشيف بنجاح!</b>\n\n` +
+      `📄 <b>المورد:</b> ${esc(parsed.title)}\n` +
+      `🧭 <b>المسار المسترد:</b> ${esc(pathStr)}\n\n` +
+      `<i>يمكنك توجيه المزيد من رسائل القناة الآن، أو الضغط على إنهاء:</i>`,
+    reply_markup: kb([[btn('✅ إنهاء الاستيراد والعودة للأرشيف', 'admin_archive')]]),
+  };
+}
+
+export async function restoreWorkerFromArchiveChannelAuto(db, user, bot, env = {}) {
+  if (!(await hasPermission(db, Number(user.id), 'can_archive'))) {
+    return { ok: false, text: '🔒 غير مصرح.', reply_markup: kb(home) };
+  }
+  const channel = await resolveWorkerArchiveChannelAsync(db, env);
+  if (!channel || !bot?.getChat) {
+    return {
+      ok: false,
+      text: '⚠️ لم يتم ربط قناة الأرشيف بعد. اربط القناة أولاً من زر إعداد القناة.',
+      reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive')]]),
+    };
+  }
+
+  const target = /^-\d+$/.test(channel) ? Number(channel) : channel;
+  try {
+    const chat = await bot.getChat(target);
+    const pinned = chat?.pinned_message;
+    if (pinned?.document?.file_id && bot?.downloadFileText) {
+      const rawText = await bot.downloadFileText(pinned.document.file_id);
+      const parsed = JSON.parse(String(rawText || '').trim());
+      const res = await restoreWorkerBackupPayload(db, parsed);
+      return {
+        ok: true,
+        text:
+          `🎉 <b>تم الاسترداد التلقائي الشامل من قناة الأرشيف بنجاح!</b>\n\n` +
+          `📡 <b>القناة:</b> ${esc(chat?.title || channel)}\n` +
+          `📁 <b>المستويات والأقسام المستردة:</b> ${res.foldersRestored}\n` +
+          `📄 <b>الموارد والملفات المستردة:</b> ${res.contentRestored}\n` +
+          `🧭 <b>مواضيع البحث المستردة:</b> ${res.topicsRestored}\n` +
+          `⚙️ <b>الإعدادات المستردة:</b> ${res.settingsRestored}`,
+        reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive'), btn('🏠 الرئيسية', 'home')]]),
+      };
+    }
+    if (pinned && (pinned.document || pinned.photo || pinned.video || pinned.audio)) {
+      const single = await importWorkerArchiveInput(db, user, pinned, bot);
+      return single;
+    }
+    return {
+      ok: false,
+      text:
+        `ℹ️ <b>لم يتم العثور على ملف نسخة استرداد مثبت في القناة (${esc(chat?.title || channel)}) بعد.</b>\n\n` +
+        `• يمكنك الضغط على <b>"📦 حفظ وتثبيت نسخة استرداد شاملة في القناة"</b> لتثبيت أول نسخة تلقائية.\n` +
+        `• أو الضغط على <b>"📥 استيراد من القناة (تحويل رسائل أو ملفات)"</b> وتوجيه أي رسائل أو ملفات من القناة مباشرةً إلى البوت ليقوم بقراءتها وبناء أقسامها فوراً.`,
+      reply_markup: kb([
+        [btn('📥 استيراد رسائل / ملفات من القناة', 'admin_archive_import')],
+        [btn('⬅️ أرشيف القناة', 'admin_archive'), btn('🏠 الرئيسية', 'home')],
+      ]),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      text: `⚠️ تعذر الوصول إلى قناة الأرشيف (<code>${esc(channel)}</code>).\nتأكد من أن البوت مضاف كمشرف (Admin) داخل القناة.\n\nالخطأ: <code>${esc(err?.message || String(err))}</code>`,
+      reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive')]]),
+    };
+  }
+}
+
+export async function buildWorkerArchiveAdmin(db, user, env = {}, bot = null) {
   if (!(await hasPermission(db, Number(user.id), 'can_archive'))) {
     return { text: '🔒 غير مصرح.', reply_markup: kb(home) };
   }
-  const channel = resolveWorkerArchiveChannel(env);
+  const channel = await resolveWorkerArchiveChannelAsync(db, env);
+  const totalFolders = Number((await get(db, 'SELECT COUNT(*) FROM folders'))?.[0] ?? 0);
   const totalRes = Number((await get(db, 'SELECT COUNT(*) FROM content'))?.[0] ?? 0);
-  const pubRes = Number((await get(db, "SELECT COUNT(*) FROM archive_sync WHERE status='published'"))?.[0] ?? 0);
-  const failRes = Number((await get(db, "SELECT COUNT(*) FROM archive_sync WHERE status='failed'"))?.[0] ?? 0);
+  const pubRes = Number((await get(db, "SELECT COUNT(*) FROM archive_sync WHERE object_type='content' AND status='published'"))?.[0] ?? 0);
+  const failRes = Number((await get(db, "SELECT COUNT(*) FROM archive_sync WHERE object_type='content' AND status='failed'"))?.[0] ?? 0);
+
+  let channelTitle = '';
+  let hasPinnedBackup = false;
+  if (channel && bot?.getChat) {
+    try {
+      const target = /^-\d+$/.test(channel) ? Number(channel) : channel;
+      const chat = await bot.getChat(target);
+      channelTitle = chat?.title ? ` — <b>${esc(chat.title)}</b>` : '';
+      hasPinnedBackup = Boolean(chat?.pinned_message?.document);
+    } catch {
+      channelTitle = ' <i>(تحقق من صلاحية إشراف البوت في القناة)</i>';
+    }
+  }
 
   const lines = [
-    '🗄 <b>أرشيف الطوارئ وقناة التلجرام</b>',
+    '🗄 <b>أرشيف الطوارئ والاسترداد السحابي (Telegram Archive)</b>',
+    '━━━━━━━━━━━━━━━━━━',
+    `📡 <b>حالة القناة:</b> ${channel ? `✅ متصلة (<code>${esc(channel)}</code>)${channelTitle}` : '⚠️ غير مربوطة بعد'}`,
+    `📦 <b>نسخة الاسترداد المثبتة:</b> ${hasPinnedBackup ? '✅ متوفرة ومثبتة في القناة' : 'ℹ️ غير مثبتة بعد'}`,
+    `📁 <b>إجمالي المستويات والأقسام:</b> ${totalFolders}`,
+    `📚 <b>إجمالي الموارد في البوت:</b> ${totalRes}`,
+    `✅ <b>المؤرشف في القناة:</b> ${pubRes}`,
+    `⚠️ <b>فشل أرشفته:</b> ${failRes}`,
     '',
-    `📡 حالة القناة: ${channel ? `✅ متصلة (<code>${esc(channel)}</code>)` : '⚠️ غير مضبوطة (أضف MEDBOT_ARCHIVE_CHANNEL)'}`,
-    `📚 إجمالي الموارد في البوت: ${totalRes}`,
-    `✅ المؤرشف في القناة: ${pubRes}`,
-    `⚠️ فشل أرشفته: ${failRes}`,
+    '💡 <i>يتم حفظ كل مورد في القناة بتنسيق هرمي كامل (المستوى، الترم، البلوك، المادة، القسم، نوع الداتا، والمشارك) مع تحديث نسخة الاسترداد السحابية تلقائياً.</i>',
   ];
+
   const rows = [];
   if (channel) {
-    rows.push([btn('🔄 مزامنة ونشر كافة الملفات غير المؤرشفة', 'admin_archive_sync')]);
+    rows.push([btn('🔄 مزامنة ونشر كافة الموارد في القناة', 'admin_archive_sync')]);
+    rows.push([btn('📦 حفظ وتثبيت نسخة استرداد شاملة في القناة', 'admin_archive_backup')]);
+    rows.push([btn('♻️ استرداد تلقائي شامل من قناة الأرشيف', 'admin_archive_restore_auto')]);
   }
+  rows.push([
+    btn('📥 استيراد من القناة (بأي صيغة)', 'admin_archive_import'),
+    btn('📤 تصدير نسخة للمحادثة', 'admin_archive_export_chat'),
+  ]);
+  rows.push([btn('⚙️ ربط / تغيير قناة الأرشيف', 'admin_archive_set_channel')]);
   rows.push([btn('⬅️ لوحة الإدارة', 'admin'), btn('🏠 الرئيسية', 'home')]);
   return { text: lines.join('\n'), reply_markup: kb(rows) };
 }
@@ -415,25 +1332,47 @@ export async function syncWorkerArchiveAll(db, user, bot, env = {}) {
   if (!(await hasPermission(db, Number(user.id), 'can_archive'))) {
     return { text: '🔒 غير مصرح.', reply_markup: kb(home) };
   }
-  const channel = resolveWorkerArchiveChannel(env);
+  const channel = await resolveWorkerArchiveChannelAsync(db, env);
   if (!channel) {
     return {
-      text: '⚠️ لم يتم ضبط متغير <code>MEDBOT_ARCHIVE_CHANNEL</code> بعد.',
-      reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive')]]),
+      text: '⚠️ لم يتم ربط قناة الأرشيف بعد. اضغط على <b>"⚙️ ربط / تغيير قناة الأرشيف"</b> لإعدادها.',
+      reply_markup: kb([
+        [btn('⚙️ ربط / تغيير قناة الأرشيف', 'admin_archive_set_channel')],
+        [btn('⬅️ أرشيف القناة', 'admin_archive')],
+      ]),
     };
   }
   const snapshots = await getAllResourceSnapshots(db);
+  snapshots.sort((a, b) => String(a[5] || '').localeCompare(String(b[5] || ''), 'ar') || (Number(a[0]) - Number(b[0])));
   let sent = 0;
   let skipped = 0;
   let failed = 0;
+  let lastError = '';
   for (const snap of snapshots.slice(0, 50)) {
-    const res = await publishResourceToWorkerArchive(db, bot, env, snap[0]);
+    const res = await publishResourceToWorkerArchive(db, bot, env, snap[0], { skipAutoBackup: true });
     if (res.skipped) skipped++;
     else if (res.ok) sent++;
-    else failed++;
+    else {
+      failed++;
+      if (!lastError && res.error) lastError = res.error;
+    }
   }
+
+  let backupDone = false;
+  try {
+    const bRes = await publishWorkerCloudBackupToArchive(db, bot, env, { pin: true });
+    backupDone = Boolean(bRes?.ok);
+  } catch {
+    backupDone = false;
+  }
+
   return {
-    text: `✅ <b>اكتملت مزامنة الأرشيف</b>\n\n📤 تم نشر جديد: ${sent}\n⏭ مؤرشف مسبقاً: ${skipped}\n⚠️ فشل: ${failed}`,
+    text:
+      `✅ <b>اكتملت مزامنة الأرشيف والنسخ السحابي</b>\n\n` +
+      `📤 تم نشر موارد جديدة بالتنسيق الهرمي: ${sent}\n` +
+      `⏭ مؤرشف مسبقاً: ${skipped}\n` +
+      `⚠️ فشل: ${failed}${lastError ? ` (<code>${esc(lastError.slice(0, 120))}</code>)` : ''}\n` +
+      `📦 نسخة الاسترداد الشاملة المثبتة: ${backupDone ? '✅ تم تحديثها وتثبيتها في القناة' : 'ℹ️ لم يتم تحديثها'}`,
     reply_markup: kb([[btn('⬅️ أرشيف القناة', 'admin_archive'), btn('🏠 الرئيسية', 'home')]]),
   };
 }
@@ -510,8 +1449,9 @@ export async function reviewWorkerContribution(db, user, id, action, bot = null,
     const studentId = Number(row[1]);
     const title = String(row[2] || '');
     if (action === 'approve') {
-      if (result.contentId) {
-        await publishResourceToWorkerArchive(db, bot, env, result.contentId).catch(() => {});
+      const contentId = Array.isArray(result) ? result[5] : result?.contentId;
+      if (contentId) {
+        await publishResourceToWorkerArchive(db, bot, env, contentId).catch(() => {});
       }
       await bot.sendMessage(
         studentId,
