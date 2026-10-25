@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execSync, spawnSync } from 'node:child_process';
 
 const root = process.cwd();
@@ -24,7 +25,7 @@ function putWorkerSecret(name, value) {
   const trimmed = String(value ?? '').trim();
   if (!trimmed) return;
   console.log(`> Setting Cloudflare Worker secret: ${name}`);
-  const res = spawnSync('npx', ['wrangler', 'secret', 'put', name], {
+  const res = spawnSync('npx', ['--yes', 'wrangler', 'secret', 'put', name], {
     cwd: root,
     input: trimmed,
     encoding: 'utf8',
@@ -51,9 +52,13 @@ async function main() {
   // 1. Ensure D1 database exists and discover its UUID if not provided
   if (!d1Id) {
     console.log('> Checking existing Cloudflare D1 databases for "medbot"...');
-    const listOut = runCapture('npx wrangler d1 list --json');
+    const listOut = runCapture('npx --yes wrangler d1 list --json');
     try {
-      const parsed = JSON.parse(listOut);
+      const jsonStart = listOut.indexOf('[');
+      const jsonEnd = listOut.lastIndexOf(']');
+      const parsed = jsonStart >= 0 && jsonEnd > jsonStart
+        ? JSON.parse(listOut.slice(jsonStart, jsonEnd + 1))
+        : JSON.parse(listOut);
       const found = Array.isArray(parsed) && parsed.find((db) => db.name === 'medbot');
       if (found?.uuid) {
         d1Id = found.uuid;
@@ -66,13 +71,13 @@ async function main() {
 
   if (!d1Id) {
     console.log('> Creating Cloudflare D1 database "medbot"...');
-    const createOut = runCapture('npx wrangler d1 create medbot');
+    const createOut = runCapture('npx --yes wrangler d1 create medbot');
     const uuidMatch = createOut.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
     if (uuidMatch) {
       d1Id = uuidMatch[0];
       console.log(`> Created D1 database "medbot": ${d1Id}`);
     } else {
-      throw new Error('Could not determine D1 database_id. Set CF_D1_DATABASE_ID or check Cloudflare permissions.\n' + createOut);
+      throw new Error('Could not determine D1 database_id. Set CF_D1_DATABASE_ID or check Cloudflare API token permissions (D1:Edit).\n' + createOut);
     }
   }
 
@@ -85,32 +90,42 @@ async function main() {
 
   // 2. Ensure R2 bucket exists (non-fatal if already exists)
   console.log('> Ensuring Cloudflare R2 bucket "medbot-files" exists...');
-  runCapture('npx wrangler r2 bucket create medbot-files');
+  runCapture('npx --yes wrangler r2 bucket create medbot-files');
 
-  // 3. Generate and apply D1 schema
+  // 3. Generate and apply D1 schema (--yes for non-interactive CI)
   run('node scripts/d1-apply-schema.mjs --output ./artifacts/d1-schema.sql');
   if (fs.existsSync(schemaFile)) {
-    run('npx wrangler d1 execute medbot --remote --file=./artifacts/d1-schema.sql');
+    run('npx --yes wrangler d1 execute medbot --remote --yes --file=./artifacts/d1-schema.sql');
   }
 
   // 4. Deploy Cloudflare Worker
-  const deployOut = runCapture('npx wrangler deploy');
+  console.log('> Deploying Cloudflare Worker...');
+  const deployOut = runCapture('npx --yes wrangler deploy');
   console.log(deployOut);
+  if (!/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i.test(deployOut) && /error/i.test(deployOut)) {
+    throw new Error('Wrangler deploy failed:\n' + deployOut);
+  }
 
-  // 5. Push runtime secrets to Worker if present in environment
-  const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
+  // 5. Push runtime secrets to Worker
+  const botToken = String(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const explicitSecret = String(process.env.TELEGRAM_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET || '').trim();
+  const webhookSecret = explicitSecret || (
+    botToken
+      ? crypto.createHmac('sha256', botToken).update('medbot-cloudflare-webhook').digest('hex')
+      : ''
+  );
+
   putWorkerSecret('BOT_TOKEN', botToken);
   putWorkerSecret('TELEGRAM_BOT_TOKEN', botToken);
   putWorkerSecret('ADMIN_ID', process.env.ADMIN_ID);
-  putWorkerSecret('TELEGRAM_WEBHOOK_SECRET', process.env.TELEGRAM_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET);
+  putWorkerSecret('TELEGRAM_WEBHOOK_SECRET', webhookSecret);
   putWorkerSecret('GEMINI_API_KEY', process.env.GEMINI_API_KEY);
   putWorkerSecret('GROQ_API_KEY', process.env.GROQ_API_KEY);
   putWorkerSecret('OPENROUTER_API_KEY', process.env.OPENROUTER_API_KEY);
 
-  // 6. Register Telegram Webhook if BOT_TOKEN andTELEGRAM_WEBHOOK_SECRET are configured
+  // 6. Register Telegram Webhook automatically
   const urlMatch = deployOut.match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i);
   const workerBaseUrl = String(process.env.CLOUDFLARE_WORKER_URL || (urlMatch ? urlMatch[0] : '')).trim().replace(/\/+$/, '');
-  const webhookSecret = String(process.env.TELEGRAM_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET || '').trim();
 
   if (botToken && workerBaseUrl && webhookSecret) {
     const webhookUrl = workerBaseUrl.endsWith('/telegram/webhook')
@@ -128,7 +143,7 @@ async function main() {
       },
     });
   } else {
-    console.log('> Skipping automatic Telegram webhook registration (set BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET to enable).');
+    console.log('> Skipping automatic Telegram webhook registration (set BOT_TOKEN and ensure worker.dev URL is active).');
   }
 }
 

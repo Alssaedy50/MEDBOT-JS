@@ -19,15 +19,17 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: npm ci || npm install
+      - name: Install dependencies & Wrangler CLI
+        run: |
+          npm ci || npm install
+          npm install --no-save wrangler
 
       - name: Run Lint & Tests
         run: |
           npm run lint
           npm test
 
-      - name: Auto-Provision & Deploy to Cloudflare (if CLOUDFLARE_API_TOKEN is set)
+      - name: Auto-Provision & Deploy to Cloudflare
         if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         run: node scripts/cloudflare-deploy.mjs
         env:
