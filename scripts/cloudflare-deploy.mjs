@@ -52,6 +52,32 @@ function extractUuid(input) {
   return match ? match[1].toLowerCase() : '';
 }
 
+function buildWranglerConfig(d1Id, includeR2) {
+  const cfg = {
+    $schema: 'node_modules/wrangler/config-schema.json',
+    name: 'medbot-js',
+    main: 'src/worker.js',
+    compatibility_date: '2024-11-01',
+    workers_dev: true,
+    d1_databases: [
+      {
+        binding: 'DB',
+        database_name: 'medbot',
+        database_id: d1Id,
+      },
+    ],
+  };
+  if (includeR2) {
+    cfg.r2_buckets = [
+      {
+        binding: 'FILES',
+        bucket_name: 'medbot-files',
+      },
+    ];
+  }
+  return JSON.stringify(cfg, null, 2) + '\n';
+}
+
 async function resolveAccountId(apiToken) {
   const envCandidate = extractHex32(process.env.CLOUDFLARE_ACCOUNT_ID);
 
@@ -139,7 +165,7 @@ async function main() {
   };
 
   // 2. Find or create D1 database "medbot"
-  let wrangler = fs.readFileSync(wranglerPath, 'utf8');
+  const wranglerRaw = fs.readFileSync(wranglerPath, 'utf8');
   let d1Id = extractUuid(process.env.CF_D1_DATABASE_ID);
   if (d1Id) {
     const checkDb = await cfApi(apiToken, `/accounts/${accountId}/d1/database/${d1Id}`);
@@ -149,8 +175,8 @@ async function main() {
     }
   }
 
-  if (!d1Id && !/REPLACE_WITH_D1_DATABASE_ID/i.test(wrangler)) {
-    d1Id = extractUuid(wrangler);
+  if (!d1Id && !/REPLACE_WITH_D1_DATABASE_ID/i.test(wranglerRaw)) {
+    d1Id = extractUuid(wranglerRaw);
   }
 
   if (!d1Id) {
@@ -192,23 +218,21 @@ async function main() {
 
   // 3. Check/Create R2 bucket "medbot-files" (gracefully disable R2 binding if R2 is not enabled on the account)
   console.log('> Checking R2 bucket "medbot-files"...');
-  const r2Check = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets/medbot-files`);
-  let r2Available = r2Check.ok;
-  if (!r2Available) {
-    const r2Create = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets`, {
+  let r2Check = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets/medbot-files`);
+  if (!r2Check.ok) {
+    await cfApi(apiToken, `/accounts/${accountId}/r2/buckets`, {
       method: 'POST',
       body: { name: 'medbot-files' },
     });
-    r2Available = r2Create.ok || r2Create.errors.some((e) => Number(e.code) === 10004 || /already exists/i.test(e.message));
+    r2Check = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets/medbot-files`);
+  }
+  const r2Available = Boolean(r2Check.ok);
+  if (!r2Available) {
+    console.log('> R2 bucket "medbot-files" is not enabled on this Cloudflare account; deploying Worker with D1 (Telegram native file_id storage).');
   }
 
-  // 4. Patch wrangler.jsonc with real D1 UUID (and strip R2 binding if R2 is not enabled on account)
-  wrangler = wrangler.replace(/REPLACE_WITH_D1_DATABASE_ID/g, d1Id);
-  if (!r2Available) {
-    console.log('> R2 is not enabled on this Cloudflare account; deploying Worker with D1 only.');
-    wrangler = wrangler.replace(/,\s*"r2_buckets"\s*:\s*\[[\s\S]*?\]/m, '');
-  }
-  fs.writeFileSync(wranglerPath, wrangler, 'utf8');
+  // 4. Write clean wrangler.jsonc with real D1 UUID
+  fs.writeFileSync(wranglerPath, buildWranglerConfig(d1Id, r2Available), 'utf8');
 
   // 5. Generate and apply D1 schema
   console.log('> Generating and applying D1 schema v18...');
@@ -238,15 +262,28 @@ async function main() {
     } catch {}
   }
 
-  // 6. Deploy Cloudflare Worker
+  // 6. Deploy Cloudflare Worker (with automatic retry without R2 if R2 bucket is missing)
   console.log('> Deploying Cloudflare Worker...');
-  const deployRes = spawnSync('npx', ['wrangler', 'deploy'], {
+  let deployRes = spawnSync('npx', ['wrangler', 'deploy'], {
     cwd: root,
     env: cleanEnv(cfEnv),
     encoding: 'utf8',
   });
-  const deployOut = `${deployRes.stdout || ''}\n${deployRes.stderr || ''}`;
+  let deployOut = `${deployRes.stdout || ''}\n${deployRes.stderr || ''}`;
   console.log(deployOut);
+
+  if (deployRes.status !== 0 && /R2 bucket|10085/i.test(deployOut)) {
+    console.log('> Retrying Cloudflare Worker deploy without R2 bucket binding...');
+    fs.writeFileSync(wranglerPath, buildWranglerConfig(d1Id, false), 'utf8');
+    deployRes = spawnSync('npx', ['wrangler', 'deploy'], {
+      cwd: root,
+      env: cleanEnv(cfEnv),
+      encoding: 'utf8',
+    });
+    deployOut = `${deployRes.stdout || ''}\n${deployRes.stderr || ''}`;
+    console.log(deployOut);
+  }
+
   if (deployRes.status !== 0) {
     throw new Error(`Wrangler deploy failed: ${deployOut.slice(-600)}`);
   }
