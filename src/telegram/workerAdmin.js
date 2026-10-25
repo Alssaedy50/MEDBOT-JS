@@ -207,7 +207,7 @@ export async function createWorkerFolder(db, user, parentId, name, nodeType = 'g
   const cleanName = String(name ?? '').trim();
   if (!cleanName) return { ok: false, text: '⚠️ اسم القسم لا يمكن أن يكون فارغاً.' };
   const pid = Number(parentId) || 0;
-  const accepts = nodeType !== 'general' ? 1 : 0;
+  const accepts = pid > 0 && nodeType !== 'general' ? 1 : 0;
   const newId = await addFolder(db, pid, cleanName, nodeType, accepts);
   return { ok: true, folderId: newId, parentId: pid };
 }

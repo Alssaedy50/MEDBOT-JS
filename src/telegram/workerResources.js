@@ -40,10 +40,14 @@ export async function buildWorkerLibraryRoot(db, user) {
 export async function buildWorkerFolder(db,user,folderId) {
   const lang=await language(db,Number(user?.id)); const view=await getFolderView(db,Number(folderId));
   if (!view?.folder) return {text:t('not_found',lang),reply_markup:keyboard([[btn('📚 الموارد','resources')],[btn('🏠 الرئيسية','home')]])};
-  const [, ,name,nodeType]=view.folder; const lines=[`${icon(nodeType)} <b>${esc(name)}</b>`,`📍 ${esc(view.breadcrumb)}`]; const rows=[];
-  if(!view.children.length&&!view.files.length) lines.push('',t('library_area_empty',lang));
+  const [, parentId, name, nodeType]=view.folder;
+  const isRootContainer = (!parentId || Number(parentId) === 0) && view.children.length > 0 && String(nodeType || 'general') === 'general';
+  const visibleFiles = isRootContainer ? [] : view.files;
+  const lines=[`${icon(nodeType)} <b>${esc(name)}</b>`,`📍 ${esc(view.breadcrumb)}`];
+  const rows=[];
+  if(!view.children.length&&!visibleFiles.length) lines.push('',t('library_area_empty',lang));
   for(const [id,n,type] of view.children) rows.push([btn(`${icon(type)} ${String(n).slice(0,36)}`,`folder:${id}`)]);
-  for(const [id,title,,type] of view.files) rows.push([btn(`${contentIcon(type)} ${String(title).slice(0,36)}`,`file:${id}`)]);
+  for(const [id,title,,type] of visibleFiles) rows.push([btn(`${contentIcon(type)} ${String(title).slice(0,36)}`,`file:${id}`)]);
   rows.push([btn('⬅️ رجوع',`library:${view.parentId||0}`)],[btn('🔎 بحث في الموارد','search')],[btn('🏠 الرئيسية','home')]);
   return {text:lines.join('\n'),reply_markup:keyboard(rows)};
 }

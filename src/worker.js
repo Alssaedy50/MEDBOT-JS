@@ -147,10 +147,26 @@ function clearPendingStates(userData) {
 }
 
 async function sendMediaByType(bot, chatId, fileType, fileId, options = {}) {
-  if (fileType === 'photo') return bot.sendPhoto(chatId, fileId, options);
-  if (fileType === 'video') return bot.sendVideo(chatId, fileId, options);
-  if (fileType === 'audio') return bot.sendAudio(chatId, fileId, options);
-  return bot.sendDocument(chatId, fileId, options);
+  const normalized = String(fileType ?? '').toLowerCase();
+  const primary = normalized === 'photo' || normalized === 'image'
+    ? 'sendPhoto'
+    : normalized === 'video'
+      ? 'sendVideo'
+      : normalized === 'audio'
+        ? 'sendAudio'
+        : 'sendDocument';
+  const order = [primary, 'sendDocument', 'sendPhoto', 'sendVideo', 'sendAudio'].filter(
+    (m, idx, arr) => arr.indexOf(m) === idx && typeof bot[m] === 'function',
+  );
+  let lastError = null;
+  for (const method of order) {
+    try {
+      return await bot[method](chatId, fileId, options);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('telegram_media_send_failed');
 }
 
 async function dispatchTelegramUpdate(update, { env }) {
@@ -655,17 +671,30 @@ async function dispatchTelegramUpdate(update, { env }) {
       }
       if (ctx.data.startsWith('file:')) {
         const contentId = Number.parseInt(ctx.data.split(':')[1], 10);
+        await ctx.answer();
         const file = await buildWorkerFile(ctx.db, contentId);
         if (!file) {
-          await ctx.answer();
-          return;
+          return ctx.reply('⚠️ هذا المورد لم يعد موجوداً.', {
+            reply_markup: { inline_keyboard: [[{ text: '📚 الموارد', callback_data: 'resources' }, { text: '🏠 الرئيسية', callback_data: 'home' }]] },
+          });
         }
         const options = {
           caption: `📄 <b>${String(file.title).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</b>\n🗂 ${String(file.breadcrumb).replace(/</g, '&lt;').replace(/>/g, '&gt;')}`,
           parse_mode: 'HTML',
         };
-        await sendMediaByType(bot, ctx.from.id, file.fileType, file.fileId, options);
-        await ctx.answer();
+        try {
+          await sendMediaByType(bot, ctx.from.id, file.fileType, file.fileId, options);
+        } catch {
+          const isAdminUser = await get(ctx.db, 'SELECT 1 FROM admins WHERE telegram_id=? AND role IN (?,?,?)', [Number(ctx.from.id), 'owner', 'admin', 'reviewer']).catch(() => null);
+          const errRows = [[{ text: '⬅️ رجوع للقسم', callback_data: `folder:${file.folderId}` }, { text: '🏠 الرئيسية', callback_data: 'home' }]];
+          if (isAdminUser) {
+            errRows.unshift([{ text: '🗑 حذف هذا المورد التالف من القسم', callback_data: `admin_fdel_file:${file.id}:${file.folderId}` }]);
+          }
+          await ctx.reply(
+            `⚠️ <b>تعذّر إرسال هذا المورد من تيليجرام</b>\n\n📄 <b>${String(file.title).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</b>\n\nقد يكون هذا الملف مرفوعاً عبر توكن بوت قديم أو ببيانات تجريبية غير صالحة.`,
+            { reply_markup: { inline_keyboard: errRows }, parse_mode: 'HTML' },
+          );
+        }
         return;
       }
       if (ctx.data === 'home') {
