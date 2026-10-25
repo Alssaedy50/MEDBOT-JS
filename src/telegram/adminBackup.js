@@ -30,8 +30,8 @@ export async function showBackupMenu(ctx) {
   if (!ownerOnly(ctx.from.id)) { await ctx.editMessageText('🔒 النسخ الاحتياطي الكامل متاح للمالك فقط.'); return; }
   const configured = Boolean((process.env.MEDBOT_BACKUP_CHAT_ID || '').trim());
   await ctx.editMessageText(
-    '🛡 <b>نسخ بيانات MEDBOT</b>\\n\\n' +
-    'النسخة تحتوي بيانات المنصة والإعدادات والمشرفين وسجل التدقيق والمساهمات والأخبار والموارد المسجلة.\\n\\n' +
+    '🛡 <b>نسخ بيانات MEDBOT</b>\n\n' +
+    'النسخة تحتوي بيانات المنصة والإعدادات والمشرفين وسجل التدقيق والمساهمات والأخبار والموارد المسجلة.\n\n' +
     (configured ? '🟢 قناة النسخ الاحتياطي مضبوطة.' : '🟡 لم تُضبط قناة النسخ الاحتياطي؛ يمكنك الحفظ في محادثتك الآن.'),
     { reply_markup: { inline_keyboard: [
       [{ text:'📥 تنزيل إلى محادثتي', callback_data:'backup_chat' }],
@@ -113,7 +113,7 @@ export function scheduleAutomaticBackup() {
     running = true;
     try {
       await pushRemoteBackup();
-      const token = process.env.TELEGRAM_BOT_TOKEN;
+      const token = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
       if (token && (process.env.MEDBOT_BACKUP_CHAT_ID || '').trim()) {
         const { TelegramTransport } = await import('./client.js');
         const bot = new TelegramTransport(token);

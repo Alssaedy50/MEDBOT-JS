@@ -13,7 +13,7 @@ export const OPTIONAL_ENV = Object.freeze([
 export function buildDeploymentManifest({ root = process.cwd() } = {}) {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const requiredFiles = [
-    'package.json','package-lock.json','src/index.js','src/telegram/bot.js',
+    'package.json','src/index.js','src/telegram/bot.js',
     'src/db/migrations.js','src/db/core.js',
   ].map((file) => ({ path:file, present:fs.existsSync(path.join(root,file)) }));
   return {

@@ -40,6 +40,9 @@ export function cleanupDb(dbPath) {
  * Callers must `cleanupDb(path)` in `after()`.
  */
 export function freshDb(label = 'test') {
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GROQ_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
   const dbPath = tempDbPath(label);
   db.setDbPath(dbPath);
   db.initDb();

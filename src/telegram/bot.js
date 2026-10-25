@@ -451,9 +451,9 @@ async function bundleCommand(ctx) {
     bundle=await buildFullBotBundle();
     if (bundle.size > 49 * 1024 * 1024) throw new Error(`bundle_too_large_for_telegram:${bundle.size}`);
     const bytes=await readFile(bundle.path);
-    await ctx.bot.sendDocumentBytes(ctx.from.id,bytes,{filename:'MEDBOT-FULL.tar.gz',caption:`📦 <b>MEDBOT Full Deploy Bundle</b>\\nالحجم: ${(bundle.size/1024/1024).toFixed(2)} MB\\nيشمل الكود + قاعدة البيانات + الإعدادات + مخزن الأسرار المشفّر.`,parse_mode:'HTML'});
+    await ctx.bot.sendDocumentBytes(ctx.from.id,bytes,{filename:'MEDBOT-FULL.tar.gz',caption:`📦 <b>MEDBOT Full Deploy Bundle</b>\nالحجم: ${(bundle.size/1024/1024).toFixed(2)} MB\nيشمل الكود + قاعدة البيانات + الإعدادات + مخزن الأسرار المشفّر.`,parse_mode:'HTML'});
   } catch(error) {
-    await ctx.reply(`❌ تعذر إنشاء الملف الكامل: ${error.message}\\n\\nإذا تجاوز 50MB سنحتاج مسار R2/تنزيل مباشر بدلاً من Telegram.`);
+    await ctx.reply(`❌ تعذر إنشاء الملف الكامل: ${error.message}\n\nإذا تجاوز 50MB سنحتاج مسار R2/تنزيل مباشر بدلاً من Telegram.`);
   } finally {
     if (bundle?.path) await rm(path.dirname(bundle.path), { recursive:true, force:true }).catch(()=>{});
   }

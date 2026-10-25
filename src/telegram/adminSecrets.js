@@ -18,7 +18,7 @@ export async function showSecrets(ctx) {
     '',
     names.length ? `المحفوظ حالياً: ${names.map((n)=>`<code>${n}</code>`).join(' · ')}` : 'لا توجد متغيرات سرية محفوظة.',
   ];
-  await ctx.editMessageText(lines.join('\\n'), { reply_markup:{inline_keyboard:[
+  await ctx.editMessageText(lines.join('\n'), { reply_markup:{inline_keyboard:[
     [{text:'➕ إضافة / تعديل متغير',callback_data:'secret_set'}],
     [{text:'🗑 حذف متغير',callback_data:'secret_delete'}],
     [{text:'⬅️ إدارة المنصة',callback_data:'admin'}],
@@ -31,11 +31,11 @@ export async function handleSecretCallback(ctx) {
   if (ctx.data === 'secrets_menu') return showSecrets(ctx);
   if (ctx.data === 'secret_set') {
     ctx.userData.secret_waiting = true;
-    return ctx.editMessageText('🔐 أرسل المتغير بهذا الشكل فقط:\\n\\n<code>GEMINI_API_KEY=القيمة</code>\\n\\nسيتم حذف رسالة الإدخال بعد قراءتها. لا تستخدم BOT_TOKEN أو ADMIN_ID هنا.', {parse_mode:'HTML'});
+    return ctx.editMessageText('🔐 أرسل المتغير بهذا الشكل فقط:\n\n<code>GEMINI_API_KEY=القيمة</code>\n\nسيتم حذف رسالة الإدخال بعد قراءتها. لا تستخدم BOT_TOKEN أو ADMIN_ID هنا.', {parse_mode:'HTML'});
   }
   if (ctx.data === 'secret_delete') {
     ctx.userData.secret_delete_waiting = true;
-    return ctx.editMessageText('🗑 أرسل اسم المتغير فقط، مثل:\\n<code>GEMINI_API_KEY</code>');
+    return ctx.editMessageText('🗑 أرسل اسم المتغير فقط، مثل:\n<code>GEMINI_API_KEY</code>');
   }
 }
 

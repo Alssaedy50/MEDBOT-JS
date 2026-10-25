@@ -123,23 +123,26 @@ export function adminAccessDenied(telegramId) {
 
 /** Admin rows as RBAC dicts, including revoked ('none') rows. */
 export function getAdminsFullRecords() {
-  let ids;
+  let rows;
   try {
-    ids = withDb((db) =>
+    rows = withDb((db) =>
       db
-        .prepare('SELECT telegram_id FROM admins ORDER BY added_at ASC')
-        .all()
-        .map((row) => row[0]),
+        .prepare(
+          'SELECT telegram_id, username, added_at, role, permissions FROM admins ORDER BY added_at ASC',
+        )
+        .all(),
     );
   } catch {
     return [];
   }
-  const records = [];
-  for (const telegramId of ids) {
-    const record = getAdminRecord(telegramId);
-    if (record) records.push(record);
-  }
-  return records;
+  return rows.map((row) => ({
+    telegram_id: row[0],
+    username: row[1],
+    added_at: row[2],
+    role: row[3] || 'admin',
+    permissions_raw: row[4],
+    permissions: permissionsFromString(row[4]),
+  }));
 }
 
 /** Active admins only (revoked 'none' rows are excluded). */

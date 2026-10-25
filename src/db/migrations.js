@@ -27,7 +27,7 @@
  *   v17 fold the legacy `resource` news kind into `section`
  */
 
-import { exec, get, run, withDb } from './core.js';
+import { closeDb, exec, get, run, withDb } from './core.js';
 import {
   NEWS_SOURCE_AUTO,
   SETTING_OWNER_ID,
@@ -601,6 +601,7 @@ export const MIGRATIONS = Object.freeze([
  * Create the schema and run every migration. Idempotent and safe to re-run.
  */
 export function initDb(target = null) {
+  closeDb(target);
   withDb((db) => {
     exec(db, CORE_SCHEMA);
     for (const [, migrate] of MIGRATIONS) {
@@ -608,6 +609,7 @@ export function initDb(target = null) {
     }
     exec(db, FINAL_INDEXES);
   }, target);
+  closeDb(target);
   return true;
 }
 

@@ -14,12 +14,24 @@
 import { buildCallbackContext, buildMediaContext, buildMessageContext } from './context.js';
 import { getCommandHandlers, routeCallback, routeMedia, routeText } from './router.js';
 
-/** Per-user scratch space (workflow state). In-memory, like the Python bot. */
+/** Per-user scratch space (workflow state). In-memory, bounded with LRU eviction. */
 const userDataStore = new Map();
+const MAX_USER_DATA_ENTRIES = 5000;
 
 function userDataFor(userId) {
-  if (!userDataStore.has(userId)) userDataStore.set(userId, {});
-  return userDataStore.get(userId);
+  if (userDataStore.has(userId)) {
+    const existing = userDataStore.get(userId);
+    userDataStore.delete(userId);
+    userDataStore.set(userId, existing);
+    return existing;
+  }
+  if (userDataStore.size >= MAX_USER_DATA_ENTRIES) {
+    const oldestKey = userDataStore.keys().next().value;
+    if (oldestKey !== undefined) userDataStore.delete(oldestKey);
+  }
+  const fresh = {};
+  userDataStore.set(userId, fresh);
+  return fresh;
 }
 
 const COMMANDS = new Map([
@@ -31,6 +43,10 @@ const COMMANDS = new Map([
   ['/search', 'search'],
   ['/ask', 'ask'],
   ['/contact', 'contact'],
+  ['/backup', 'backup'],
+  ['/restore', 'restore'],
+  ['/secrets', 'secrets'],
+  ['/bundle', 'bundle'],
 ]);
 
 /** Normalise a raw Telegram update into the context shape handlers expect. */
@@ -194,13 +210,38 @@ export async function pollUpdates(bot, options = {}) {
       continue;
     }
 
+    const userQueues = new Map();
     for (const update of updates ?? []) {
       if (!update || typeof update !== 'object') {
         onError(new Error('Skipped a malformed update entry.'));
         continue;
       }
       offset = Math.max(offset, (update.update_id ?? 0) + 1);
-      await dispatchUpdate(update, bot, options);
+      const actorKey =
+        update.callback_query?.from?.id ??
+        update.message?.from?.id ??
+        `anon_${update.update_id ?? 0}`;
+      let queue = userQueues.get(actorKey);
+      if (!queue) {
+        queue = [];
+        userQueues.set(actorKey, queue);
+      }
+      queue.push(update);
+    }
+
+    if (userQueues.size === 1) {
+      const [singleQueue] = userQueues.values();
+      for (const update of singleQueue) {
+        await dispatchUpdate(update, bot, options);
+      }
+    } else if (userQueues.size > 1) {
+      await Promise.all(
+        Array.from(userQueues.values(), async (queue) => {
+          for (const update of queue) {
+            await dispatchUpdate(update, bot, options);
+          }
+        }),
+      );
     }
   }
 

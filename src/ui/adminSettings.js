@@ -494,8 +494,9 @@ export async function showRuntime(ctx) {
   let pending = 0;
 
   try {
-    folderCount = db.getSearchableRecords().folders.length;
-    contentCount = db.getSearchableRecords().contents.length;
+    const searchable = db.getSearchableRecords();
+    folderCount = searchable.folders.length;
+    contentCount = searchable.contents.length;
     adminCount = db.getAdminsFullRecords().length;
     auditCount = db.getAuditCount();
     archiveCounts = db.getArchiveSyncCounts();

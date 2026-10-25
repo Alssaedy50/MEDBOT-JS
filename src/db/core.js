@@ -59,13 +59,42 @@ export function ensureDbDir(target = null) {
   return resolved;
 }
 
+const connectionCache = new Map();
+
+/** Close cached SQLite connection(s) so WAL frames flush cleanly when switching paths or re-running migrations. */
+export function closeDb(target = null) {
+  if (target !== null && target !== undefined) {
+    const key = path.resolve(ensureDbDir(target));
+    const entry = connectionCache.get(key);
+    if (entry) {
+      connectionCache.delete(key);
+      try {
+        entry.db.close();
+      } catch {
+        /* ignore close errors */
+      }
+    }
+    return;
+  }
+  for (const [key, entry] of connectionCache.entries()) {
+    connectionCache.delete(key);
+    try {
+      entry.db.close();
+    } catch {
+      /* ignore close errors */
+    }
+  }
+}
+
 /** Test/deployment hook: pin an explicit database path (null clears it). */
 export function setDbPath(target) {
+  closeDb();
   dbPathOverride = target;
 }
 
 /** Test hook: override the database file name (null/undefined clears it). */
 export function setDbName(name) {
+  closeDb();
   dbName = name || DEFAULT_DB_NAME;
 }
 
@@ -112,30 +141,59 @@ export function openDb(target = null) {
   return db;
 }
 
+function getCachedDb(target = null) {
+  const resolved = path.resolve(ensureDbDir(target));
+  const cached = connectionCache.get(resolved);
+  if (cached) {
+    try {
+      const stat = fs.statSync(resolved);
+      if (stat.ino === cached.ino && stat.dev === cached.dev) {
+        return cached.db;
+      }
+    } catch {
+      /* file was removed or replaced; reopen below */
+    }
+    connectionCache.delete(resolved);
+    try {
+      cached.db.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const db = openDb(resolved);
+  let ino = null;
+  let dev = null;
+  try {
+    const stat = fs.statSync(resolved);
+    ino = stat.ino;
+    dev = stat.dev;
+  } catch {
+    /* ignore */
+  }
+  connectionCache.set(resolved, { db, ino, dev });
+  return db;
+}
+
 /**
- * Run `fn(db)` against a fresh connection, always closing it.
- *
- * This is the JS analogue of the Python `db = await get_db(); try: ... finally:
- * await db.close()` idiom, without leaking a handle on an exception.
+ * Run `fn(db)` against a reused connection for the active database path.
  */
 export function withDb(fn, target = null) {
-  const db = openDb(target);
-  try {
-    return fn(db);
-  } finally {
-    db.close();
-  }
+  const db = getCachedDb(target);
+  return fn(db);
 }
 
 /**
  * Run `fn` inside an IMMEDIATE transaction, rolling back on any error.
  *
- * `node:sqlite` has no transaction helper; this mirrors the Python
- * `BEGIN IMMEDIATE` / `commit` / `rollback` blocks.
+ * Supports nested transactions via SQLite SAVEPOINTs on the shared connection.
  */
 export function withTransaction(fn, target = null) {
-  const db = openDb(target);
-  try {
+  const db = getCachedDb(target);
+  const depth = db._txDepth ?? 0;
+  db._txDepth = depth + 1;
+
+  if (depth === 0) {
     db.exec('BEGIN IMMEDIATE');
     let result;
     try {
@@ -144,14 +202,32 @@ export function withTransaction(fn, target = null) {
       try {
         db.exec('ROLLBACK');
       } catch {
-        // A failed rollback must not mask the original error.
+        closeDb(target);
       }
+      db._txDepth = 0;
       throw error;
     }
     db.exec('COMMIT');
+    db._txDepth = 0;
     return result;
+  }
+
+  const savepoint = `sp_${depth}`;
+  db.exec(`SAVEPOINT ${savepoint}`);
+  try {
+    const result = fn(db);
+    db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    return result;
+  } catch (error) {
+    try {
+      db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+      db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    } catch {
+      /* outer transaction will handle rollback */
+    }
+    throw error;
   } finally {
-    db.close();
+    db._txDepth = depth;
   }
 }
 

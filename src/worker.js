@@ -4,12 +4,14 @@ import { createR2Storage } from './storage/r2.js';
 import { createWorkerTelegramDispatcher } from './telegram/workerDispatcher.js';
 import { buildWorkerHome, buildWorkerAccount } from './telegram/workerHome.js';
 import { buildWorkerLibraryRoot, buildWorkerFolder, findWorkerResources, buildWorkerFile } from './telegram/workerResources.js';
-import { buildWorkerLanguage, applyWorkerLanguage, buildWorkerAbout, buildWorkerContact, buildWorkerNews, buildWorkerNewsDetail, buildWorkerMyContributions } from './telegram/workerParity.js';
+import { buildWorkerLanguage, applyWorkerLanguage, buildWorkerAbout, buildWorkerContact, buildWorkerNews, buildWorkerNewsDetail, buildWorkerMyContributions, buildWorkerUnsupported } from './telegram/workerParity.js';
 import { buildWorkerTopics, buildWorkerTopic } from './telegram/workerTopics.js';
 import { buildWorkerContributionStart, prepareWorkerContribution, handleWorkerContributionMedia } from './telegram/workerContributions.js';
 import { answerWorkerAi } from './telegram/workerAi.js';
 import { buildWorkerAdmin, buildWorkerPending, buildWorkerContributionReview, reviewWorkerContribution, buildWorkerAiAdmin, buildWorkerAdmins, buildWorkerAdminUser, applyWorkerAdminRole } from './telegram/workerAdmin.js';
 import { ensureConfiguredAdmin } from './db/d1/admins.js';
+
+const initializedWebhookStores = new WeakSet();
 
 function json(data, status = 200) {
   return new globalThis.Response(JSON.stringify(data), {
@@ -73,13 +75,20 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (command === 'start') { await ensureConfiguredAdmin(ctx.db,env.ADMIN_ID,ctx.from.id===Number(env.ADMIN_ID)?ctx.from.username:null); const menu = await buildWorkerHome(ctx.db, ctx.from); return ctx.reply(menu.text, { reply_markup: menu.reply_markup }); }
       if (command === 'help') { const menu=await buildWorkerAbout(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
       if (command === 'quota') { const menu=await buildWorkerAccount(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
-      if (command === 'ask') { ctx.userData.ai_chat=true; return ctx.reply('🤖 <b>المساعد الذكي</b>\\n\\nاكتب سؤالك الطبي الآن.', { parse_mode:'HTML' }); }
+      if (command === 'ask') { ctx.userData.ai_chat=true; return ctx.reply('🤖 <b>المساعد الذكي</b>\n\nاكتب سؤالك الطبي الآن.', { parse_mode:'HTML' }); }
       if (command === 'contribute') { const menu=await buildWorkerContributionStart(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (command === 'search') {
         ctx.userData.library_search = true;
-        return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\\n\\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
+        return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\n\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
       }
-      throw new Error('worker_command_not_migrated');
+      if (command === 'cancel') {
+        ctx.userData.ai_chat = false;
+        ctx.userData.library_search = false;
+        ctx.userData.contribution_folder = null;
+        return ctx.reply('❌ تم إلغاء العملية الجارية.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
+      }
+      const fallback = await buildWorkerHome(ctx.db, ctx.from);
+      return ctx.reply(fallback.text, { reply_markup: fallback.reply_markup });
     },
     callback: async (ctx) => {
       if (ctx.data === 'language') { const menu=await buildWorkerLanguage(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
@@ -92,10 +101,11 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (ctx.data === 'my_contributions') { const menu=await buildWorkerMyContributions(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data === 'topics') { const menu=await buildWorkerTopics(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('topic:')) { const menu=await buildWorkerTopic(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
-      if (ctx.data === 'contributions') { const menu=await buildWorkerContributionStart(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'contributions' || ctx.data === 'contribute') { const menu=await buildWorkerContributionStart(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('contrib_folder:')) { const folderId=Number(ctx.data.split(':')[1]); const result=await prepareWorkerContribution(ctx.db,ctx.from,folderId); if(result.ok)ctx.userData.contribution_folder=folderId; await ctx.answer(); return ctx.editMessageText(result.text,{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
-      if (ctx.data === 'assistant') { ctx.userData.ai_chat=true; await ctx.answer(); return ctx.editMessageText('🤖 <b>المساعد الذكي</b>\\n\\nاكتب سؤالك الطبي الآن.',{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
+      if (ctx.data === 'assistant') { ctx.userData.ai_chat=true; await ctx.answer(); return ctx.editMessageText('🤖 <b>المساعد الذكي</b>\n\nاكتب سؤالك الطبي الآن.',{reply_markup:{inline_keyboard:[[ {text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
       if (ctx.data === 'admin') { const menu=await buildWorkerAdmin(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (ctx.data === 'admin_runtime') { await ctx.answer(); return ctx.editMessageText(`⚙️ <b>حالة التشغيل (Cloudflare Worker)</b>\n\n🗄 قاعدة البيانات: ${env.DB ? 'D1 متصلة' : 'غير متصلة'}\n📦 التخزين السحابي: ${env.FILES ? 'R2 متصل' : 'غير متصل'}`, { reply_markup: { inline_keyboard: [[{ text:'⬅️ لوحة الإدارة', callback_data:'admin' }], [{ text:'🏠 الرئيسية', callback_data:'home' }]] }, parse_mode:'HTML' }); }
       if (ctx.data === 'admin_pending') { const menu=await buildWorkerPending(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_contrib:')) { const menu=await buildWorkerContributionReview(ctx.db,ctx.from,Number(ctx.data.split(':')[1])); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (ctx.data.startsWith('admin_approve:')||ctx.data.startsWith('admin_reject:')) { const action=ctx.data.startsWith('admin_approve:')?'approve':'reject'; const id=Number(ctx.data.split(':')[1]); const result=await reviewWorkerContribution(ctx.db,ctx.from,id,action); await ctx.answer(); return ctx.editMessageText(result.text,{reply_markup:{inline_keyboard:[[ {text:'📥 المساهمات',callback_data:'admin_pending'},{text:'🏠 الرئيسية',callback_data:'home'} ]]},parse_mode:'HTML'}); }
@@ -111,7 +121,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       if (ctx.data === 'search') {
         ctx.userData.library_search = true;
         await ctx.answer();
-        return ctx.editMessageText('🔎 <b>بحث في موارد المنصة</b>\\n\\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] }, parse_mode: 'HTML' });
+        return ctx.editMessageText('🔎 <b>بحث في موارد المنصة</b>\n\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] }, parse_mode: 'HTML' });
       }
       if (ctx.data.startsWith('library:')) {
         const folderId = Number.parseInt(ctx.data.split(':')[1], 10) || 0;
@@ -129,7 +139,7 @@ async function dispatchTelegramUpdate(update, { env }) {
         const contentId = Number.parseInt(ctx.data.split(':')[1], 10);
         const file = await buildWorkerFile(ctx.db, contentId);
         if (!file) throw new Error('worker_resource_not_found');
-        const options = { caption: `📄 <b>${String(file.title).replace(/</g,'&lt;').replace(/>/g,'&gt;')}</b>\\n🗂 ${String(file.breadcrumb).replace(/</g,'&lt;').replace(/>/g,'&gt;')}`, parse_mode:'HTML' };
+        const options = { caption: `📄 <b>${String(file.title).replace(/</g,'&lt;').replace(/>/g,'&gt;')}</b>\n🗂 ${String(file.breadcrumb).replace(/</g,'&lt;').replace(/>/g,'&gt;')}`, parse_mode:'HTML' };
         if (file.fileType === 'photo') await bot.sendPhoto(ctx.from.id, file.fileId, options);
         else if (file.fileType === 'video') await bot.sendVideo(ctx.from.id, file.fileId, options);
         else if (file.fileType === 'audio') await bot.sendAudio(ctx.from.id, file.fileId, options);
@@ -147,7 +157,9 @@ async function dispatchTelegramUpdate(update, { env }) {
         await ctx.answer();
         return ctx.editMessageText(account.text, { reply_markup: account.reply_markup, parse_mode: 'HTML' });
       }
-      throw new Error('worker_callback_not_migrated');
+      const unsupported = await buildWorkerUnsupported(ctx.db, ctx.from, ctx.data);
+      await ctx.answer();
+      return ctx.editMessageText(unsupported.text, { reply_markup: unsupported.reply_markup, parse_mode: 'HTML' });
     },
   };
   handlers.message = async (ctx) => {
@@ -166,7 +178,10 @@ async function dispatchTelegramUpdate(update, { env }) {
 
 async function webhookResponse(request, env) {
   if (!env.DB) return json({ ok: false, error: 'd1_not_configured' }, 503);
-  await initTelegramWebhookStore(env.DB);
+  if (typeof env.DB === 'object' && !initializedWebhookStores.has(env.DB)) {
+    await initTelegramWebhookStore(env.DB);
+    initializedWebhookStores.add(env.DB);
+  }
   const idempotency = createD1TelegramIdempotencyStore(env.DB);
   return handleTelegramWebhook(request, { env, idempotency, dispatch: dispatchTelegramUpdate });
 }

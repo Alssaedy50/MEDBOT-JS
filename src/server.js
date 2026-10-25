@@ -20,7 +20,8 @@ export const HEALTH_TEXT = 'MEDBOT is active and running';
 export const HEALTH_PATH = '/health';
 
 /** Resolve the listen port: `PORT` when valid, else the container default. */
-export function resolvePort(value = process.env.PORT) {
+export function resolvePort(...args) {
+  const value = args.length > 0 ? args[0] : process.env.PORT;
   const parsed = Number.parseInt(String(value ?? '').trim(), 10);
   return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : DEFAULT_PORT;
 }
