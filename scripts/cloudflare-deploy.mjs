@@ -9,39 +9,46 @@ const wranglerPath = path.join(root, 'wrangler.jsonc');
 const schemaFile = path.join(root, 'artifacts', 'd1-schema.sql');
 const remoteSchemaFile = path.join(root, 'artifacts', 'd1-schema-remote.sql');
 
-function cleanEnv() {
-  const env = { ...process.env };
+function ghaNotice(title, msg) {
+  const clean = String(msg ?? '').replace(/\r?\n/g, ' | ').slice(0, 500);
+  console.log(`::notice title=${title}::${clean}`);
+}
+
+function ghaError(title, msg) {
+  const clean = String(msg ?? '').replace(/\r?\n/g, ' | ').slice(0, 800);
+  console.log(`::error title=${title}::${clean}`);
+}
+
+function cleanEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
   for (const key of Object.keys(env)) {
-    if (env[key] === '') delete env[key];
+    if (env[key] === '' || env[key] === undefined || env[key] === null) {
+      delete env[key];
+    }
   }
   return env;
 }
 
-function run(cmd, options = {}) {
-  console.log(`> ${cmd}`);
-  return execSync(cmd, { stdio: 'inherit', cwd: root, env: cleanEnv(), ...options });
+async function cfApi(token, endpoint, { method = 'GET', body = null } = {}) {
+  const res = await fetch(`https://api.cloudflare.com/client/v4${endpoint}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({ success: false, errors: [{ message: `HTTP ${res.status}` }] }));
+  return { status: res.status, ok: Boolean(data?.success), result: data?.result, errors: data?.errors || [] };
 }
 
-function runCapture(cmd) {
-  try {
-    return execSync(cmd, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: root,
-      env: cleanEnv(),
-    });
-  } catch (err) {
-    return String(err.stdout || '') + '\n' + String(err.stderr || '');
-  }
-}
-
-function putWorkerSecret(name, value) {
+function putWorkerSecret(name, value, envVars) {
   const trimmed = String(value ?? '').trim();
   if (!trimmed) return;
   console.log(`> Setting Cloudflare Worker secret: ${name}`);
   const res = spawnSync('npx', ['wrangler', 'secret', 'put', name], {
     cwd: root,
-    env: cleanEnv(),
+    env: cleanEnv(envVars),
     input: trimmed,
     encoding: 'utf8',
     stdio: ['pipe', 'inherit', 'inherit'],
@@ -54,87 +61,127 @@ function putWorkerSecret(name, value) {
 async function main() {
   const apiToken = String(process.env.CLOUDFLARE_API_TOKEN || '').trim();
   if (!apiToken) {
-    console.log('[SKIP] CLOUDFLARE_API_TOKEN is not set in GitHub Secrets. Skipping Cloudflare deployment.');
+    ghaNotice('Cloudflare Deploy Skipped', 'CLOUDFLARE_API_TOKEN is empty in GitHub Secrets.');
     return;
   }
 
+  // 1. Resolve Cloudflare Account ID
+  let accountId = String(process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
+  if (!accountId) {
+    console.log('> Discovering Cloudflare Account ID from API token...');
+    const accRes = await cfApi(apiToken, '/accounts?per_page=5');
+    if (accRes.ok && Array.isArray(accRes.result) && accRes.result.length > 0) {
+      accountId = accRes.result[0].id;
+      console.log(`> Discovered Account ID: ${accountId}`);
+    } else {
+      const errMsg = accRes.errors.map((e) => `${e.code}: ${e.message}`).join('; ') || 'No accounts found for token';
+      throw new Error(`Could not resolve Cloudflare Account ID (${errMsg}). Check CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.`);
+    }
+  }
+
+  const cfEnv = { CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT_ID: accountId };
+
+  // 2. Find or create D1 database "medbot" via Cloudflare REST API
   let wrangler = fs.readFileSync(wranglerPath, 'utf8');
   let d1Id = String(process.env.CF_D1_DATABASE_ID || '').trim();
-
   if (!d1Id && !/REPLACE_WITH_D1_DATABASE_ID/i.test(wrangler)) {
     const match = wrangler.match(/"database_id"\s*:\s*"([^"]+)"/);
     if (match) d1Id = match[1];
   }
 
-  // 1. Ensure D1 database exists and discover its UUID if not provided
   if (!d1Id) {
-    console.log('> Checking existing Cloudflare D1 databases for "medbot"...');
-    const listOut = runCapture('npx wrangler d1 list --json');
-    try {
-      const jsonStart = listOut.indexOf('[');
-      const jsonEnd = listOut.lastIndexOf(']');
-      const parsed = jsonStart >= 0 && jsonEnd > jsonStart
-        ? JSON.parse(listOut.slice(jsonStart, jsonEnd + 1))
-        : JSON.parse(listOut);
-      const found = Array.isArray(parsed) && parsed.find((db) => db.name === 'medbot');
-      if (found?.uuid) {
-        d1Id = found.uuid;
+    console.log('> Listing D1 databases via Cloudflare API...');
+    const listRes = await cfApi(apiToken, `/accounts/${accountId}/d1/database`);
+    if (listRes.ok && Array.isArray(listRes.result)) {
+      const existing = listRes.result.find((db) => db.name === 'medbot');
+      if (existing?.uuid) {
+        d1Id = existing.uuid;
         console.log(`> Found existing D1 database "medbot": ${d1Id}`);
       }
-    } catch {
-      // Fallback to creating
     }
   }
 
   if (!d1Id) {
-    console.log('> Creating Cloudflare D1 database "medbot"...');
-    const createOut = runCapture('npx wrangler d1 create medbot');
-    const uuidMatch = createOut.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-    if (uuidMatch) {
-      d1Id = uuidMatch[0];
+    console.log('> Creating D1 database "medbot" via Cloudflare API...');
+    const createRes = await cfApi(apiToken, `/accounts/${accountId}/d1/database`, {
+      method: 'POST',
+      body: { name: 'medbot' },
+    });
+    if (createRes.ok && createRes.result?.uuid) {
+      d1Id = createRes.result.uuid;
       console.log(`> Created D1 database "medbot": ${d1Id}`);
     } else {
-      throw new Error('Could not determine D1 database_id. Set CF_D1_DATABASE_ID or check Cloudflare API token permissions (D1:Edit).\n' + createOut);
+      const errMsg = createRes.errors.map((e) => `${e.code}: ${e.message}`).join('; ');
+      throw new Error(`Failed to create/find D1 database "medbot": ${errMsg}. Ensure CLOUDFLARE_API_TOKEN has D1:Edit permission.`);
     }
   }
 
-  // Patch wrangler.jsonc with real D1 database_id
-  if (/REPLACE_WITH_D1_DATABASE_ID/i.test(wrangler)) {
-    wrangler = wrangler.replace(/REPLACE_WITH_D1_DATABASE_ID/g, d1Id);
-    fs.writeFileSync(wranglerPath, wrangler, 'utf8');
-    console.log(`> Updated wrangler.jsonc with database_id: ${d1Id}`);
+  // 3. Check/Create R2 bucket "medbot-files" (gracefully disable R2 binding if R2 is not enabled on the account)
+  console.log('> Checking R2 bucket "medbot-files"...');
+  const r2Check = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets/medbot-files`);
+  let r2Available = r2Check.ok;
+  if (!r2Available) {
+    const r2Create = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets`, {
+      method: 'POST',
+      body: { name: 'medbot-files' },
+    });
+    r2Available = r2Create.ok || r2Create.errors.some((e) => Number(e.code) === 10004 || /already exists/i.test(e.message));
   }
 
-  // 2. Ensure R2 bucket exists (non-fatal if already exists)
-  console.log('> Ensuring Cloudflare R2 bucket "medbot-files" exists...');
-  runCapture('npx wrangler r2 bucket create medbot-files');
+  // 4. Patch wrangler.jsonc with real D1 UUID (and strip R2 binding if R2 is not enabled on account)
+  wrangler = wrangler.replace(/REPLACE_WITH_D1_DATABASE_ID/g, d1Id);
+  if (!r2Available) {
+    console.log('> R2 is not enabled on this Cloudflare account; deploying Worker with D1 only.');
+    wrangler = wrangler.replace(/,\s*"r2_buckets"\s*:\s*\[[\s\S]*?\]/m, '');
+  }
+  fs.writeFileSync(wranglerPath, wrangler, 'utf8');
 
-  // 3. Generate and apply D1 schema (strip PRAGMA for remote D1 API compatibility)
-  run('node scripts/d1-apply-schema.mjs --output ./artifacts/d1-schema.sql');
+  // 5. Generate and apply D1 schema
+  console.log('> Generating and applying D1 schema v18...');
+  execSync('node scripts/d1-apply-schema.mjs --output ./artifacts/d1-schema.sql', { stdio: 'inherit', cwd: root });
   if (fs.existsSync(schemaFile)) {
     const rawSql = fs.readFileSync(schemaFile, 'utf8');
     const remoteSql = rawSql
       .split('\n')
-      .filter((line) => !/^\s*PRAGMA\b/i.test(line))
+      .filter((line) => !/^\s*PRAGMA\b/i.test(line) && !/^\s*--/.test(line) && line.trim())
       .join('\n');
     fs.writeFileSync(remoteSchemaFile, remoteSql, 'utf8');
-    run('npx wrangler d1 execute medbot --remote --yes --file=./artifacts/d1-schema-remote.sql');
+
+    // Execute via Cloudflare D1 HTTP API first
+    const d1Query = await cfApi(apiToken, `/accounts/${accountId}/d1/database/${d1Id}/query`, {
+      method: 'POST',
+      body: { sql: remoteSql },
+    });
+    if (!d1Query.ok) {
+      console.log('> Falling back to wrangler d1 execute...');
+      spawnSync('npx', ['wrangler', 'd1', 'execute', 'medbot', '--remote', '--yes', '--file=./artifacts/d1-schema-remote.sql'], {
+        cwd: root,
+        env: cleanEnv(cfEnv),
+        stdio: 'inherit',
+      });
+    }
   }
 
-  // 4. Deploy Cloudflare Worker
+  // 6. Deploy Cloudflare Worker
   console.log('> Deploying Cloudflare Worker...');
   const deployRes = spawnSync('npx', ['wrangler', 'deploy'], {
     cwd: root,
-    env: cleanEnv(),
+    env: cleanEnv(cfEnv),
     encoding: 'utf8',
   });
   const deployOut = String(deployRes.stdout || '') + '\n' + String(deployRes.stderr || '');
   console.log(deployOut);
   if (deployRes.status !== 0) {
-    throw new Error(`Wrangler deploy failed with exit code ${deployRes.status}`);
+    throw new Error(`Wrangler deploy failed: ${deployOut.slice(-600)}`);
   }
 
-  // 5. Push runtime secrets to Worker
+  // Ensure workers.dev route is enabled for medbot-js
+  await cfApi(apiToken, `/accounts/${accountId}/workers/scripts/medbot-js/subdomain`, {
+    method: 'POST',
+    body: { enabled: true },
+  }).catch(() => {});
+
+  // 7. Push runtime secrets to Worker
   const botToken = String(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
   const explicitSecret = String(process.env.TELEGRAM_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET || '').trim();
   const webhookSecret = explicitSecret || (
@@ -143,40 +190,49 @@ async function main() {
       : ''
   );
 
-  putWorkerSecret('BOT_TOKEN', botToken);
-  putWorkerSecret('TELEGRAM_BOT_TOKEN', botToken);
-  putWorkerSecret('ADMIN_ID', process.env.ADMIN_ID);
-  putWorkerSecret('TELEGRAM_WEBHOOK_SECRET', webhookSecret);
-  putWorkerSecret('MEDBOT_ARCHIVE_CHANNEL', process.env.MEDBOT_ARCHIVE_CHANNEL || process.env.ARCHIVE_CHANNEL_ID);
-  putWorkerSecret('GEMINI_API_KEY', process.env.GEMINI_API_KEY);
-  putWorkerSecret('GROQ_API_KEY', process.env.GROQ_API_KEY);
-  putWorkerSecret('OPENROUTER_API_KEY', process.env.OPENROUTER_API_KEY);
+  putWorkerSecret('BOT_TOKEN', botToken, cfEnv);
+  putWorkerSecret('TELEGRAM_BOT_TOKEN', botToken, cfEnv);
+  putWorkerSecret('ADMIN_ID', process.env.ADMIN_ID, cfEnv);
+  putWorkerSecret('TELEGRAM_WEBHOOK_SECRET', webhookSecret, cfEnv);
+  putWorkerSecret('MEDBOT_ARCHIVE_CHANNEL', process.env.MEDBOT_ARCHIVE_CHANNEL || process.env.ARCHIVE_CHANNEL_ID, cfEnv);
+  putWorkerSecret('GEMINI_API_KEY', process.env.GEMINI_API_KEY, cfEnv);
+  putWorkerSecret('GROQ_API_KEY', process.env.GROQ_API_KEY, cfEnv);
+  putWorkerSecret('OPENROUTER_API_KEY', process.env.OPENROUTER_API_KEY, cfEnv);
 
-  // 6. Register Telegram Webhook automatically
+  // 8. Discover Worker URL and register Telegram Webhook
   const urlMatch = deployOut.match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i);
-  const workerBaseUrl = String(process.env.CLOUDFLARE_WORKER_URL || (urlMatch ? urlMatch[0] : '')).trim().replace(/\/+$/, '');
+  let workerBaseUrl = String(process.env.CLOUDFLARE_WORKER_URL || (urlMatch ? urlMatch[0] : '')).trim().replace(/\/+$/, '');
+  if (!workerBaseUrl) {
+    const subRes = await cfApi(apiToken, `/accounts/${accountId}/workers/subdomain`);
+    if (subRes.ok && subRes.result?.subdomain) {
+      workerBaseUrl = `https://medbot-js.${subRes.result.subdomain}.workers.dev`;
+    }
+  }
 
   if (botToken && workerBaseUrl && webhookSecret) {
     const webhookUrl = workerBaseUrl.endsWith('/telegram/webhook')
       ? workerBaseUrl
       : `${workerBaseUrl}/telegram/webhook`;
     console.log(`> Registering Telegram Webhook -> ${webhookUrl}`);
-    run('node scripts/cloudflare-webhook.mjs set', {
-      env: {
-        ...cleanEnv(),
+    execSync('node scripts/cloudflare-webhook.mjs set', {
+      stdio: 'inherit',
+      cwd: root,
+      env: cleanEnv({
         BOT_TOKEN: botToken,
         TELEGRAM_BOT_TOKEN: botToken,
         WEBHOOK_URL: webhookUrl,
         TELEGRAM_WEBHOOK_SECRET: webhookSecret,
         WEBHOOK_SECRET: webhookSecret,
-      },
+      }),
     });
+    ghaNotice('Cloudflare Deploy Success', `Worker deployed and Telegram Webhook bound to ${webhookUrl}`);
   } else {
-    console.log('> Skipping automatic Telegram webhook registration (set BOT_TOKEN and ensure workers.dev subdomain is active).');
+    ghaNotice('Cloudflare Worker Deployed', `Worker URL: ${workerBaseUrl || 'unknown'} (set BOT_TOKEN to register webhook)`);
   }
 }
 
 main().catch((err) => {
+  ghaError('Cloudflare Deploy Error', err.message || String(err));
   console.error('[ERROR]', err.message || err);
   process.exit(1);
 });
