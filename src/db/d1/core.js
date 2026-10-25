@@ -15,7 +15,9 @@ function assertDb(db) {
 }
 
 function bind(statement, params) {
-  return params.length ? statement.bind(...params) : statement;
+  if (!params.length) return statement;
+  const normalized = params.map((p) => (p === undefined ? null : p));
+  return statement.bind(...normalized);
 }
 
 export async function all(db, sql, params = []) {

@@ -173,6 +173,11 @@ export const D1_SCHEMA_SQL = [
     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 ].join(";\n") + ";\n";
 
+export const D1_SCHEMA_STATEMENTS = D1_SCHEMA_SQL
+  .split(';\n')
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0 && !/^PRAGMA\b/i.test(s));
+
 export function getD1SchemaSql() {
   return D1_SCHEMA_SQL;
 }

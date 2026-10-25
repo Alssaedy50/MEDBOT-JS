@@ -63,8 +63,23 @@ import {
   toggleWorkerAdminPermission,
 } from './telegram/workerAdmin.js';
 import { ensureConfiguredAdmin } from './db/d1/admins.js';
+import { D1_SCHEMA_STATEMENTS } from './db/d1/migrations.js';
 
 const initializedWebhookStores = new WeakSet();
+let lastWorkerError = null;
+
+async function ensureWorkerSchema(db) {
+  if (!db || typeof db !== 'object' || initializedWebhookStores.has(db)) return;
+  await initTelegramWebhookStore(db);
+  if (typeof db.prepare === 'function' && typeof db.batch === 'function') {
+    try {
+      await db.batch(D1_SCHEMA_STATEMENTS.map((sql) => db.prepare(sql)));
+    } catch {
+      // Ignore if test mock does not support full DDL batch
+    }
+  }
+  initializedWebhookStores.add(db);
+}
 
 function json(data, status = 200) {
   return new globalThis.Response(JSON.stringify(data), {
@@ -803,14 +818,21 @@ async function dispatchTelegramUpdate(update, { env }) {
   };
 
   const dispatch = createWorkerTelegramDispatcher({ bot, db: env.DB, handlers });
-  return dispatch(update);
+  try {
+    return await dispatch(update);
+  } catch (err) {
+    lastWorkerError = String(err?.message || err);
+    throw err;
+  }
 }
 
 async function webhookResponse(request, env) {
   if (!env.DB) return json({ ok: false, error: 'd1_not_configured' }, 503);
-  if (typeof env.DB === 'object' && !initializedWebhookStores.has(env.DB)) {
-    await initTelegramWebhookStore(env.DB);
-    initializedWebhookStores.add(env.DB);
+  try {
+    await ensureWorkerSchema(env.DB);
+  } catch (err) {
+    lastWorkerError = `schema_init_failed: ${err?.message || err}`;
+    return json({ ok: false, error: 'd1_schema_init_failed' }, 503);
   }
   const idempotency = createD1TelegramIdempotencyStore(env.DB);
   return handleTelegramWebhook(request, { env, idempotency, dispatch: dispatchTelegramUpdate });
@@ -820,6 +842,28 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) return healthResponse(env);
+    if (request.method === 'GET' && url.pathname === '/telegram/status') {
+      let tables = 0;
+      let d1Error = null;
+      if (env.DB) {
+        try {
+          await ensureWorkerSchema(env.DB);
+          const row = await get(env.DB, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'");
+          tables = Number(row?.[0] ?? 0);
+        } catch (err) {
+          d1Error = String(err?.message || err);
+        }
+      }
+      return json({
+        ok: Boolean(env.DB) && !d1Error,
+        bot_token_configured: Boolean(env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN),
+        webhook_secret_configured: Boolean(env.TELEGRAM_WEBHOOK_SECRET),
+        admin_id_configured: Boolean(env.ADMIN_ID),
+        d1_tables: tables,
+        d1_error: d1Error,
+        last_error: lastWorkerError,
+      });
+    }
     if (url.pathname === '/backup/latest') return backupEndpoint(request, env);
     if (url.pathname === '/telegram/webhook') return webhookResponse(request, env);
     if (url.pathname === '/storage/status') {

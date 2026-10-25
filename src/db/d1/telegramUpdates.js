@@ -9,19 +9,23 @@
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
 
 export async function initTelegramWebhookStore(db) {
-  if (!db || typeof db.exec !== 'function') {
+  if (!db || (typeof db.exec !== 'function' && typeof db.prepare !== 'function')) {
     throw new TypeError('A Cloudflare D1 database binding is required');
   }
-  await db.exec(
-    `CREATE TABLE IF NOT EXISTS telegram_updates (
-      update_id INTEGER PRIMARY KEY,
-      status TEXT NOT NULL DEFAULT 'processing',
-      claimed_at INTEGER NOT NULL,
-      completed_at INTEGER,
-      expires_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_telegram_updates_expires ON telegram_updates(expires_at);`
-  );
+  const tableSql =
+    "CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'processing', claimed_at INTEGER NOT NULL, completed_at INTEGER, expires_at INTEGER NOT NULL)";
+  const indexSql =
+    'CREATE INDEX IF NOT EXISTS idx_telegram_updates_expires ON telegram_updates(expires_at)';
+  if (typeof db.prepare === 'function' && typeof db.batch === 'function') {
+    await db.batch([db.prepare(tableSql), db.prepare(indexSql)]);
+    return;
+  }
+  if (typeof db.prepare === 'function') {
+    await db.prepare(tableSql).run();
+    await db.prepare(indexSql).run();
+    return;
+  }
+  await db.exec(`${tableSql};\n${indexSql};`);
 }
 
 export async function claimTelegramUpdate(db, updateId, {
