@@ -21,7 +21,7 @@ for (const file of [
   'src/db/d1/telegramUpdates.js',
   'src/storage/r2.js',
   'scripts/d1-apply-schema.mjs',
-  'package-lock.json',
+  'package.json',
 ]) {
   add('file:' + file, exists(file) ? 'PASS' : 'FAIL', exists(file) ? 'present' : 'missing');
 }
@@ -43,7 +43,7 @@ add('node', node[0] > 22 || (node[0] === 22 && node[1] >= 5) ? 'PASS' : 'FAIL',
 const admin = String(process.env.ADMIN_ID ?? '').trim();
 add('ADMIN_ID', /^-?\d+$/.test(admin) ? 'PASS' : 'WARN', admin ? 'configured' : 'not set locally');
 
-const token = String(process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
+const token = String(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
 add('TELEGRAM_BOT_TOKEN', token ? 'PASS' : 'WARN', token ? 'configured (hidden)' : 'not set locally');
 
 const workerUrl = String(process.env.CLOUDFLARE_WORKER_URL ?? '').trim();

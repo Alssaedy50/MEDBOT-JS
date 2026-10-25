@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-const token = String(process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
+const token = String(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const action = process.argv[2];
 const url = String(process.env.WEBHOOK_URL ?? '').trim();
-const secret = String(process.env.WEBHOOK_SECRET ?? '').trim();
+const secret = String(process.env.TELEGRAM_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET || '').trim();
 
-if (!token) throw new Error('TELEGRAM_BOT_TOKEN is required');
+if (!token) throw new Error('BOT_TOKEN or TELEGRAM_BOT_TOKEN is required');
 if (!['set', 'info', 'delete'].includes(action)) throw new Error('Choose: set | info | delete');
 
 if (action === 'set') {

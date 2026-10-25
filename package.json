@@ -25,7 +25,8 @@
     "deploy:check": "node scripts/deployment-doctor.mjs",
     "migration:verify": "node scripts/migration-verify.mjs",
     "cf:preflight": "node scripts/cloudflare-preflight.mjs",
-    "cf:webhook": "node scripts/cloudflare-webhook.mjs"
+    "cf:webhook": "node scripts/cloudflare-webhook.mjs",
+    "cf:auto-deploy": "node scripts/cloudflare-deploy.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5"
