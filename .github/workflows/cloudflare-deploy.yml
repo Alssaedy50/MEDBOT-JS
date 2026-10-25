@@ -14,23 +14,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Install dependencies & Wrangler CLI
+      - name: Install dependencies and Wrangler CLI
         run: |
           npm ci || npm install
           npm install --no-save wrangler
 
-      - name: Run Lint & Tests
+      - name: Run Lint and Tests
         run: |
           npm run lint
           npm test
 
-      - name: Auto-Provision & Deploy to Cloudflare
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+      - name: Auto-Provision and Deploy to Cloudflare
         run: node scripts/cloudflare-deploy.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
