@@ -50,14 +50,17 @@ function telegramBot(token) {
     const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
     });
-    if (!response.ok) throw new Error(`telegram_${method}_failed`);
-    const body = await response.json();
-    if (!body.ok) throw new Error(`telegram_${method}_rejected`);
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.ok) {
+      const desc = String(body?.description || '');
+      if (method === 'editMessageText' && desc.includes('message is not modified')) return null;
+      throw new Error(!response.ok ? `telegram_${method}_failed` : `telegram_${method}_rejected`);
+    }
     return body.result;
   }
   return {
-    sendMessage: (chatId, text, options = {}) => call('sendMessage', { chat_id: chatId, text, ...options }),
-    editMessageText: (text, options = {}) => call('editMessageText', { text, ...options }),
+    sendMessage: (chatId, text, options = {}) => call('sendMessage', { parse_mode: 'HTML', chat_id: chatId, text, ...options }),
+    editMessageText: (text, options = {}) => call('editMessageText', { parse_mode: 'HTML', text, ...options }),
     answerCallbackQuery: (id) => call('answerCallbackQuery', { callback_query_id: id }),
     sendDocument: (chatId, document, options = {}) => call('sendDocument', { chat_id: chatId, document, ...options }),
     sendPhoto: (chatId, photo, options = {}) => call('sendPhoto', { chat_id: chatId, photo, ...options }),
@@ -67,28 +70,29 @@ function telegramBot(token) {
 }
 
 async function dispatchTelegramUpdate(update, { env }) {
-  const bot = telegramBot(env.TELEGRAM_BOT_TOKEN);
+  const bot = telegramBot(env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN);
   if (!bot) throw new Error('telegram_bot_token_not_configured');
   const handlers = {
     command: async (ctx) => {
       const command = String(ctx.text).trim().split(/\s+/, 1)[0].split('@', 1)[0].slice(1);
-      if (command === 'start') { await ensureConfiguredAdmin(ctx.db,env.ADMIN_ID,ctx.from.id===Number(env.ADMIN_ID)?ctx.from.username:null); const menu = await buildWorkerHome(ctx.db, ctx.from); return ctx.reply(menu.text, { reply_markup: menu.reply_markup }); }
-      if (command === 'help') { const menu=await buildWorkerAbout(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
-      if (command === 'quota') { const menu=await buildWorkerAccount(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup}); }
+      if (command === 'start') { await ensureConfiguredAdmin(ctx.db,env.ADMIN_ID,ctx.from.id===Number(env.ADMIN_ID)?ctx.from.username:null); const menu = await buildWorkerHome(ctx.db, ctx.from); return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' }); }
+      if (command === 'help') { const menu=await buildWorkerAbout(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (command === 'quota') { const menu=await buildWorkerAccount(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
+      if (command === 'admin') { const menu=await buildWorkerAdmin(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (command === 'ask') { ctx.userData.ai_chat=true; return ctx.reply('🤖 <b>المساعد الذكي</b>\n\nاكتب سؤالك الطبي الآن.', { parse_mode:'HTML' }); }
       if (command === 'contribute') { const menu=await buildWorkerContributionStart(ctx.db,ctx.from); return ctx.reply(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
       if (command === 'search') {
         ctx.userData.library_search = true;
-        return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\n\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
+        return ctx.reply('🔎 <b>بحث في موارد المنصة</b>\n\nاكتب اسم مادة أو قسم أو مورد.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] }, parse_mode: 'HTML' });
       }
       if (command === 'cancel') {
         ctx.userData.ai_chat = false;
         ctx.userData.library_search = false;
         ctx.userData.contribution_folder = null;
-        return ctx.reply('❌ تم إلغاء العملية الجارية.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] } });
+        return ctx.reply('❌ تم إلغاء العملية الجارية.', { reply_markup: { inline_keyboard: [[{ text:'🏠 الرئيسية', callback_data:'home' }]] }, parse_mode: 'HTML' });
       }
       const fallback = await buildWorkerHome(ctx.db, ctx.from);
-      return ctx.reply(fallback.text, { reply_markup: fallback.reply_markup });
+      return ctx.reply(fallback.text, { reply_markup: fallback.reply_markup, parse_mode: 'HTML' });
     },
     callback: async (ctx) => {
       if (ctx.data === 'language') { const menu=await buildWorkerLanguage(ctx.db,ctx.from); await ctx.answer(); return ctx.editMessageText(menu.text,{reply_markup:menu.reply_markup,parse_mode:'HTML'}); }
