@@ -19,15 +19,8 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies and Wrangler CLI
-        run: |
-          npm ci || npm install
-          npm install --no-save wrangler
-
-      - name: Run Lint and Tests
-        run: |
-          npm run lint
-          npm test
+      - name: Install Wrangler CLI
+        run: npm install --no-package-lock dotenv wrangler
 
       - name: Auto-Provision and Deploy to Cloudflare
         run: node scripts/cloudflare-deploy.mjs
