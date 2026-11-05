@@ -474,6 +474,13 @@ test('startInteractiveUploadWizard displays destination picker and transitions t
               });
               return { success: true, meta: { last_row_id: newId } };
             }
+            if (sql.includes('UPDATE folders SET name = ?')) {
+              const newName = boundArgs[0];
+              const fid = boundArgs[1];
+              const f = foldersTable.find((x) => x.id === fid);
+              if (f) f.name = newName;
+              return { success: true, meta: { changes: 1 } };
+            }
             if (sql.includes('INSERT INTO content')) {
               const newId = contentTable.length + 1;
               contentTable.push({
@@ -569,7 +576,7 @@ test('startInteractiveUploadWizard displays destination picker and transitions t
 
   // 4. Click 'du_newf' to create a new section under subject 3 (أناتومي)
   const resNewF = await handleDualUploadCallback(mockCtx, `du_newf:${wiz.sessionId}:3`, fakeBot, {});
-  assert.match(resNewF.text, /إنشاء مادة أو قسم جديد/);
+  assert.match(resNewF.text, /نظام الإدارة/);
 
   // 5. Send name of the new section
   const resSectionText = await handleDualUploadNewFolderText(mockCtx, 'تحديد عظام الأطراف', fakeBot, {});
@@ -597,6 +604,184 @@ test('startInteractiveUploadWizard displays destination picker and transitions t
   assert.equal(contentTable.length, 1);
   assert.equal(contentTable[0].title, 'محاضرة التشريح العملي الأولى');
 });
+
+test('dualUploadInteractive supports Admin creation of Level, Block, Subject, and renaming folders', async () => {
+  const {
+    startInteractiveUploadWizard,
+    handleDualUploadCallback,
+    handleDualUploadNewFolderText,
+    getUploadSession,
+  } = await import('../src/storage/dualUploadInteractive.js');
+
+  const foldersTable = [
+    { id: 1, parent_id: null, name: 'المستوى الأول', node_type: 'level', keywords: '' },
+  ];
+  const contentTable = [];
+  let nextFolderId = 20;
+
+  const mockDb = {
+    prepare(sql) {
+      const execBound = (boundArgs = []) => {
+        const getResults = () => {
+          if (sql.includes('SELECT id, parent_id, name, node_type FROM folders WHERE id = ?')) {
+            const f = foldersTable.find((x) => x.id === boundArgs[0]);
+            return f ? [[f.id, f.parent_id, f.name, f.node_type]] : [];
+          }
+          if (sql.includes('SELECT id, parent_id, name, node_type FROM folders')) {
+            return foldersTable.map((x) => [x.id, x.parent_id, x.name, x.node_type]);
+          }
+          if (sql.includes('WHERE parent_id = ?')) {
+            return foldersTable
+              .filter((x) => x.parent_id === boundArgs[0])
+              .map((x) => [x.id, x.name, x.node_type]);
+          }
+          if (sql.includes('parent_id IS NULL OR parent_id = 0')) {
+            return foldersTable
+              .filter((x) => !x.parent_id)
+              .map((x) => [x.id, x.name, x.node_type]);
+          }
+          return [];
+        };
+
+        return {
+          raw: async () => getResults(),
+          all: async () => ({ results: getResults() }),
+          first: async () => {
+            const r = getResults();
+            return r.length ? r[0] : null;
+          },
+          run: async () => {
+            if (sql.includes('INSERT INTO folders')) {
+              const newId = nextFolderId++;
+              foldersTable.push({
+                id: newId,
+                parent_id: boundArgs[0],
+                name: boundArgs[1],
+                node_type: boundArgs[2],
+                keywords: '',
+              });
+              return { success: true, meta: { last_row_id: newId } };
+            }
+            if (sql.includes('UPDATE folders SET name = ?')) {
+              const newName = boundArgs[0];
+              const fid = boundArgs[1];
+              const f = foldersTable.find((x) => x.id === fid);
+              if (f) f.name = newName;
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (sql.includes('INSERT INTO content')) {
+              const newId = contentTable.length + 1;
+              contentTable.push({
+                id: newId,
+                folder_id: boundArgs[0],
+                title: boundArgs[1],
+                file_id: boundArgs[2],
+                file_type: boundArgs[3],
+              });
+              return { success: true, meta: { last_row_id: newId } };
+            }
+            return { success: true, meta: { changes: 1 } };
+          },
+        };
+      };
+
+      return {
+        bind(...args) {
+          return execBound(args);
+        },
+        raw: async () => execBound([]).raw(),
+        all: async () => execBound([]).all(),
+        first: async () => execBound([]).first(),
+        run: async () => execBound([]).run(),
+      };
+    },
+  };
+
+  const fakeBot = {
+    async sendMessage(_chatId, _text, _opts) {
+      return { message_id: 888 };
+    },
+    async editMessageText(_text, opts = {}) {
+      return { message_id: opts.message_id || 888 };
+    },
+  };
+
+  // Create wizard session
+  const wiz = await startInteractiveUploadWizard({
+    bot: fakeBot,
+    message: {
+      message_id: 202,
+      chat: { id: 7002, type: 'private' },
+      from: { id: 7002 },
+      document: {
+        file_id: 'video-cardio-1',
+        file_name: 'شرح_تخطيط_القلب_ECG.mp4',
+        mime_type: 'video/mp4',
+        file_size: 25000000,
+      },
+    },
+    channelTarget: '-1004342544366',
+    db: mockDb,
+    env: {},
+  });
+
+  const mockCtx = {
+    db: mockDb,
+    chatId: 7002,
+    messageId: 999,
+    from: { id: 7002 },
+    userData: {},
+    async answer() {},
+    async editMessageText(text, opts) {
+      return { text, opts };
+    },
+    async reply(text, opts) {
+      return { text, opts, message_id: 1000 };
+    },
+  };
+
+  // Choose destination: Bot
+  await handleDualUploadCallback(mockCtx, `du_dest:${wiz.sessionId}:bot`, fakeBot, {});
+  await handleDualUploadCallback(mockCtx, `du_name_ok:${wiz.sessionId}`, fakeBot, {});
+
+  // 1. Create a Block inside Level 1: `du_newnode:sessionId:1:block`
+  const resBlockPrompt = await handleDualUploadCallback(mockCtx, `du_newnode:${wiz.sessionId}:1:block`, fakeBot, {});
+  assert.match(resBlockPrompt.text, /البلوك الأكاديمي/);
+
+  const resBlockCreated = await handleDualUploadNewFolderText(mockCtx, 'بلوك القلب والأوعية CVS', fakeBot, {});
+  assert.equal(resBlockCreated.ok, true);
+  const blockFolder = foldersTable.find((f) => f.name === 'بلوك القلب والأوعية CVS');
+  assert.ok(blockFolder);
+  assert.equal(blockFolder.parent_id, 1);
+  assert.equal(blockFolder.node_type, 'block');
+
+  // 2. Rename folder: `du_renf:sessionId:1`
+  const resRenamePrompt = await handleDualUploadCallback(mockCtx, `du_renf:${wiz.sessionId}:1`, fakeBot, {});
+  assert.match(resRenamePrompt.text, /تعديل اسم القسم \/ المادة/);
+
+  const resRenameDone = await handleDualUploadNewFolderText(mockCtx, 'السنة الأولى (الطب البشري)', fakeBot, {});
+  assert.equal(resRenameDone.ok, true);
+  const levelFolder = foldersTable.find((f) => f.id === 1);
+  assert.equal(levelFolder.name, 'السنة الأولى (الطب البشري)');
+
+  // 3. Create a Subject under the Block: `du_newnode:sessionId:blockId:subject`
+  await handleDualUploadCallback(mockCtx, `du_newnode:${wiz.sessionId}:${blockFolder.id}:subject`, fakeBot, {});
+  const resSubjName = await handleDualUploadNewFolderText(mockCtx, 'علم الأدوية Pharmacology', fakeBot, {});
+  assert.match(resSubjName.text, /أولاً: هل هو نظري أم عملي؟/);
+
+  // 4. Test direct save without branch subdivision: `du_direct_save`
+  const resDirectSave = await handleDualUploadCallback(mockCtx, `du_direct_save:${wiz.sessionId}`, fakeBot, {});
+  assert.match(resDirectSave.text, /جاهز للإرسال/);
+
+  // 5. Submit upload
+  await handleDualUploadCallback(mockCtx, `du_submit:${wiz.sessionId}`, fakeBot, {});
+  const sFinal = await getUploadSession(mockDb, wiz.sessionId);
+  assert.equal(sFinal.step, 'executing');
+  assert.ok(sFinal.contentId > 0);
+  assert.equal(contentTable.length, 1);
+  assert.equal(contentTable[0].file_type, 'video');
+});
+
 
 
 

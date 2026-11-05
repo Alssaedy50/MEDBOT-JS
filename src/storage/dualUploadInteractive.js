@@ -18,7 +18,7 @@
  */
 
 import { all, get, run } from '../db/d1/core.js';
-import { addContent, addFolder, deleteFile } from '../db/d1/registry.js';
+import { addContent, addFolder, deleteFile, updateFolderName } from '../db/d1/registry.js';
 import { createResourceNewsForContent, publishNews } from '../db/d1/news.js';
 import {
   buildStructuredArchiveCaption,
@@ -392,6 +392,13 @@ export async function findSmartFolderSuggestion(db, title, caption, detailedKind
   }
 }
 
+export const NODE_TYPE_ADMIN_TITLES = {
+  level: { label: '🎓 مستوى جديد', promptTitle: 'المستوى الدراسي', example: 'المستوى الأول أو الثاني' },
+  block: { label: '🧩 بلوك جديد', promptTitle: 'البلوك الأكاديمي', example: 'بلوك القلب والأوعية الدموية CVS' },
+  subject: { label: '📚 مادة جديدة', promptTitle: 'المادة الدراسية', example: 'مادة علم وظائف الأعضاء Physiology' },
+  section: { label: '📑 قسم فرعي جديد', promptTitle: 'القسم الفرعي', example: 'محاضرات الدكتور أو قسم العملي' },
+};
+
 function nodeIcon(nodeType) {
   const t = String(nodeType || '').toLowerCase();
   if (t === 'books' || t === 'book') return '📚';
@@ -403,6 +410,7 @@ function nodeIcon(nodeType) {
   if (t === 'term' || t === 'semester') return '📅';
   if (t === 'block' || t === 'module') return '🧩';
   if (t === 'subject' || t === 'course') return '📚';
+  if (t === 'section') return '📑';
   return '📁';
 }
 
@@ -503,12 +511,13 @@ export async function renderDualUploadSessionMessage(db, session) {
   }
 
   // ---------------------------------------------------------------------------
-  // STEP 3: Choose Academic Folder or Create New Subject/Section (`pick_folder`)
+  // STEP 3: Academic Destination Selection & Admin Folder Management (`pick_folder`)
   // ---------------------------------------------------------------------------
   if (step === 'pick_folder') {
     const browseId = Number(session.browseFolderId || 0);
     let currentFolder = null;
     let currentPathStr = 'المستويات والأقسام الرئيسية (الجذر)';
+    let depth = 0;
     let childFolders = [];
 
     if (db && typeof db.prepare === 'function') {
@@ -518,6 +527,7 @@ export async function renderDualUploadSessionMessage(db, session) {
           if (chain.length > 0) {
             currentFolder = chain[chain.length - 1];
             currentPathStr = chain.map((c) => c.name).join(' ⬅️ ');
+            depth = chain.length;
           }
           const rows = await all(
             db,
@@ -545,15 +555,20 @@ export async function renderDualUploadSessionMessage(db, session) {
       }
     }
 
+    const currType = currentFolder ? String(currentFolder.node_type || '').toLowerCase() : '';
+    const isLevel = currType === 'level' || depth === 1;
+    const isBlock = currType === 'block' || depth === 2;
+
     const text = [
-      '🗂 <b>تفاصيل الرفع — الخطوة 2: تحديد المستوى والبلوك والمادة والقسم</b>',
+      '🛠 <b>نظام الإنشاء والتعديل الخاص بالإدارة — تحديد وجهة الداتا</b>',
       '━━━━━━━━━━━━━━━━━━',
       `🎯 <b>الوجهات:</b> ${esc(describeDestinations(session))}`,
       `🏷 <b>الاسم المعتمد:</b> <code>${esc(session.title || session.filename)}</code>`,
       metaLine,
       '',
-      `🧭 <b>المسار الحالي:</b> <code>${esc(currentPathStr)}</code>`,
-      'اختر القسم من الأزرار أدناه أو أنشئ قسماً / مادة جديدة (مع تحديد عملي أو نظري ونوع الداتا):',
+      `🧭 <b>المسار الأكاديمي الحالي:</b>\n<code>${esc(currentPathStr)}</code>`,
+      '',
+      'اختر وجهة الداتا من التسلسل أدناه، أو أنشئ (مستوى / بلوك / مادة / قسم)، أو عدّل الاسم:',
     ].join('\n');
 
     const rows = [];
@@ -569,12 +584,18 @@ export async function renderDualUploadSessionMessage(db, session) {
       ]);
     }
 
-    // 2. If inside a folder (`browseId > 0`), allow selecting it directly
+    // 2. If inside a folder (`browseId > 0`), allow selecting & approving ANY file type into it directly
     if (browseId > 0 && currentFolder) {
       rows.push([
         {
-          text: `✅ اختيار هذا القسم («${String(currentFolder.name).slice(0, 24)}»)`,
+          text: `✅ اعتماد وحفظ الملف هنا في («${String(currentFolder.name).slice(0, 22)}»)`,
           callback_data: `du_select_f:${session.id}:${browseId}`,
+        },
+      ]);
+      rows.push([
+        {
+          text: `✏️ تعديل اسم هذا القسم / المادة`,
+          callback_data: `du_renf:${session.id}:${browseId}`,
         },
       ]);
     }
@@ -588,7 +609,36 @@ export async function renderDualUploadSessionMessage(db, session) {
       rows.push(pair);
     }
 
-    // 4. Create new section/subject here
+    // 4. Admin Creation buttons based on current depth & hierarchy
+    if (browseId === 0) {
+      // Root level: create level or root subject
+      rows.push([
+        { text: '➕ إنشاء مستوى جديد', callback_data: `du_newnode:${session.id}:0:level` },
+        { text: '➕ إنشاء مادة رئيسية', callback_data: `du_newnode:${session.id}:0:subject` },
+      ]);
+    } else if (isLevel) {
+      // Inside Level: create Block or Subject or Section
+      rows.push([
+        { text: '➕ إنشاء بلوك جديد', callback_data: `du_newnode:${session.id}:${browseId}:block` },
+        { text: '➕ إنشاء مادة جديدة', callback_data: `du_newnode:${session.id}:${browseId}:subject` },
+      ]);
+      rows.push([
+        { text: '➕ إنشاء قسم فرعي', callback_data: `du_newnode:${session.id}:${browseId}:section` },
+      ]);
+    } else if (isBlock) {
+      // Inside Block: create Subject or Section
+      rows.push([
+        { text: '➕ إنشاء مادة جديدة', callback_data: `du_newnode:${session.id}:${browseId}:subject` },
+        { text: '➕ إنشاء قسم فرعي', callback_data: `du_newnode:${session.id}:${browseId}:section` },
+      ]);
+    } else {
+      // Inside Subject or Section: create Section
+      rows.push([
+        { text: '➕ إنشاء قسم فرعي جديد', callback_data: `du_newnode:${session.id}:${browseId}:section` },
+      ]);
+    }
+
+    // 5. Navigation Row
     const navRow = [];
     if (browseId > 0) {
       const parentId = currentFolder?.parent_id ? Number(currentFolder.parent_id) : 0;
@@ -597,15 +647,11 @@ export async function renderDualUploadSessionMessage(db, session) {
         callback_data: `du_nav:${session.id}:${parentId}`,
       });
     }
-    navRow.push({
-      text: browseId > 0 ? '➕ إنشاء مادة / قسم جديد هنا' : '➕ إنشاء مستوى / مادة جديدة',
-      callback_data: `du_newf:${session.id}:${browseId}`,
-    });
+    navRow.push({ text: '✏️ تعديل اسم الملف', callback_data: `du_name_prompt:${session.id}` });
     rows.push(navRow);
 
     rows.push([
-      { text: '✏️ تعديل الاسم', callback_data: `du_name_prompt:${session.id}` },
-      { text: '🛑 إلغاء', callback_data: `du_cancel:${session.id}` },
+      { text: '🛑 إلغاء العملية', callback_data: `du_cancel:${session.id}` },
     ]);
 
     return {
@@ -615,10 +661,47 @@ export async function renderDualUploadSessionMessage(db, session) {
   }
 
   // ---------------------------------------------------------------------------
-  // STEP 4A: Waiting for New Subject/Section Name (`new_folder_name`)
+  // STEP 3B: Admin Folder Renaming (`rename_folder`)
+  // ---------------------------------------------------------------------------
+  if (step === 'rename_folder') {
+    const fid = Number(session.pendingRenameFolderId || session.browseFolderId || 0);
+    let currentFolderName = 'القسم الحالي';
+    let fullPathStr = 'المسار الأكاديمي';
+    if (fid > 0 && db && typeof db.prepare === 'function') {
+      const chain = await getFolderHierarchyChain(db, fid).catch(() => []);
+      if (chain.length > 0) {
+        currentFolderName = chain[chain.length - 1].name;
+        fullPathStr = chain.map((c) => c.name).join(' ⬅️ ');
+      }
+    }
+    const text = [
+      '✏️ <b>نظام إدارة الأقسام — تعديل اسم القسم / المادة</b>',
+      '━━━━━━━━━━━━━━━━━━',
+      `📂 <b>الاسم الحالي:</b> <code>${esc(currentFolderName)}</code>`,
+      `📍 <b>المسار:</b> <code>${esc(fullPathStr)}</code>`,
+      '',
+      '✍️ <b>أرسل الآن الاسم الجديد في رسالة نصية لتحديثه فوراً في البوت:</b>',
+    ].join('\n');
+
+    return {
+      text,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⬅️ إلغاء والرجوع للأقسام', callback_data: `du_nav:${session.id}:${fid}` }],
+          [{ text: '🛑 إلغاء العملية', callback_data: `du_cancel:${session.id}` }],
+        ],
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // STEP 4A: Waiting for New Level/Block/Subject/Section Name (`new_folder_name`)
   // ---------------------------------------------------------------------------
   if (step === 'new_folder_name') {
     const parentId = Number(session.pendingFolderParentId || 0);
+    const nodeType = String(session.pendingFolderNodeType || 'section');
+    const nodeInfo = NODE_TYPE_ADMIN_TITLES[nodeType] || NODE_TYPE_ADMIN_TITLES.section;
+
     let parentPath = 'المستوى الرئيسي (الجذر)';
     if (parentId > 0 && db && typeof db.prepare === 'function') {
       const chain = await getFolderHierarchyChain(db, parentId).catch(() => []);
@@ -627,13 +710,14 @@ export async function renderDualUploadSessionMessage(db, session) {
       }
     }
     const text = [
-      '➕ <b>إنشاء مادة أو قسم جديد في البوت</b>',
+      `➕ <b>نظام الإدارة — إنشاء ${esc(nodeInfo.promptTitle)} جديد</b>`,
       '━━━━━━━━━━━━━━━━━━',
-      `📍 <b>المكان الأب:</b> <code>${esc(parentPath)}</code>`,
+      `📍 <b>الموقع الأب:</b> <code>${esc(parentPath)}</code>`,
       `🏷 <b>ملف الرفع:</b> <code>${esc(session.title || session.filename)}</code>`,
+      metaLine,
       '',
-      '✍️ <b>أرسل الآن اسم المادة أو القسم الجديد في رسالة نصية:</b>',
-      '<i>(وبعد إرسال الاسم ستختار هل هو نظري أم عملي ثم نوع الداتا ثم الإرسال)</i>',
+      `✍️ <b>أرسل الآن اسم ${esc(nodeInfo.promptTitle)} في رسالة نصية:</b>`,
+      `<i>(مثال: ${esc(nodeInfo.example)})</i>`,
     ].join('\n');
 
     return {
@@ -670,6 +754,7 @@ export async function renderDualUploadSessionMessage(db, session) {
             { text: '🔬 عملي (Practical)', callback_data: `du_branch:${session.id}:practical` },
           ],
           [{ text: '📁 عام / شامل (بدون فرع)', callback_data: `du_branch:${session.id}:general` }],
+          [{ text: '⚡️ اعتماد وحفظ في هذه المادة مباشرة (بدون فروع)', callback_data: `du_direct_save:${session.id}` }],
           [
             {
               text: '⬅️ رجوع للأقسام',
@@ -1931,23 +2016,108 @@ export async function handleDualUploadCallback(ctx, data, bot, env) {
     });
   }
 
-  // Step 4A -> Start creating a new section or subject (`du_newf`)
-  if (action === 'du_newf') {
+  // Admin Folder Renaming Prompt (`du_renf`)
+  if (action === 'du_renf') {
+    const fid = Number(arg || session.browseFolderId || 0);
+    session.pendingRenameFolderId = fid;
+    session.step = 'rename_folder';
+    await saveUploadSession(ctx.db, session);
+    await setChatTextWaiter(ctx.db, session.userChatId, {
+      sessionId: session.id,
+      mode: 'rename_folder',
+      folderId: fid,
+    });
+    if (ctx.userData) {
+      ctx.userData.du_wizard_session = session.id;
+      ctx.userData.du_wizard_mode = 'rename_folder';
+      ctx.userData.du_rename_folder_id = fid;
+    }
+    const view = await renderDualUploadSessionMessage(ctx.db, session);
+    await ctx.answer();
+    return ctx.editMessageText(view.text, {
+      reply_markup: view.reply_markup,
+      parse_mode: 'HTML',
+    });
+  }
+
+  // Admin Hierarchical Node Creation (`du_newnode:<sessionId>:<parentId>:<nodeType>`)
+  if (action === 'du_newnode') {
     const parentId = Number(arg || 0);
+    const nodeType = parts[3] || 'section';
     session.pendingFolderParentId = parentId;
+    session.pendingFolderNodeType = nodeType;
     session.step = 'new_folder_name';
     await saveUploadSession(ctx.db, session);
     await setChatTextWaiter(ctx.db, session.userChatId, {
       sessionId: session.id,
       mode: 'new_folder_name',
       parentId,
+      nodeType,
     });
     if (ctx.userData) {
       ctx.userData.du_new_folder_session = session.id;
       ctx.userData.du_new_folder_parent = parentId;
+      ctx.userData.du_new_folder_node_type = nodeType;
       ctx.userData.du_wizard_session = session.id;
       ctx.userData.du_wizard_mode = 'new_folder_name';
     }
+    const view = await renderDualUploadSessionMessage(ctx.db, session);
+    await ctx.answer();
+    return ctx.editMessageText(view.text, {
+      reply_markup: view.reply_markup,
+      parse_mode: 'HTML',
+    });
+  }
+
+  // Step 4A -> Legacy / Generic Create New Section or Subject (`du_newf`)
+  if (action === 'du_newf') {
+    const parentId = Number(arg || 0);
+    session.pendingFolderParentId = parentId;
+    session.pendingFolderNodeType = parentId === 0 ? 'level' : 'section';
+    session.step = 'new_folder_name';
+    await saveUploadSession(ctx.db, session);
+    await setChatTextWaiter(ctx.db, session.userChatId, {
+      sessionId: session.id,
+      mode: 'new_folder_name',
+      parentId,
+      nodeType: session.pendingFolderNodeType,
+    });
+    if (ctx.userData) {
+      ctx.userData.du_new_folder_session = session.id;
+      ctx.userData.du_new_folder_parent = parentId;
+      ctx.userData.du_new_folder_node_type = session.pendingFolderNodeType;
+      ctx.userData.du_wizard_session = session.id;
+      ctx.userData.du_wizard_mode = 'new_folder_name';
+    }
+    const view = await renderDualUploadSessionMessage(ctx.db, session);
+    await ctx.answer();
+    return ctx.editMessageText(view.text, {
+      reply_markup: view.reply_markup,
+      parse_mode: 'HTML',
+    });
+  }
+
+  // Direct Save into newly named Subject/Folder without branch subdivision (`du_direct_save`)
+  if (action === 'du_direct_save') {
+    if (session.pendingNewFolderName && ctx.db && typeof ctx.db.prepare === 'function') {
+      const cleanName = session.pendingNewFolderName.trim();
+      const parentId = Number(session.pendingFolderParentId || 0) || null;
+      const createdFolderId = await addFolder(ctx.db, parentId, cleanName, 'general', 1);
+      if (createdFolderId) {
+        session.selectedFolderId = createdFolderId;
+        const chain = await getFolderHierarchyChain(ctx.db, createdFolderId).catch(() => []);
+        if (chain.length > 0) {
+          session.selectedFolderName = chain[chain.length - 1].name;
+          session.selectedFolderPath = chain.map((c) => c.name).join(' / ');
+        } else {
+          session.selectedFolderName = cleanName;
+          session.selectedFolderPath = cleanName;
+        }
+      }
+      session.pendingNewFolderName = null;
+    }
+    session.step = 'confirm_send';
+    await saveUploadSession(ctx.db, session);
     const view = await renderDualUploadSessionMessage(ctx.db, session);
     await ctx.answer();
     return ctx.editMessageText(view.text, {
@@ -2091,10 +2261,18 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, _env) {
   const parentId = Number(
     ctx.userData?.du_new_folder_parent ?? waiter?.parentId ?? 0,
   );
+  const targetFolderId = Number(
+    ctx.userData?.du_rename_folder_id ?? waiter?.folderId ?? 0,
+  );
+  const waiterNodeType = String(
+    ctx.userData?.du_new_folder_node_type ?? waiter?.nodeType ?? '',
+  );
 
   if (ctx.userData) {
     ctx.userData.du_new_folder_session = null;
     ctx.userData.du_new_folder_parent = null;
+    ctx.userData.du_new_folder_node_type = null;
+    ctx.userData.du_rename_folder_id = null;
     ctx.userData.du_wizard_session = null;
     ctx.userData.du_wizard_mode = null;
   }
@@ -2115,6 +2293,44 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, _env) {
     await bot.deleteMessage(ctx.chatId, ctx.message.message_id).catch(() => {});
   }
 
+  // 1. Rename Folder / Section (`mode === 'rename_folder'`)
+  if (mode === 'rename_folder' || session.step === 'rename_folder') {
+    const fid = targetFolderId || Number(session.pendingRenameFolderId || session.browseFolderId || 0);
+    if (fid > 0 && ctx.db && typeof ctx.db.prepare === 'function') {
+      await updateFolderName(ctx.db, fid, cleanText);
+      if (session.selectedFolderId === fid) {
+        session.selectedFolderName = cleanText;
+      }
+    }
+    session.pendingRenameFolderId = null;
+    session.browseFolderId = fid;
+    session.step = 'pick_folder';
+    await saveUploadSession(ctx.db, session);
+
+    const view = await renderDualUploadSessionMessage(ctx.db, session);
+    let edited = null;
+    if (session.userChatId && session.statusMessageId && bot?.editMessageText) {
+      edited = await bot
+        .editMessageText(view.text, {
+          chat_id: session.userChatId,
+          message_id: session.statusMessageId,
+          parse_mode: 'HTML',
+          reply_markup: view.reply_markup,
+        })
+        .catch(() => null);
+    }
+    const sent = await ctx.reply(view.text, {
+      parse_mode: 'HTML',
+      reply_markup: view.reply_markup,
+    });
+    if (sent?.message_id) {
+      session.statusMessageId = sent.message_id;
+      await saveUploadSession(ctx.db, session);
+    }
+    return { ok: true, text: view.text, reply_markup: view.reply_markup, ...view, sent, edited };
+  }
+
+  // 2. Edit Resource Name (`mode === 'edit_name'`)
   if (mode === 'edit_name' || session.step === 'edit_name') {
     session.title = cleanText;
     // Preserve extension on filename if applicable
@@ -2147,8 +2363,50 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, _env) {
     return { ok: true, text: view.text, reply_markup: view.reply_markup, ...view, sent, edited };
   }
 
-  // Otherwise: `new_folder_name` -> transition to Step 4B (`choose_branch`: عملي أو نظري)
+  // 3. New Folder / Level / Block / Subject / Section
+  const nodeType = String(
+    waiterNodeType || session.pendingFolderNodeType || 'section',
+  ).toLowerCase();
+
   session.pendingFolderParentId = parentId || session.pendingFolderParentId || 0;
+  session.pendingFolderNodeType = nodeType;
+
+  // Level or Block: create folder directly in D1, then navigate inside it!
+  if (nodeType === 'level' || nodeType === 'block') {
+    let createdFolderId = null;
+    if (ctx.db && typeof ctx.db.prepare === 'function') {
+      const pid = nodeType === 'level' ? null : (session.pendingFolderParentId || null);
+      createdFolderId = await addFolder(ctx.db, pid, cleanText, nodeType, 0);
+    }
+    session.browseFolderId = createdFolderId || session.pendingFolderParentId || 0;
+    session.step = 'pick_folder';
+    session.pendingNewFolderName = null;
+    await saveUploadSession(ctx.db, session);
+
+    const view = await renderDualUploadSessionMessage(ctx.db, session);
+    let edited = null;
+    if (session.userChatId && session.statusMessageId && bot?.editMessageText) {
+      edited = await bot
+        .editMessageText(view.text, {
+          chat_id: session.userChatId,
+          message_id: session.statusMessageId,
+          parse_mode: 'HTML',
+          reply_markup: view.reply_markup,
+        })
+        .catch(() => null);
+    }
+    const sent = await ctx.reply(view.text, {
+      parse_mode: 'HTML',
+      reply_markup: view.reply_markup,
+    });
+    if (sent?.message_id) {
+      session.statusMessageId = sent.message_id;
+      await saveUploadSession(ctx.db, session);
+    }
+    return { ok: true, text: view.text, reply_markup: view.reply_markup, ...view, sent, edited };
+  }
+
+  // Subject or Section: transition to Step 4B (`choose_branch`: عملي أو نظري)
   session.pendingNewFolderName = cleanText;
   session.step = 'choose_branch';
   await saveUploadSession(ctx.db, session);
