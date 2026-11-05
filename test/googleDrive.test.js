@@ -408,6 +408,196 @@ test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too
   clearRuntimeDriveSession();
 });
 
+test('startInteractiveUploadWizard displays destination picker and transitions through name, hierarchy, branch, and data type', async () => {
+  const {
+    startInteractiveUploadWizard,
+    handleDualUploadCallback,
+    handleDualUploadNewFolderText,
+    getUploadSession,
+  } = await import('../src/storage/dualUploadInteractive.js');
+
+  const foldersTable = [
+    { id: 1, parent_id: null, name: 'مستوى أول', node_type: 'level', keywords: 'سنة أولى' },
+    { id: 2, parent_id: 1, name: 'بلوك القلب والأوعية (CVS)', node_type: 'block', keywords: 'cvs قلب' },
+    { id: 3, parent_id: 2, name: 'أناتومي', node_type: 'subject', keywords: 'تشريح anatomy' },
+  ];
+  let nextFolderId = 10;
+  const contentTable = [];
+
+  const mockDb = {
+    prepare(sql) {
+      const execBound = (boundArgs = []) => {
+        const getResults = () => {
+          if (sql.includes('FROM content WHERE folder_id = ?')) {
+            const row = contentTable.find(
+              (c) => c.folder_id === Number(boundArgs[0]) && c.file_id === String(boundArgs[1]),
+            );
+            return row ? [[row.id]] : [];
+          }
+          if (sql.includes('FROM folders WHERE id = ?')) {
+            const f = foldersTable.find((x) => x.id === Number(boundArgs[0]));
+            return f ? [[f.id, f.parent_id, f.name, f.node_type, f.keywords]] : [];
+          }
+          if (sql.includes('FROM folders WHERE parent_id = ?')) {
+            const pid = Number(boundArgs[0]);
+            return foldersTable
+              .filter((x) => x.parent_id === pid)
+              .map((x) => [x.id, x.name, x.node_type]);
+          }
+          if (sql.includes('SELECT id, parent_id, name, node_type FROM folders') || sql.includes('FROM folders ORDER BY id ASC')) {
+            return foldersTable.map((x) => [x.id, x.parent_id, x.name, x.node_type, x.keywords]);
+          }
+          if (sql.includes('parent_id IS NULL OR parent_id = 0')) {
+            return foldersTable
+              .filter((x) => !x.parent_id)
+              .map((x) => [x.id, x.name, x.node_type]);
+          }
+          return [];
+        };
+
+        return {
+          raw: async () => getResults(),
+          all: async () => ({ results: getResults() }),
+          first: async () => {
+            const r = getResults();
+            return r.length ? r[0] : null;
+          },
+          run: async () => {
+            if (sql.includes('INSERT INTO folders')) {
+              const newId = nextFolderId++;
+              foldersTable.push({
+                id: newId,
+                parent_id: boundArgs[0],
+                name: boundArgs[1],
+                node_type: boundArgs[2],
+                keywords: '',
+              });
+              return { success: true, meta: { last_row_id: newId } };
+            }
+            if (sql.includes('INSERT INTO content')) {
+              const newId = contentTable.length + 1;
+              contentTable.push({
+                id: newId,
+                folder_id: boundArgs[0],
+                title: boundArgs[1],
+                file_id: boundArgs[2],
+                file_type: boundArgs[3],
+              });
+              return { success: true, meta: { last_row_id: newId } };
+            }
+            return { success: true, meta: { changes: 1 } };
+          },
+        };
+      };
+
+      return {
+        bind(...args) {
+          return execBound(args);
+        },
+        raw: async () => execBound([]).raw(),
+        all: async () => execBound([]).all(),
+        first: async () => execBound([]).first(),
+        run: async () => execBound([]).run(),
+      };
+    },
+  };
+
+  const fakeBot = {
+    async sendMessage(_chatId, _text, _opts) {
+      return { message_id: 888 };
+    },
+    async editMessageText(_text, opts = {}) {
+      return { message_id: opts.message_id || 888 };
+    },
+  };
+
+  // 1. Initiate wizard with a message
+  const wiz = await startInteractiveUploadWizard({
+    bot: fakeBot,
+    message: {
+      message_id: 101,
+      chat: { id: 7001, type: 'private' },
+      from: { id: 7001 },
+      document: {
+        file_id: 'anatomy-doc-1',
+        file_name: 'مقرر_التشريح_العملي.pdf',
+        mime_type: 'application/pdf',
+        file_size: 5000000,
+      },
+    },
+    channelTarget: '-1004342544366',
+    db: mockDb,
+    env: {},
+  });
+
+  assert.equal(wiz.ok, true);
+  assert.equal(wiz.session.step, 'choose_dest');
+  assert.match(wiz.summaryText, /تحديد وجهات الرفع أولاً/);
+
+  // Check buttons contain: All, Google Drive, Archive Channel, Bot
+  const buttons1 = wiz.replyMarkup.inline_keyboard.flat().map((b) => b.callback_data);
+  assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:all`));
+  assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:drive`));
+  assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:channel`));
+  assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:bot`));
+
+  // 2. Click 'all' -> transitions to step 2: 'edit_name'
+  const mockCtx = {
+    db: mockDb,
+    chatId: 7001,
+    messageId: 888,
+    from: { id: 7001 },
+    userData: {},
+    async answer() {},
+    async editMessageText(text, opts) {
+      return { text, opts };
+    },
+    async reply(text, opts) {
+      return { text, opts, message_id: 889 };
+    },
+  };
+
+  const resDest = await handleDualUploadCallback(mockCtx, `du_dest:${wiz.sessionId}:all`, fakeBot, {});
+  assert.match(resDest.text, /تحديد الاسم/);
+
+  // 3. User sends updated name in chat
+  const resName = await handleDualUploadNewFolderText(mockCtx, 'محاضرة التشريح العملي الأولى', fakeBot, {});
+  assert.equal(resName.ok, true);
+  const sAfterName = await getUploadSession(mockDb, wiz.sessionId);
+  assert.equal(sAfterName.title, 'محاضرة التشريح العملي الأولى');
+  assert.equal(sAfterName.step, 'pick_folder');
+
+  // 4. Click 'du_newf' to create a new section under subject 3 (أناتومي)
+  const resNewF = await handleDualUploadCallback(mockCtx, `du_newf:${wiz.sessionId}:3`, fakeBot, {});
+  assert.match(resNewF.text, /إنشاء مادة أو قسم جديد/);
+
+  // 5. Send name of the new section
+  const resSectionText = await handleDualUploadNewFolderText(mockCtx, 'تحديد عظام الأطراف', fakeBot, {});
+  assert.match(resSectionText.text, /أولاً: هل هو نظري أم عملي؟/);
+
+  // 6. Select 'practical' (عملي)
+  const resBranch = await handleDualUploadCallback(mockCtx, `du_branch:${wiz.sessionId}:practical`, fakeBot, {});
+  assert.match(resBranch.text, /ثانياً: اختيار نوع الداتا/);
+
+  // 7. Select data type: 'summaries' (ملخصات)
+  const resDtype = await handleDualUploadCallback(mockCtx, `du_dtype:${wiz.sessionId}:summaries`, fakeBot, {});
+  assert.match(resDtype.text, /تأكيد تفاصيل الرفع الشامل/);
+  const sAfterDtype = await getUploadSession(mockDb, wiz.sessionId);
+  assert.equal(sAfterDtype.step, 'confirm_send');
+  assert.equal(sAfterDtype.selectedBranch, 'practical');
+  assert.equal(sAfterDtype.selectedNodeType, 'summaries');
+  assert.ok(sAfterDtype.selectedFolderId > 0);
+
+  // 8. Submit upload: execute across all destinations
+  const resSubmit = await handleDualUploadCallback(mockCtx, `du_submit:${wiz.sessionId}`, fakeBot, {});
+  assert.match(resSubmit.text, /تقرير الرفع/);
+  const sFinal = await getUploadSession(mockDb, wiz.sessionId);
+  assert.equal(sFinal.step, 'executing');
+  assert.ok(sFinal.contentId > 0);
+  assert.equal(contentTable.length, 1);
+  assert.equal(contentTable[0].title, 'محاضرة التشريح العملي الأولى');
+});
+
 
 
 

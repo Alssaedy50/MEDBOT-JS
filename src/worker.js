@@ -3,7 +3,6 @@ import { createD1TelegramIdempotencyStore, initTelegramWebhookStore } from './db
 import { get, run } from './db/d1/core.js';
 import { createR2Storage } from './storage/r2.js';
 import {
-  dualUploadMediaMessage,
   ensureDriveFolder,
   extractDriveFolderId,
   getDriveStatus,
@@ -80,7 +79,6 @@ import { D1_SCHEMA_STATEMENTS } from './db/d1/migrations.js';
 import {
   applySessionProgressUpdate,
   extractFirstUrlFromMessage,
-  getUploadSession,
   handleDualUploadCallback,
   handleDualUploadNewFolderText,
   hasActiveDualUploadTextPrompt,

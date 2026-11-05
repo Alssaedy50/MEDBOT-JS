@@ -1056,6 +1056,7 @@ function startLargeFileQueuePoller() {
           channelMessageId: job.channelMessageId ?? null,
           userChatId: job.userChatId ?? null,
           userMessageId: job.userMessageId ?? null,
+          actorUserId: job.actorUserId ?? null,
           statusChatId: job.statusChatId ?? null,
           statusMessageId: job.statusMessageId ?? null,
           filename: String(job.filename || 'large-file.mp4'),

@@ -974,7 +974,7 @@ export async function renderDualUploadSessionMessage(db, session) {
  * is sent or forwarded to the Bot or to the Archive Channel.
  */
 export async function startInteractiveUploadWizard({
-  bot,
+  _bot = null,
   message,
   channelTarget = null,
   db = null,
@@ -1197,7 +1197,6 @@ export async function executeWizardUpload(db, session, userId, bot, env, fetchIm
   session.pickingFolder = false;
   if (userId) session.actorUserId = Number(userId);
 
-  const isLargeFile = Number(session.fileSize || 0) > 20 * 1024 * 1024;
   if (session.destDrive) {
     session.driveStatus = isDriveConfigured(env) ? 'uploading' : 'unconfigured';
   }
@@ -2078,7 +2077,7 @@ export async function hasActiveDualUploadTextPrompt(db, chatId, userData) {
  *   2. Entering a new Subject/Section name (`mode === 'new_folder_name'`), which then transitions to
  *      choosing `عملي أو نظري` (`choose_branch`) -> `نوع الداتا` (`choose_datatype`) -> `الإرسال` (`confirm_send`).
  */
-export async function handleDualUploadNewFolderText(ctx, text, bot, env) {
+export async function handleDualUploadNewFolderText(ctx, text, bot, _env) {
   const waiter = await getChatTextWaiter(ctx.db, ctx.chatId);
   const sessionId =
     ctx.userData?.du_wizard_session ||
@@ -2126,8 +2125,9 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, env) {
     await saveUploadSession(ctx.db, session);
 
     const view = await renderDualUploadSessionMessage(ctx.db, session);
+    let edited = null;
     if (session.userChatId && session.statusMessageId && bot?.editMessageText) {
-      const edited = await bot
+      edited = await bot
         .editMessageText(view.text, {
           chat_id: session.userChatId,
           message_id: session.statusMessageId,
@@ -2135,7 +2135,6 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, env) {
           reply_markup: view.reply_markup,
         })
         .catch(() => null);
-      if (edited) return edited;
     }
     const sent = await ctx.reply(view.text, {
       parse_mode: 'HTML',
@@ -2145,7 +2144,7 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, env) {
       session.statusMessageId = sent.message_id;
       await saveUploadSession(ctx.db, session);
     }
-    return sent;
+    return { ok: true, text: view.text, reply_markup: view.reply_markup, ...view, sent, edited };
   }
 
   // Otherwise: `new_folder_name` -> transition to Step 4B (`choose_branch`: عملي أو نظري)
@@ -2155,8 +2154,9 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, env) {
   await saveUploadSession(ctx.db, session);
 
   const view = await renderDualUploadSessionMessage(ctx.db, session);
+  let edited = null;
   if (session.userChatId && session.statusMessageId && bot?.editMessageText) {
-    const edited = await bot
+    edited = await bot
       .editMessageText(view.text, {
         chat_id: session.userChatId,
         message_id: session.statusMessageId,
@@ -2164,7 +2164,6 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, env) {
         reply_markup: view.reply_markup,
       })
       .catch(() => null);
-    if (edited) return edited;
   }
 
   const sent = await ctx.reply(view.text, {
@@ -2175,7 +2174,7 @@ export async function handleDualUploadNewFolderText(ctx, text, bot, env) {
     session.statusMessageId = sent.message_id;
     await saveUploadSession(ctx.db, session);
   }
-  return sent;
+  return { ok: true, text: view.text, reply_markup: view.reply_markup, ...view, sent, edited };
 }
 
 /**
