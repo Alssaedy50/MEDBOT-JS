@@ -27,8 +27,14 @@ async function telegram(method, payload = {}) {
 }
 
 if (action === 'set') {
-  const result = await telegram('setWebhook', { url, secret_token: secret, drop_pending_updates: false });
-  console.log('Webhook set: ' + Boolean(result));
+  const before = await telegram('getWebhookInfo').catch(() => null);
+  const hadError = Boolean(before?.last_error_message);
+  const result = await telegram('setWebhook', {
+    url,
+    secret_token: secret,
+    drop_pending_updates: hadError,
+  });
+  console.log('Webhook set: ' + Boolean(result) + (hadError ? ' (cleared stuck pending updates after error: ' + before.last_error_message + ')' : ''));
 } else if (action === 'info') {
   const result = await telegram('getWebhookInfo');
   console.log(JSON.stringify({

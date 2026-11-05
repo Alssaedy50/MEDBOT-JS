@@ -326,7 +326,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       clearPendingStates(ctx.userData);
       const command = String(ctx.text).trim().split(/\s+/, 1)[0].split('@', 1)[0].slice(1);
       if (command === 'start') {
-        await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null);
+        await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null).catch(() => {});
         const menu = await buildWorkerHome(ctx.db, ctx.from);
         return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
@@ -339,7 +339,7 @@ async function dispatchTelegramUpdate(update, { env }) {
         return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
       if (command === 'admin') {
-        await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null);
+        await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null).catch(() => {});
         const menu = await buildWorkerAdmin(ctx.db, ctx.from);
         return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
@@ -1202,7 +1202,13 @@ async function dispatchTelegramUpdate(update, { env }) {
     return await dispatch(update);
   } catch (err) {
     lastWorkerError = String(err?.message || err);
-    throw err;
+    await run(
+      env.DB,
+      "INSERT INTO settings(key,value) VALUES('last_worker_error',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      [lastWorkerError.slice(0, 500)],
+    ).catch(() => {});
+    // Acknowledge update so a transient handler error never blocks Telegram's webhook queue
+    return null;
   }
 }
 
@@ -1225,11 +1231,16 @@ export default {
     if (request.method === 'GET' && url.pathname === '/telegram/status') {
       let tables = 0;
       let d1Error = null;
+      let storedError = lastWorkerError;
       if (env.DB) {
         try {
           await ensureWorkerSchema(env.DB);
           const row = await get(env.DB, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'");
           tables = Number(row?.[0] ?? 0);
+          if (!storedError) {
+            const errRow = await get(env.DB, "SELECT value FROM settings WHERE key = 'last_worker_error'").catch(() => null);
+            if (errRow?.[0]) storedError = String(errRow[0]);
+          }
         } catch (err) {
           d1Error = String(err?.message || err);
         }
@@ -1241,7 +1252,7 @@ export default {
         admin_id_configured: Boolean(env.ADMIN_ID),
         d1_tables: tables,
         d1_error: d1Error,
-        last_error: lastWorkerError,
+        last_error: storedError,
       });
     }
     if (url.pathname === '/backup/latest') return backupEndpoint(request, env);

@@ -84,34 +84,40 @@ export function extractDriveFolderId(raw) {
   return '';
 }
 
-export function resolveConfiguredFolderId(env = process.env) {
+function defaultEnv() {
+  return typeof process !== 'undefined' && process?.env ? process.env : {};
+}
+
+export function resolveConfiguredFolderId(env = defaultEnv()) {
   const fromSession = runtimeDriveSession.folderId;
   if (fromSession) return fromSession;
+  const fallback = defaultEnv();
   const fromEnv = extractDriveFolderId(
-    env?.GOOGLE_DRIVE_FOLDER_ID || process.env.GOOGLE_DRIVE_FOLDER_ID || '',
+    env?.GOOGLE_DRIVE_FOLDER_ID || fallback.GOOGLE_DRIVE_FOLDER_ID || '',
   );
   return fromEnv || '';
 }
 
-export function isDriveConfigured(env = process.env) {
+export function isDriveConfigured(env = defaultEnv()) {
   if (runtimeDriveSession.accessToken) return true;
+  const fallback = defaultEnv();
   const directToken = String(
-    env?.GOOGLE_DRIVE_ACCESS_TOKEN || process.env.GOOGLE_DRIVE_ACCESS_TOKEN || '',
+    env?.GOOGLE_DRIVE_ACCESS_TOKEN || fallback.GOOGLE_DRIVE_ACCESS_TOKEN || '',
   ).trim();
   if (directToken) return true;
   const refresh = String(
-    env?.GOOGLE_REFRESH_TOKEN || process.env.GOOGLE_REFRESH_TOKEN || '',
+    env?.GOOGLE_REFRESH_TOKEN || fallback.GOOGLE_REFRESH_TOKEN || '',
   ).trim();
   const clientId = String(
-    env?.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '',
+    env?.GOOGLE_CLIENT_ID || fallback.GOOGLE_CLIENT_ID || '',
   ).trim();
   const clientSecret = String(
-    env?.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '',
+    env?.GOOGLE_CLIENT_SECRET || fallback.GOOGLE_CLIENT_SECRET || '',
   ).trim();
   return Boolean(refresh && clientId && clientSecret);
 }
 
-export function getDriveStatus(env = process.env) {
+export function getDriveStatus(env = defaultEnv()) {
   const configured = isDriveConfigured(env);
   const folderId = resolveConfiguredFolderId(env);
   return {
@@ -130,7 +136,7 @@ export function getDriveStatus(env = process.env) {
 /**
  * Resolve an active Google Drive OAuth 2.0 Bearer access token.
  */
-export async function resolveDriveAccessToken(env = process.env, { bearerToken = null, fetchImpl = fetch } = {}) {
+export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken = null, fetchImpl = fetch } = {}) {
   const explicit = String(bearerToken ?? '').replace(/^Bearer\s+/i, '').trim();
   if (explicit) return explicit;
 
@@ -138,19 +144,20 @@ export async function resolveDriveAccessToken(env = process.env, { bearerToken =
     return runtimeDriveSession.accessToken;
   }
 
+  const fallback = defaultEnv();
   const direct = String(
-    env?.GOOGLE_DRIVE_ACCESS_TOKEN || process.env.GOOGLE_DRIVE_ACCESS_TOKEN || '',
+    env?.GOOGLE_DRIVE_ACCESS_TOKEN || fallback.GOOGLE_DRIVE_ACCESS_TOKEN || '',
   ).trim();
   if (direct) return direct;
 
   const refreshToken = String(
-    env?.GOOGLE_REFRESH_TOKEN || process.env.GOOGLE_REFRESH_TOKEN || '',
+    env?.GOOGLE_REFRESH_TOKEN || fallback.GOOGLE_REFRESH_TOKEN || '',
   ).trim();
   const clientId = String(
-    env?.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '',
+    env?.GOOGLE_CLIENT_ID || fallback.GOOGLE_CLIENT_ID || '',
   ).trim();
   const clientSecret = String(
-    env?.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '',
+    env?.GOOGLE_CLIENT_SECRET || fallback.GOOGLE_CLIENT_SECRET || '',
   ).trim();
 
   if (refreshToken && clientId && clientSecret) {
@@ -184,7 +191,7 @@ export async function ensureDriveFolder({
   accessToken,
   folderName = DEFAULT_DRIVE_FOLDER_NAME,
   folderId = null,
-  env = process.env,
+  env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
   const configuredId = extractDriveFolderId(folderId) || resolveConfiguredFolderId(env);
@@ -248,7 +255,7 @@ export async function uploadBytesToGoogleDrive({
   bytes,
   folderId = null,
   description = '',
-  env = process.env,
+  env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
   const token = await resolveDriveAccessToken(env, { bearerToken: accessToken, fetchImpl });
@@ -329,7 +336,7 @@ export async function listDriveFiles({
   accessToken,
   folderId = null,
   pageSize = 25,
-  env = process.env,
+  env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
   const token = await resolveDriveAccessToken(env, { bearerToken: accessToken, fetchImpl });
@@ -364,7 +371,7 @@ export async function listDriveFiles({
 export async function deleteDriveFile({
   accessToken,
   fileId,
-  env = process.env,
+  env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
   const token = await resolveDriveAccessToken(env, { bearerToken: accessToken, fetchImpl });
@@ -453,7 +460,7 @@ export async function uploadTelegramFileToGoogleDrive({
   title = '',
   description = '',
   folderId = null,
-  env = process.env,
+  env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
   if (!isDriveConfigured(env)) {
@@ -540,7 +547,7 @@ export async function dualUploadMediaMessage({
   bot,
   message,
   channelTarget = null,
-  env = process.env,
+  env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
   const captionRaw = String(message?.caption || message?.text || '').trim();
