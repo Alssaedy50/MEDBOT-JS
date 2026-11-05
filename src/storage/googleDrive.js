@@ -695,8 +695,40 @@ export async function createResumableDriveSession({
     targetFolderId = await ensureDriveFolder({ accessToken: token, env, fetchImpl }).catch(() => null);
   }
 
+  const cleanName = String(filename || `medbot-file-${Date.now()}`).trim();
+
+  // Clean up any old broken placeholder (< 50 KB thumbnail or .html card) with the same base name in targetFolderId
+  if (targetFolderId) {
+    try {
+      const safeBase = cleanName.replace(/'/g, "\\'");
+      const cleanupQ = `'${targetFolderId}' in parents and trashed = false and (name = '${safeBase}' or name contains '(رابط مباشر للملف الكبير).html')`;
+      const listUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(cleanupQ)}&fields=files(id,name,size)&pageSize=10`;
+      const listRes = await fetchImpl(listUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (listRes.ok) {
+        const listData = await listRes.json().catch(() => null);
+        const existingFiles = Array.isArray(listData?.files) ? listData.files : [];
+        for (const f of existingFiles) {
+          const fSize = Number(f?.size ?? 0);
+          const isOldHtmlCard = String(f?.name || '').includes('(رابط مباشر للملف الكبير).html');
+          const isTinyBrokenVideo = f?.name === cleanName && fSize > 0 && fSize < 65536;
+          if (f?.id && (isOldHtmlCard || isTinyBrokenVideo)) {
+            await fetchImpl(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(f.id)}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${token}` },
+            }).catch(() => {});
+          }
+        }
+      }
+    } catch {
+      // Non-fatal cleanup
+    }
+  }
+
   const metadata = {
-    name: String(filename || `medbot-file-${Date.now()}`).trim(),
+    name: cleanName,
     description: String(description || 'Uploaded via MEDBOT Dual-Upload').slice(0, 1000),
   };
   if (targetFolderId) {
@@ -735,6 +767,8 @@ export async function createResumableDriveSession({
 /**
  * Try to stream a large media file directly from a public Telegram channel's CDN (`telesco.pe`)
  * into a Google Drive Resumable Upload session without buffering in Worker memory.
+ * Strictly validates `<video src="...">` and `Content-Type`/`Content-Length` so a 12.4 KB JPEG
+ * thumbnail is NEVER mistaken for the video.
  */
 async function tryStreamPublicTelegramEmbedToDrive({
   message,
@@ -743,6 +777,7 @@ async function tryStreamPublicTelegramEmbedToDrive({
   sessionUri,
   filename,
   mimeType,
+  expectedFileSize = null,
   folderId,
   fetchImpl = fetch,
 }) {
@@ -775,14 +810,32 @@ async function tryStreamPublicTelegramEmbedToDrive({
       });
       if (!embedRes.ok) continue;
       const html = await embedRes.text();
-      const cdnMatch = /https:\/\/cdn\d*\.telesco\.pe\/file\/[^\s"'<>]+/i.exec(html);
-      if (!cdnMatch) continue;
+      // If Telegram web embed says "media is too big", it only embeds a 12 KB JPEG thumbnail — skip immediately
+      if (/message_media_not_supported|media is too big/i.test(html)) {
+        continue;
+      }
+      // Strictly match `<video ... src="https://cdn*.telesco.pe/file/...">` and NEVER match `background-image` thumbnails
+      const videoTagMatch = /<video[^>]+src=["'](https:\/\/cdn\d*\.telesco\.pe\/file\/[^"'\s<>]+)["']/i.exec(html);
+      if (!videoTagMatch?.[1]) continue;
 
-      const cdnUrl = cdnMatch[0];
+      const cdnUrl = videoTagMatch[1];
+      if (/\.jpe?g(\?|$)/i.test(cdnUrl)) continue;
+
       const cdnRes = await fetchImpl(cdnUrl, { method: 'GET' });
       if (!cdnRes.ok || !cdnRes.body) continue;
 
+      const cdnContentType = String(cdnRes.headers?.get?.('content-type') || '').toLowerCase();
+      if (cdnContentType.startsWith('image/') || cdnContentType.startsWith('text/')) {
+        continue;
+      }
+
       const contentLength = cdnRes.headers?.get?.('content-length');
+      const numericLen = Number(contentLength || 0);
+      // Reject tiny thumbnail responses (< 64 KB) when expecting a large (> 20 MB) file
+      if (expectedFileSize && Number(expectedFileSize) > 20 * 1024 * 1024 && numericLen > 0 && numericLen < 65536) {
+        continue;
+      }
+
       const putHeaders = {
         'Content-Type': mimeType || 'video/mp4',
       };
@@ -835,6 +888,7 @@ export async function uploadTelegramFileToGoogleDrive({
   channelMessageId = null,
   statusChatId = null,
   statusMessageId = null,
+  db = null,
   env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
@@ -901,7 +955,7 @@ export async function uploadTelegramFileToGoogleDrive({
       };
     }
 
-    // 1. Try zero-memory direct stream from Telegram CDN if forwarded from a public channel
+    // 1. Try zero-memory direct stream from Telegram CDN if forwarded from a public channel with an actual <video src="...">
     const publicStreamed = await tryStreamPublicTelegramEmbedToDrive({
       message,
       channelTarget,
@@ -909,6 +963,7 @@ export async function uploadTelegramFileToGoogleDrive({
       sessionUri: session.sessionUri,
       filename: finalName,
       mimeType,
+      expectedFileSize: fileSize,
       folderId: session.folderId,
       fetchImpl,
     });
@@ -916,7 +971,7 @@ export async function uploadTelegramFileToGoogleDrive({
       return publicStreamed;
     }
 
-    // 2. Use MTProto 2GB Large-File Streamer Bridge to transfer the full binary file to Google Drive
+    // 2. Enqueue or dispatch to MTProto 2GB Large-File Streamer Bridge to transfer the full binary file to Google Drive
     const fallbackEnv = defaultEnv();
     const botToken = String(
       env?.TELEGRAM_BOT_TOKEN ||
@@ -925,6 +980,64 @@ export async function uploadTelegramFileToGoogleDrive({
         fallbackEnv.BOT_TOKEN ||
         '',
     ).trim();
+
+    const jobPayload = {
+      jobId: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      botToken,
+      fileId,
+      sessionUri: session.sessionUri,
+      channelId: channelTarget || null,
+      channelMessageId: channelMessageId || null,
+      userChatId: message?.chat?.id ?? message?.from?.id ?? null,
+      userMessageId: message?.message_id ?? null,
+      statusChatId: statusChatId || null,
+      statusMessageId: statusMessageId || null,
+      filename: finalName,
+      mimeType,
+      fileSize: fileSize || null,
+      createdAt: Date.now(),
+    };
+
+    // Enqueue in Cloudflare D1 `settings` so the Node.js MTProto Streamer poller pulls and executes it within 2 seconds
+    if (db && typeof db.prepare === 'function' && botToken) {
+      try {
+        const existingRow = await db
+          .prepare("SELECT value FROM settings WHERE key = 'pending_large_drive_jobs' LIMIT 1")
+          .first()
+          .catch(() => null);
+        let jobs = [];
+        const rawVal = existingRow?.value ?? existingRow?.[0] ?? null;
+        if (rawVal) {
+          try {
+            const parsed = JSON.parse(String(rawVal));
+            if (Array.isArray(parsed)) jobs = parsed;
+          } catch {
+            jobs = [];
+          }
+        }
+        // Keep recent jobs (last 30 minutes) and append new job
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        jobs = jobs.filter((j) => j && Number(j.createdAt || 0) > cutoff);
+        jobs.push(jobPayload);
+        await db
+          .prepare(
+            "INSERT INTO settings(key,value) VALUES('pending_large_drive_jobs',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          )
+          .bind(JSON.stringify(jobs))
+          .run();
+
+        return {
+          ok: true,
+          asyncTransfer: true,
+          name: finalName,
+          mimeType,
+          folderId: session.folderId,
+        };
+      } catch (dbErr) {
+        downloadErr = dbErr;
+      }
+    }
+
     const bridgeUrl = String(
       env?.LARGE_FILE_BRIDGE_URL ||
         fallbackEnv.LARGE_FILE_BRIDGE_URL ||
@@ -936,19 +1049,7 @@ export async function uploadTelegramFileToGoogleDrive({
         const bridgeRes = await fetchImpl(bridgeUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            botToken,
-            sessionUri: session.sessionUri,
-            channelId: channelTarget || null,
-            channelMessageId: channelMessageId || null,
-            userChatId: message?.chat?.id ?? message?.from?.id ?? null,
-            userMessageId: message?.message_id ?? null,
-            statusChatId: statusChatId || null,
-            statusMessageId: statusMessageId || null,
-            filename: finalName,
-            mimeType,
-            fileSize: fileSize || null,
-          }),
+          body: JSON.stringify(jobPayload),
         });
         const bridgeData = await bridgeRes.json().catch(() => null);
         if (bridgeRes.ok && bridgeData?.ok) {
@@ -1214,6 +1315,7 @@ export async function dualUploadMediaMessage({
       channelMessageId: channelOutcome.messageId,
       statusChatId: userChatId,
       statusMessageId,
+      db,
       env,
       fetchImpl,
     });

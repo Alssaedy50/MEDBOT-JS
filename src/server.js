@@ -286,6 +286,7 @@ async function handleApiRequest(request, response, pathname) {
 
       const transferParams = {
         botToken,
+        fileId: body.fileId ?? null,
         sessionUri,
         channelId: body.channelId ?? null,
         channelMessageId: body.channelMessageId ?? null,
@@ -1012,10 +1013,93 @@ export function startHealthServer({
   server.listen(port, host, () => {
     const bound = server.address()?.port ?? port;
     console.log(`MEDBOT healthcheck listening on http://${host}:${bound}`);
+    startLargeFileQueuePoller();
     if (typeof onListening === 'function') onListening(bound);
   });
 
   return server;
 }
 
+const DEFAULT_WORKER_PENDING_JOBS_URL =
+  process.env.WORKER_PENDING_JOBS_URL ||
+  'https://medbot-js.alssaedy500.workers.dev/api/drive/pending-jobs';
+
+let queuePollerStarted = false;
+const activeJobIds = new Set();
+
+function startLargeFileQueuePoller() {
+  if (queuePollerStarted) return;
+  queuePollerStarted = true;
+
+  const pollOnce = async () => {
+    try {
+      const res = await fetch(DEFAULT_WORKER_PENDING_JOBS_URL, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => null);
+      const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+      for (const job of jobs) {
+        if (!job?.sessionUri || !job?.botToken) continue;
+        const jid = job.jobId || `${job.fileId}:${job.sessionUri}`;
+        if (activeJobIds.has(jid)) continue;
+        activeJobIds.add(jid);
+
+        streamLargeTelegramFileToDrive({
+          botToken: job.botToken,
+          fileId: job.fileId ?? null,
+          sessionUri: job.sessionUri,
+          channelId: job.channelId ?? null,
+          channelMessageId: job.channelMessageId ?? null,
+          userChatId: job.userChatId ?? null,
+          userMessageId: job.userMessageId ?? null,
+          statusChatId: job.statusChatId ?? null,
+          statusMessageId: job.statusMessageId ?? null,
+          filename: String(job.filename || 'large-file.mp4'),
+          mimeType: String(job.mimeType || 'application/octet-stream'),
+          fileSize: job.fileSize ?? null,
+        })
+          .catch(async (err) => {
+            if (job.statusChatId && job.statusMessageId && job.botToken) {
+              try {
+                await fetch(`https://api.telegram.org/bot${job.botToken}/editMessageText`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chat_id: job.statusChatId,
+                    message_id: job.statusMessageId,
+                    parse_mode: 'HTML',
+                    text: [
+                      '☁️ <b>تقرير الرفع المزدوج التلقائي (القناة + Google Drive)</b>',
+                      '━━━━━━━━━━━━━━━━━━',
+                      `📄 <b>الملف:</b> ${job.filename || 'ملف كبير'}`,
+                      '',
+                      `1️⃣ <b>قناة البوت:</b>\n✅ تم الرفع والنشر في قناة البوت (<code>${job.channelId || ''}</code>)`,
+                      '',
+                      `2️⃣ <b>حساب Google Drive:</b>\n⚠️ تعذر نقل الملف الكبير: <code>${String(err?.message || err).slice(0, 180)}</code>`,
+                    ].join('\n'),
+                    reply_markup: {
+                      inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]],
+                    },
+                  }),
+                });
+              } catch {
+                // Ignore
+              }
+            }
+          })
+          .finally(() => {
+            activeJobIds.delete(jid);
+          });
+      }
+    } catch {
+      // Ignore transient poll errors
+    }
+  };
+
+  setInterval(pollOnce, 2500).unref();
+}
+
 export { dualUploadMediaMessage };
+

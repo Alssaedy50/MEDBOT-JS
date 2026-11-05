@@ -339,6 +339,8 @@ export async function uploadWorkerAdminMedia(db, user, message, folderId, bot = 
         fileId,
         title,
         description: title,
+        message,
+        db,
         env,
       });
       if (dRes?.ok) driveLink = dRes.webViewLink;

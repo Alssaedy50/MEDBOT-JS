@@ -1,13 +1,16 @@
 /**
  * MTProto Large-File Streamer (up to 2,000 MB / 2 GB) from Telegram -> Google Drive Resumable Upload.
  *
- * Bypasses the 20 MB HTTP limit of `api.telegram.org/bot.../getFile` by connecting
- * directly to Telegram's MTProto Data Centers using the bot's own `BOT_TOKEN`,
- * downloading the file in 512 KB MTProto parts, and streaming 4 MB chunks
- * (multiples of 256 KB) directly into a Google Drive Resumable Upload `sessionUri`.
+ * Bypasses the 20 MB HTTP limit of `api.telegram.org/bot.../getFile` by:
+ *   1. Decoding the Telegram Bot API `file_id` binary structure (TDLib RLE + base64url)
+ *      directly into `{ typeId, dcId, id, accessHash, fileReference }`.
+ *   2. Connecting directly to Telegram's MTProto Data Center (`dcId`) using `BOT_TOKEN`.
+ *   3. Downloading in 512 KB MTProto parts (`DirectDownloadIter`) and streaming 4 MB chunks
+ *      (multiples of 256 KB) directly into a Google Drive Resumable Upload `sessionUri`.
  */
 
-import { TelegramClient } from 'telegram';
+import bigInt from 'big-integer';
+import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 
 const DEFAULT_API_ID = Number(process.env.TELEGRAM_API_ID) || 6;
@@ -16,6 +19,79 @@ const DEFAULT_API_HASH =
 
 // Cache authenticated MTProto bot clients by botToken so subsequent large files start instantly
 const clientCache = new Map();
+
+/**
+ * Decode a Telegram Bot API `file_id` (TDLib v4/v3 RLE + base64url format) into
+ * `{ typeId, dcId, id, accessHash, fileReference }` so we can call `Api.upload.GetFile`
+ * directly on the target Data Center without needing chat/channel `access_hash` resolution.
+ */
+export function decodeTelegramFileId(fileId) {
+  const clean = String(fileId || '').trim();
+  if (!clean) return null;
+  try {
+    const b64 = clean.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const raw = Buffer.from(padded, 'base64');
+
+    // Zero-byte run-length decoding (TDLib rle_decode)
+    const out = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] === 0) {
+        i++;
+        if (i < raw.length) {
+          const count = raw[i];
+          for (let k = 0; k < count; k++) out.push(0);
+        }
+      } else {
+        out.push(raw[i]);
+      }
+    }
+
+    const buf = Buffer.from(out);
+    if (buf.length < 24) return null;
+
+    const hasSubVersion = buf.length >= 2 && buf[buf.length - 2] === 4;
+    const data = hasSubVersion ? buf.subarray(0, buf.length - 2) : buf.subarray(0, buf.length - 1);
+
+    const typeIdWithFlags = data.readInt32LE(0);
+    const dcId = data.readInt32LE(4);
+    if (dcId < 1 || dcId > 10) return null;
+
+    let offset = 8;
+    const FILE_REFERENCE_FLAG = 1 << 25;
+    const WEB_LOCATION_FLAG = 1 << 24;
+    const typeId = typeIdWithFlags & ~(FILE_REFERENCE_FLAG | WEB_LOCATION_FLAG);
+
+    let fileReference = Buffer.alloc(0);
+    if ((typeIdWithFlags & FILE_REFERENCE_FLAG) !== 0) {
+      let len = data[offset++];
+      let prefix = 1;
+      if (len === 254) {
+        len = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16);
+        offset += 3;
+        prefix = 4;
+      }
+      fileReference = Buffer.from(data.subarray(offset, offset + len));
+      offset += len;
+      const pad = (4 - ((prefix + len) % 4)) % 4;
+      offset += pad;
+    }
+
+    if (offset + 16 > data.length) return null;
+    const id = data.readBigInt64LE(offset);
+    const accessHash = data.readBigInt64LE(offset + 8);
+
+    return {
+      typeId,
+      dcId,
+      id,
+      accessHash,
+      fileReference,
+    };
+  } catch {
+    return null;
+  }
+}
 
 async function getMtprotoBotClient(botToken) {
   const cleanToken = String(botToken || '').trim();
@@ -28,7 +104,7 @@ async function getMtprotoBotClient(botToken) {
 
   const session = new StringSession('');
   const client = new TelegramClient(session, DEFAULT_API_ID, DEFAULT_API_HASH, {
-    connectionRetries: 3,
+    connectionRetries: 5,
     useWSS: false,
   });
   client.setLogLevel('none');
@@ -44,7 +120,7 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;');
 }
 
-async function updateTelegramProgressMessage({
+export async function updateTelegramProgressMessage({
   botToken,
   chatId,
   messageId,
@@ -116,7 +192,6 @@ async function putResumableChunk(sessionUri, chunkBytes, offset, totalBytes, mim
  * or the user's private chat message ID.
  */
 async function locateMtprotoMediaMessage(client, { channelId, channelMessageId, userChatId, userMessageId }) {
-  // 1. Try Archive Channel message first (bot is admin in archive channel)
   if (channelId && channelMessageId) {
     try {
       const peer = /^-\d+$/.test(String(channelId)) ? Number(channelId) : String(channelId);
@@ -127,13 +202,12 @@ async function locateMtprotoMediaMessage(client, { channelId, channelMessageId, 
     }
   }
 
-  // 2. Try the user's private chat message
   if (userChatId && userMessageId) {
     try {
       const msgs = await client.getMessages(Number(userChatId), { ids: [Number(userMessageId)] });
       if (msgs?.[0]?.media) return msgs[0];
     } catch {
-      // Fallback to scanning recent bot messages
+      // Ignore
     }
   }
 
@@ -146,6 +220,7 @@ async function locateMtprotoMediaMessage(client, { channelId, channelMessageId, 
  */
 export async function streamLargeTelegramFileToDrive({
   botToken,
+  fileId = null,
   sessionUri,
   channelId = null,
   channelMessageId = null,
@@ -162,31 +237,46 @@ export async function streamLargeTelegramFileToDrive({
   }
 
   const client = await getMtprotoBotClient(botToken);
-  const msg = await locateMtprotoMediaMessage(client, {
-    channelId,
-    channelMessageId,
-    userChatId,
-    userMessageId,
-  });
 
-  if (!msg || !msg.media) {
-    throw new Error('تعذر العثور على رسالة الملف في بروتوكول MTProto لتحميل الحجم الكبير.');
+  // 1. Prefer decoding the Bot API `file_id` directly into an InputDocumentFileLocation + dcId
+  let downloadTarget = null;
+  let targetDcId = undefined;
+  let docSize = Number(fileSize || 0);
+
+  const decoded = decodeTelegramFileId(fileId);
+  if (decoded && decoded.id && decoded.accessHash) {
+    downloadTarget = new Api.InputDocumentFileLocation({
+      id: bigInt(decoded.id.toString()),
+      accessHash: bigInt(decoded.accessHash.toString()),
+      fileReference: decoded.fileReference,
+      thumbSize: '',
+    });
+    targetDcId = decoded.dcId;
+  } else {
+    const msg = await locateMtprotoMediaMessage(client, {
+      channelId,
+      channelMessageId,
+      userChatId,
+      userMessageId,
+    });
+    if (msg?.media) {
+      downloadTarget = msg.media;
+      docSize = Number(msg.media?.document?.size ?? msg.file?.size ?? fileSize ?? 0);
+    }
   }
 
-  const docSize = Number(
-    msg.media?.document?.size ??
-      msg.file?.size ??
-      fileSize ??
-      0,
-  );
+  if (!downloadTarget) {
+    throw new Error('تعذر فك معرّف الملف الكبير (file_id) أو العثور عليه في بروتوكول MTProto.');
+  }
+
   const totalBytes = docSize > 0 ? docSize : null;
 
-  // Google Drive Resumable Upload requires chunk sizes to be multiples of 256 KB (except final chunk).
+  // Google Drive Resumable Upload requires intermediate chunk sizes to be multiples of 256 KB.
   // 4 MB = 16 * 256 KB = 4,194,304 bytes.
   const CHUNK_SIZE = 4 * 1024 * 1024;
   let buffer = new Uint8Array(0);
   let offset = 0;
-  let lastProgressUpdate = Date.now();
+  let lastProgressUpdate = Date.now() - 4000;
   let finalResult = null;
 
   const appendBytes = (existing, incoming) => {
@@ -197,17 +287,16 @@ export async function streamLargeTelegramFileToDrive({
   };
 
   for await (const part of client.iterDownload({
-    file: msg.media,
+    file: downloadTarget,
+    dcId: targetDcId,
     requestSize: 512 * 1024,
   })) {
     const partArray = part instanceof Uint8Array ? part : new Uint8Array(part);
     buffer = appendBytes(buffer, partArray);
 
     while (buffer.byteLength >= CHUNK_SIZE) {
-      // If totalBytes is known and this exact CHUNK_SIZE happens to be the very end of the file, send it as final
-      const isExactEnd = totalBytes && offset + CHUNK_SIZE === totalBytes;
       if (!totalBytes && buffer.byteLength === CHUNK_SIZE) {
-        // Keep at least 1 byte if totalBytes is unknown so we know when the iterator finishes
+        // Keep at least 1 byte when totalBytes is unknown so the final chunk closes the session
         break;
       }
       const slice = buffer.subarray(0, CHUNK_SIZE);
@@ -219,7 +308,7 @@ export async function streamLargeTelegramFileToDrive({
         sessionUri,
         chunkCopy,
         offset,
-        isExactEnd ? totalBytes : totalBytes,
+        totalBytes,
         mimeType,
       );
       offset += chunkCopy.byteLength;
@@ -227,7 +316,7 @@ export async function streamLargeTelegramFileToDrive({
         finalResult = res;
       }
 
-      if (statusChatId && statusMessageId && Date.now() - lastProgressUpdate > 6000) {
+      if (statusChatId && statusMessageId && Date.now() - lastProgressUpdate > 5000) {
         lastProgressUpdate = Date.now();
         const mbDone = (offset / (1024 * 1024)).toFixed(1);
         const mbTotal = totalBytes ? (totalBytes / (1024 * 1024)).toFixed(1) : '?';
@@ -270,7 +359,7 @@ export async function streamLargeTelegramFileToDrive({
     throw new Error('لم يكتمل حفظ الملف الكبير في Google Drive.');
   }
 
-  // If a status message in Telegram was waiting for background completion, update it with the final Drive link!
+  // Update the Telegram status message with the final Drive link and real file size!
   if (statusChatId && statusMessageId) {
     const sizeMb = (offset / (1024 * 1024)).toFixed(1);
     await updateTelegramProgressMessage({

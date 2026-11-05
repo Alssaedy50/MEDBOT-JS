@@ -192,7 +192,10 @@ test('streams >20MB large files as real binary via Google Drive Resumable Upload
         status: 200,
         headers: {
           get(name) {
-            return name.toLowerCase() === 'content-length' ? String(fakeVideoBytes.byteLength) : null;
+            const key = name.toLowerCase();
+            if (key === 'content-length') return '157286400';
+            if (key === 'content-type') return 'video/mp4';
+            return null;
           },
         },
         body: fakeVideoBytes,
@@ -245,5 +248,125 @@ test('streams >20MB large files as real binary via Google Drive Resumable Upload
 
   clearRuntimeDriveSession();
 });
+
+test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too big, queuing MTProto transfer instead', async () => {
+  clearRuntimeDriveSession();
+  setRuntimeDriveSession({
+    accessToken: 'test-drive-token-mtproto',
+    folderId: 'folder-large-123',
+  });
+
+  const sessionPuts = [];
+  let savedJobsJson = null;
+  const mockDb = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          if (sql.includes('pending_large_drive_jobs') && sql.includes('INSERT')) {
+            savedJobsJson = args[0];
+          }
+          return {
+            async first() {
+              return null;
+            },
+            async run() {
+              return { success: true };
+            },
+          };
+        },
+        async first() {
+          return null;
+        },
+      };
+    },
+  };
+
+  const mockFetch = async (url, options = {}) => {
+    const u = String(url);
+    if (u.includes('upload_id=session-mtproto-90')) {
+      sessionPuts.push({ url: u, options });
+      return { ok: true, status: 200, async json() { return {}; } };
+    }
+    if (u.includes('uploadType=resumable')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: {
+          get(name) {
+            return name.toLowerCase() === 'location'
+              ? 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=session-mtproto-90'
+              : null;
+          },
+        },
+        async text() {
+          return '';
+        },
+      };
+    }
+    if (u.includes('t.me/public_series/451')) {
+      // Simulate Telegram web embed for >20MB video: has a 12.4 KB JPEG thumbnail and "This media is too big"
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return '<i class="tgme_widget_message_video_thumb" style="background-image:url(\'https://cdn4.telesco.pe/file/thumb12kb.jpg\')"></i><div class="message_media_not_supported_label">This media is too big</div>';
+        },
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { files: [] };
+      },
+    };
+  };
+
+  const fakeBot = {
+    async sendVideo(chatId, fileId) {
+      return { message_id: 902, chat: { id: chatId }, video: { file_id: fileId } };
+    },
+    async sendMessage() {
+      return { message_id: 555 };
+    },
+  };
+
+  const outcome = await dualUploadMediaMessage({
+    message: {
+      message_id: 400,
+      chat: { id: 12345, type: 'private' },
+      forward_from_chat: { id: -100999888, username: 'public_series', type: 'channel' },
+      forward_from_message_id: 451,
+      caption: 'مسلسل محمد الفاتح - الحلقة 90 - الجودة 360p',
+      video: {
+        file_id: 'BAACAgIAAxkBAAIB',
+        file_unique_id: 'uniq-video-90-mtproto',
+        file_name: 'مسلسل_محمد_الفاتح_الحلقة_90_مترجمة_شوف_لايف.mp4',
+        mime_type: 'video/mp4',
+        file_size: 173015040,
+      },
+    },
+    bot: fakeBot,
+    channelTarget: '-1004342544366',
+    db: mockDb,
+    env: { BOT_TOKEN: '123456:ABC-DEF' },
+    fetchImpl: mockFetch,
+  });
+
+  // 1. Must NOT have uploaded the 12.4 KB JPEG thumbnail to sessionUri
+  assert.equal(sessionPuts.length, 0);
+  // 2. Must have enqueued the MTProto job in D1 `pending_large_drive_jobs`
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.alreadyReplied, true);
+  assert.equal(outcome.driveOutcome.asyncTransfer, true);
+  assert.ok(savedJobsJson);
+  const jobs = JSON.parse(savedJobsJson);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].fileId, 'BAACAgIAAxkBAAIB');
+  assert.equal(jobs[0].statusMessageId, 555);
+
+  clearRuntimeDriveSession();
+});
+
 
 

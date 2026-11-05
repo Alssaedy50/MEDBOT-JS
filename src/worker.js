@@ -1335,6 +1335,33 @@ export default {
     }
     if (url.pathname === '/backup/latest') return backupEndpoint(request, env);
     if (url.pathname === '/telegram/webhook') return webhookResponse(request, env);
+    if (request.method === 'GET' && url.pathname === '/api/drive/pending-jobs') {
+      if (!env.DB) return json({ ok: true, jobs: [] });
+      try {
+        await ensureWorkerSchema(env.DB);
+        const row = await get(env.DB, "SELECT value FROM settings WHERE key = 'pending_large_drive_jobs' LIMIT 1").catch(
+          () => null,
+        );
+        const raw = row?.[0] ?? null;
+        if (!raw) return json({ ok: true, jobs: [] });
+        let jobs = [];
+        try {
+          const parsed = JSON.parse(String(raw));
+          if (Array.isArray(parsed)) jobs = parsed;
+        } catch {
+          jobs = [];
+        }
+        if (jobs.length > 0) {
+          await run(
+            env.DB,
+            "INSERT INTO settings(key,value) VALUES('pending_large_drive_jobs','[]') ON CONFLICT(key) DO UPDATE SET value='[]'",
+          ).catch(() => {});
+        }
+        return json({ ok: true, jobs });
+      } catch (err) {
+        return json({ ok: false, error: String(err?.message || err), jobs: [] }, 500);
+      }
+    }
     if (url.pathname === '/storage/status') {
       return json({
         ok: Boolean(env.FILES),
