@@ -16,6 +16,8 @@ function icon(type) {
 }
 function contentIcon(type) {
   const value = String(type ?? '').toLowerCase();
+  if (['link','url'].includes(value)) return '🔗';
+  if (['text','post'].includes(value)) return '📝';
   if (['photo','image','jpg','jpeg','png','webp'].includes(value)) return '🖼';
   if (['video','mp4','mkv','mov'].includes(value)) return '🎥';
   if (['audio','mp3','m4a','wav'].includes(value)) return '🎧';

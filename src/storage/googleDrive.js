@@ -897,6 +897,7 @@ export async function uploadTelegramFileToGoogleDrive({
   description = '',
   folderId = null,
   message = null,
+  actorUserId = null,
   channelTarget = null,
   channelMessageId = null,
   statusChatId = null,
@@ -1008,12 +1009,14 @@ export async function uploadTelegramFileToGoogleDrive({
       channelMessageId: channelMessageId || null,
       userChatId: message?.chat?.id ?? message?.from?.id ?? null,
       userMessageId: message?.message_id ?? null,
+      actorUserId: actorUserId ?? message?.from?.id ?? (env?.ADMIN_ID ? Number(env.ADMIN_ID) : null),
       statusChatId: statusChatId || null,
       statusMessageId: statusMessageId || null,
       filename: finalName,
       mimeType,
       fileSize: fileSize || null,
       createdAt: Date.now(),
+      dispatchedAt: 0,
     };
 
     // Enqueue in Cloudflare D1 `settings` so the Node.js MTProto Streamer poller pulls and executes it within 2 seconds
@@ -1048,6 +1051,7 @@ export async function uploadTelegramFileToGoogleDrive({
           ok: true,
           asyncTransfer: true,
           sessionUri: session.sessionUri,
+          jobPayload,
           name: finalName,
           mimeType,
           folderId: session.folderId,

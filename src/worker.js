@@ -7,6 +7,7 @@ import {
   ensureDriveFolder,
   extractDriveFolderId,
   getDriveStatus,
+  isForwardedMessage,
   resolveDriveAccessToken,
   setRuntimeDriveSession,
 } from './storage/googleDrive.js';
@@ -78,10 +79,13 @@ import { ensureConfiguredAdmin } from './db/d1/admins.js';
 import { D1_SCHEMA_STATEMENTS } from './db/d1/migrations.js';
 import {
   applySessionProgressUpdate,
+  extractFirstUrlFromMessage,
   getUploadSession,
   handleDualUploadCallback,
   handleDualUploadNewFolderText,
+  hasActiveDualUploadTextPrompt,
   saveUploadSession,
+  startInteractiveUploadWizard,
 } from './storage/dualUploadInteractive.js';
 
 const initializedWebhookStores = new WeakSet();
@@ -226,6 +230,8 @@ function clearPendingStates(userData) {
   userData.drive_set_folder = false;
   userData.du_new_folder_session = null;
   userData.du_new_folder_parent = null;
+  userData.du_wizard_session = null;
+  userData.du_wizard_mode = null;
 }
 
 async function resolveWorkerDriveEnv(db, env) {
@@ -301,6 +307,14 @@ async function buildWorkerDriveMenu(db, env) {
 
 async function sendMediaByType(bot, chatId, fileType, fileId, options = {}) {
   const normalized = String(fileType ?? '').toLowerCase();
+  if ((normalized === 'link' || normalized === 'text') && typeof bot.sendMessage === 'function') {
+    const cap = options.caption ? `${options.caption}\n\n` : '';
+    const body =
+      normalized === 'link'
+        ? `${cap}🔗 <b>الرابط المباشر:</b>\n${String(fileId)}`
+        : `${cap}${String(fileId)}`;
+    return bot.sendMessage(chatId, body, { parse_mode: 'HTML' });
+  }
   const primary = normalized === 'photo' || normalized === 'image'
     ? 'sendPhoto'
     : normalized === 'video'
@@ -326,7 +340,7 @@ async function dispatchTelegramUpdate(update, { env }) {
   const bot = telegramBot(env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN);
   if (!bot) throw new Error('telegram_bot_token_not_configured');
 
-  // Support direct channel posts in the Archive Channel (e.g. /connect_archive or direct uploads)
+  // Support direct channel posts in the Archive Channel (e.g. /connect_archive or forwarded/sent files, data, or links)
   const channelPost = update?.channel_post || update?.edited_channel_post;
   if (channelPost && channelPost.chat?.id) {
     const postText = String(channelPost.text || channelPost.caption || '').trim();
@@ -341,6 +355,52 @@ async function dispatchTelegramUpdate(update, { env }) {
         channelPost.chat.id,
         `✅ <b>تم ربط هذه القناة كقناة أرشيف واسترداد سحابي رسمية لبوت MEDBOT!</b>\n📡 معرّف القناة: <code>${chId}</code>`,
       ).catch(() => {});
+      return null;
+    }
+
+    if (! update?.edited_channel_post) {
+      const driveEnv = await resolveWorkerDriveEnv(env.DB, env);
+      // 1. Check if the channel is waiting for a text reply (e.g., editing name or new section/subject name)
+      const isMediaPost = Boolean(
+        channelPost.document || channelPost.video || channelPost.photo || channelPost.audio || channelPost.voice,
+      );
+      if (!isMediaPost && postText && (await hasActiveDualUploadTextPrompt(env.DB, channelPost.chat.id, null))) {
+        const fakeCtx = {
+          db: env.DB,
+          chatId: channelPost.chat.id,
+          from: channelPost.from || (env.ADMIN_ID ? { id: Number(env.ADMIN_ID) } : null),
+          message: channelPost,
+          userData: {},
+          reply: (t, opts = {}) => bot.sendMessage(channelPost.chat.id, t, opts),
+        };
+        await handleDualUploadNewFolderText(fakeCtx, postText, bot, driveEnv).catch(() => {});
+        return null;
+      }
+
+      // 2. Otherwise start the interactive Destination Picker Wizard for any file, forwarded post, or link posted in the channel
+      const channelTarget =
+        (await resolveWorkerArchiveChannelAsync(env.DB, driveEnv)) || String(channelPost.chat.id);
+      const wiz = await startInteractiveUploadWizard({
+        bot,
+        message: channelPost,
+        channelTarget,
+        db: env.DB,
+        env: driveEnv,
+        isDirectChannelPost: true,
+      });
+      if (wiz.ok) {
+        const sent = await bot
+          .sendMessage(channelPost.chat.id, wiz.summaryText, {
+            parse_mode: 'HTML',
+            reply_markup: wiz.replyMarkup,
+            reply_to_message_id: channelPost.message_id,
+          })
+          .catch(() => null);
+        if (sent?.message_id && wiz.session) {
+          wiz.session.statusMessageId = sent.message_id;
+          await saveUploadSession(env.DB, wiz.session);
+        }
+      }
       return null;
     }
   }
@@ -1082,7 +1142,7 @@ async function dispatchTelegramUpdate(update, { env }) {
   };
 
   handlers.message = async (ctx) => {
-    if (ctx.userData?.du_new_folder_session) {
+    if (await hasActiveDualUploadTextPrompt(ctx.db, ctx.chatId, ctx.userData)) {
       const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
       return handleDualUploadNewFolderText(ctx, ctx.text, bot, driveEnv);
     }
@@ -1249,6 +1309,29 @@ async function dispatchTelegramUpdate(update, { env }) {
         parse_mode: 'HTML',
       });
     }
+    // If the user forwarded any message/post or sent a link (URL), open the Destination Selection Wizard
+    if (isForwardedMessage(ctx.message) || extractFirstUrlFromMessage(ctx.message)) {
+      const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
+      const channelTarget = await resolveWorkerArchiveChannelAsync(ctx.db, driveEnv);
+      const wiz = await startInteractiveUploadWizard({
+        bot,
+        message: ctx.message,
+        channelTarget,
+        db: ctx.db,
+        env: driveEnv,
+      });
+      if (wiz.ok) {
+        const sent = await ctx.reply(wiz.summaryText, {
+          parse_mode: 'HTML',
+          reply_markup: wiz.replyMarkup,
+        });
+        if (sent?.message_id && wiz.session) {
+          wiz.session.statusMessageId = sent.message_id;
+          await saveUploadSession(ctx.db, wiz.session);
+        }
+        return sent;
+      }
+    }
     return ctx.reply('ℹ️ استخدم أزرار MEDBOT للتنقل، أو /search للبحث داخل الموارد.', {
       reply_markup: { inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]] },
     });
@@ -1279,25 +1362,21 @@ async function dispatchTelegramUpdate(update, { env }) {
       return ctx.reply(result.text, { parse_mode: 'HTML' });
     }
     const channelTarget = await resolveWorkerArchiveChannelAsync(ctx.db, driveEnv);
-    const dualOutcome = await dualUploadMediaMessage({
+    const wiz = await startInteractiveUploadWizard({
       bot,
       message: ctx.message,
       channelTarget,
       db: ctx.db,
       env: driveEnv,
     });
-    if (dualOutcome.reason !== 'no_media') {
-      if (dualOutcome.alreadyReplied) return null;
-      const sent = await ctx.reply(dualOutcome.summaryText, {
+    if (wiz.ok) {
+      const sent = await ctx.reply(wiz.summaryText, {
         parse_mode: 'HTML',
-        reply_markup: dualOutcome.replyMarkup,
+        reply_markup: wiz.replyMarkup,
       });
-      if (dualOutcome.sessionId && sent?.message_id) {
-        const sess = await getUploadSession(ctx.db, dualOutcome.sessionId);
-        if (sess) {
-          sess.statusMessageId = sent.message_id;
-          await saveUploadSession(ctx.db, sess);
-        }
+      if (sent?.message_id && wiz.session) {
+        wiz.session.statusMessageId = sent.message_id;
+        await saveUploadSession(ctx.db, wiz.session);
       }
       return sent;
     }
@@ -1380,13 +1459,25 @@ export default {
         } catch {
           jobs = [];
         }
-        if (jobs.length > 0) {
+        const now = Date.now();
+        const cutoff = now - 30 * 60 * 1000;
+        const activeJobs = jobs.filter((j) => j && Number(j.createdAt || now) > cutoff);
+        const readyToDispatch = activeJobs.filter(
+          (j) => !j.dispatchedAt || now - Number(j.dispatchedAt) > 60 * 1000,
+        );
+        if (readyToDispatch.length > 0) {
+          const updated = activeJobs.map((j) =>
+            !j.dispatchedAt || now - Number(j.dispatchedAt) > 60 * 1000
+              ? { ...j, dispatchedAt: now }
+              : j,
+          );
           await run(
             env.DB,
-            "INSERT INTO settings(key,value) VALUES('pending_large_drive_jobs','[]') ON CONFLICT(key) DO UPDATE SET value='[]'",
+            "INSERT INTO settings(key,value) VALUES('pending_large_drive_jobs',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [JSON.stringify(updated)],
           ).catch(() => {});
         }
-        return json({ ok: true, jobs });
+        return json({ ok: true, jobs: readyToDispatch });
       } catch (err) {
         return json({ ok: false, error: String(err?.message || err), jobs: [] }, 500);
       }
