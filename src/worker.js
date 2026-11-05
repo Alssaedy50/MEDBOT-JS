@@ -1266,6 +1266,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       env: driveEnv,
     });
     if (dualOutcome.reason !== 'no_media') {
+      if (dualOutcome.alreadyReplied) return null;
       return ctx.reply(dualOutcome.summaryText, {
         parse_mode: 'HTML',
         reply_markup: dualOutcome.replyMarkup,

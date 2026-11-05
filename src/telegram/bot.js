@@ -190,6 +190,7 @@ export function registerHandlers() {
         channelTarget: archive.channelForSend(),
       });
       if (outcome.reason !== 'no_media') {
+        if (outcome.alreadyReplied) return;
         await ctx.reply(outcome.summaryText, {
           parse_mode: 'HTML',
           reply_markup: outcome.replyMarkup,

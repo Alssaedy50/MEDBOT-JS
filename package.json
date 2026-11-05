@@ -31,7 +31,8 @@
     "cf:auto-deploy": "node scripts/cloudflare-deploy.mjs"
   },
   "dependencies": {
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
     "eslint": "^9.13.0"

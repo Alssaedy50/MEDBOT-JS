@@ -670,18 +670,171 @@ function extractMediaUniqueId(message, media) {
   return media?.fileId || '';
 }
 
+const DEFAULT_LARGE_FILE_BRIDGE_URL =
+  'https://ais-pre-qzbgszedfh6dly7dn3jdsp-958880361441.europe-west2.run.app/api/drive/transfer-large-file';
+
+/**
+ * Initiate a Google Drive Resumable Upload session and return `{ ok, sessionUri, folderId, token }`.
+ */
+export async function createResumableDriveSession({
+  accessToken = null,
+  filename,
+  mimeType = 'application/octet-stream',
+  folderId = null,
+  description = '',
+  env = defaultEnv(),
+  fetchImpl = fetch,
+} = {}) {
+  const token = await resolveDriveAccessToken(env, { bearerToken: accessToken, fetchImpl });
+  if (!token) {
+    return { ok: false, reason: 'not_configured', error: 'حساب Google Drive غير مربوط بعد.' };
+  }
+
+  let targetFolderId = extractDriveFolderId(folderId) || resolveConfiguredFolderId(env);
+  if (!targetFolderId) {
+    targetFolderId = await ensureDriveFolder({ accessToken: token, env, fetchImpl }).catch(() => null);
+  }
+
+  const metadata = {
+    name: String(filename || `medbot-file-${Date.now()}`).trim(),
+    description: String(description || 'Uploaded via MEDBOT Dual-Upload').slice(0, 1000),
+  };
+  if (targetFolderId) {
+    metadata.parents = [targetFolderId];
+  }
+
+  const initUrl =
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,size,createdTime,webViewLink,webContentLink';
+  const initRes = await fetchImpl(initUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': mimeType || 'application/octet-stream',
+    },
+    body: JSON.stringify(metadata),
+  });
+
+  const sessionUri = initRes.headers?.get?.('Location') || initRes.headers?.get?.('location');
+  if (!initRes.ok || !sessionUri) {
+    const errData = await initRes.json().catch(() => null);
+    return {
+      ok: false,
+      error: errData?.error?.message || `Failed to initialize resumable upload (${initRes.status})`,
+    };
+  }
+
+  return {
+    ok: true,
+    sessionUri,
+    folderId: targetFolderId || null,
+    token,
+  };
+}
+
+/**
+ * Try to stream a large media file directly from a public Telegram channel's CDN (`telesco.pe`)
+ * into a Google Drive Resumable Upload session without buffering in Worker memory.
+ */
+async function tryStreamPublicTelegramEmbedToDrive({
+  message,
+  channelTarget,
+  channelMessageId,
+  sessionUri,
+  filename,
+  mimeType,
+  folderId,
+  fetchImpl = fetch,
+}) {
+  const candidates = [];
+  const fwdUser =
+    message?.forward_from_chat?.username ??
+    message?.forward_origin?.chat?.username ??
+    null;
+  const fwdMsgId =
+    message?.forward_from_message_id ??
+    message?.forward_origin?.message_id ??
+    null;
+  if (fwdUser && fwdMsgId) {
+    candidates.push({ username: String(fwdUser).replace(/^@/, ''), msgId: fwdMsgId });
+  }
+  const cleanChannel = String(channelTarget || '').trim();
+  if (cleanChannel.startsWith('@') && channelMessageId) {
+    candidates.push({ username: cleanChannel.slice(1), msgId: channelMessageId });
+  }
+
+  for (const cand of candidates) {
+    try {
+      const embedUrl = `https://t.me/${cand.username}/${cand.msgId}?embed=1&mode=tme`;
+      const embedRes = await fetchImpl(embedUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        },
+      });
+      if (!embedRes.ok) continue;
+      const html = await embedRes.text();
+      const cdnMatch = /https:\/\/cdn\d*\.telesco\.pe\/file\/[^\s"'<>]+/i.exec(html);
+      if (!cdnMatch) continue;
+
+      const cdnUrl = cdnMatch[0];
+      const cdnRes = await fetchImpl(cdnUrl, { method: 'GET' });
+      if (!cdnRes.ok || !cdnRes.body) continue;
+
+      const contentLength = cdnRes.headers?.get?.('content-length');
+      const putHeaders = {
+        'Content-Type': mimeType || 'video/mp4',
+      };
+      if (contentLength) {
+        putHeaders['Content-Length'] = String(contentLength);
+      }
+
+      const putRes = await fetchImpl(sessionUri, {
+        method: 'PUT',
+        headers: putHeaders,
+        body: cdnRes.body,
+        duplex: 'half',
+      });
+      const putData = await putRes.json().catch(() => null);
+      if (putRes.ok && putData?.id) {
+        return {
+          ok: true,
+          id: putData.id,
+          name: putData.name || filename,
+          mimeType: putData.mimeType || mimeType,
+          size: Number(putData.size ?? contentLength ?? 0),
+          createdTime: putData.createdTime || new Date().toISOString(),
+          webViewLink: putData.webViewLink || `https://drive.google.com/file/d/${putData.id}/view`,
+          webContentLink: putData.webContentLink || null,
+          folderId: folderId || null,
+        };
+      }
+    } catch {
+      // Continue to MTProto bridge
+    }
+  }
+  return null;
+}
+
 /**
  * Download a Telegram file by `fileId` and upload it to Google Drive.
+ * Supports files of ANY size (up to 2 GB) via Resumable Upload + MTProto stream bridge.
  */
 export async function uploadTelegramFileToGoogleDrive({
   bot,
   fileId,
   filename = null,
   mimeType = 'application/octet-stream',
+  fileSize = null,
   title = '',
   description = '',
   folderId = null,
-  channelLink = null,
+  message = null,
+  channelTarget = null,
+  channelMessageId = null,
+  statusChatId = null,
+  statusMessageId = null,
   env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
@@ -695,25 +848,29 @@ export async function uploadTelegramFileToGoogleDrive({
   let bytes = null;
   let detectedPath = '';
   let downloadErr = null;
-  try {
-    if (typeof bot.downloadFileBytes === 'function') {
-      const downloaded = await bot.downloadFileBytes(fileId);
-      bytes = downloaded?.bytes ?? downloaded;
-      detectedPath = downloaded?.filePath ?? '';
-    } else if (typeof bot.getFile === 'function') {
-      const fileInfo = await bot.getFile(fileId);
-      detectedPath = fileInfo?.file_path || '';
-      if (detectedPath && typeof bot.downloadFile === 'function') {
-        bytes = await bot.downloadFile(detectedPath);
-      } else if (!detectedPath && bot.calls) {
-        // Test FakeBot environment where getFile is stubbed
+  const knownTooBigForBotApi = Number(fileSize) > 20 * 1024 * 1024;
+
+  if (!knownTooBigForBotApi) {
+    try {
+      if (typeof bot.downloadFileBytes === 'function') {
+        const downloaded = await bot.downloadFileBytes(fileId);
+        bytes = downloaded?.bytes ?? downloaded;
+        detectedPath = downloaded?.filePath ?? '';
+      } else if (typeof bot.getFile === 'function') {
+        const fileInfo = await bot.getFile(fileId);
+        detectedPath = fileInfo?.file_path || '';
+        if (detectedPath && typeof bot.downloadFile === 'function') {
+          bytes = await bot.downloadFile(detectedPath);
+        } else if (!detectedPath && bot.calls) {
+          // Test FakeBot environment where getFile is stubbed
+          bytes = new TextEncoder().encode(`MEDBOT_TEST_CONTENT:${fileId}:${title || filename || ''}`);
+        }
+      } else if (bot.calls) {
         bytes = new TextEncoder().encode(`MEDBOT_TEST_CONTENT:${fileId}:${title || filename || ''}`);
       }
-    } else if (bot.calls) {
-      bytes = new TextEncoder().encode(`MEDBOT_TEST_CONTENT:${fileId}:${title || filename || ''}`);
+    } catch (err) {
+      downloadErr = err;
     }
-  } catch (err) {
-    downloadErr = err;
   }
 
   let finalName = String(filename || title || '').trim();
@@ -725,33 +882,106 @@ export async function uploadTelegramFileToGoogleDrive({
     if (ext && ext.length <= 6) finalName = `${finalName}.${ext}`;
   }
 
-  // Fallback for files > 20 MB where public Telegram Bot API getFile returns "file is too big":
-  // Save a direct cloud launcher card in Google Drive pointing to the Archive Channel post so no file of any size is ever lost.
+  // If file is > 20 MB (where standard Telegram Bot HTTP API getFile fails with "file is too big"),
+  // stream the REAL binary file using Google Drive Resumable Upload + Public CDN or MTProto 2GB Bridge!
   if (!bytes) {
-    if (channelLink) {
-      const safeTitle = String(title || finalName).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const htmlBridge = [
-        '<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">',
-        `<meta http-equiv="refresh" content="0;url=${channelLink}">`,
-        `<title>${safeTitle} — MEDBOT Archive</title>`,
-        '<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}.card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:32px;max-width:480px}a{display:inline-block;margin-top:20px;padding:12px 24px;background:#10b981;color:#052e16;font-weight:700;text-decoration:none;border-radius:10px}</style></head>',
-        `<body><div class="card"><h2>📄 ${safeTitle}</h2><p>ملف كبير الحجم محفوظ في أرشيف قناة البوت الرسمية.</p><a href="${channelLink}">📥 فتح وتنزيل الملف الكامل الآن</a></div></body></html>`,
-      ].join('');
-      const bridgeBytes = new TextEncoder().encode(htmlBridge);
-      return uploadBytesToGoogleDrive({
-        filename: `${finalName} (رابط مباشر للملف الكبير).html`,
-        mimeType: 'text/html; charset=utf-8',
-        bytes: bridgeBytes,
-        folderId,
-        description: `${description || title || finalName} — Direct Channel Link: ${channelLink}`,
-        env,
-        fetchImpl,
-      });
+    const session = await createResumableDriveSession({
+      filename: finalName,
+      mimeType,
+      folderId,
+      description: description || title || finalName,
+      env,
+      fetchImpl,
+    });
+    if (!session.ok || !session.sessionUri) {
+      return {
+        ok: false,
+        reason: 'resumable_init_failed',
+        error: session.error || 'تعذر بدء جلسة الرفع للملف الكبير في Google Drive.',
+      };
     }
+
+    // 1. Try zero-memory direct stream from Telegram CDN if forwarded from a public channel
+    const publicStreamed = await tryStreamPublicTelegramEmbedToDrive({
+      message,
+      channelTarget,
+      channelMessageId,
+      sessionUri: session.sessionUri,
+      filename: finalName,
+      mimeType,
+      folderId: session.folderId,
+      fetchImpl,
+    });
+    if (publicStreamed?.ok) {
+      return publicStreamed;
+    }
+
+    // 2. Use MTProto 2GB Large-File Streamer Bridge to transfer the full binary file to Google Drive
+    const fallbackEnv = defaultEnv();
+    const botToken = String(
+      env?.TELEGRAM_BOT_TOKEN ||
+        env?.BOT_TOKEN ||
+        fallbackEnv.TELEGRAM_BOT_TOKEN ||
+        fallbackEnv.BOT_TOKEN ||
+        '',
+    ).trim();
+    const bridgeUrl = String(
+      env?.LARGE_FILE_BRIDGE_URL ||
+        fallbackEnv.LARGE_FILE_BRIDGE_URL ||
+        DEFAULT_LARGE_FILE_BRIDGE_URL,
+    ).trim();
+
+    if (botToken && bridgeUrl) {
+      try {
+        const bridgeRes = await fetchImpl(bridgeUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            botToken,
+            sessionUri: session.sessionUri,
+            channelId: channelTarget || null,
+            channelMessageId: channelMessageId || null,
+            userChatId: message?.chat?.id ?? message?.from?.id ?? null,
+            userMessageId: message?.message_id ?? null,
+            statusChatId: statusChatId || null,
+            statusMessageId: statusMessageId || null,
+            filename: finalName,
+            mimeType,
+            fileSize: fileSize || null,
+          }),
+        });
+        const bridgeData = await bridgeRes.json().catch(() => null);
+        if (bridgeRes.ok && bridgeData?.ok) {
+          if (bridgeData.asyncTransfer) {
+            return {
+              ok: true,
+              asyncTransfer: true,
+              name: finalName,
+              mimeType,
+              folderId: session.folderId,
+            };
+          }
+          return {
+            ok: true,
+            id: bridgeData.id,
+            name: bridgeData.name || finalName,
+            mimeType: bridgeData.mimeType || mimeType,
+            size: Number(bridgeData.size ?? fileSize ?? 0),
+            webViewLink: bridgeData.webViewLink || `https://drive.google.com/file/d/${bridgeData.id}/view`,
+            folderId: session.folderId,
+          };
+        }
+      } catch (bridgeErr) {
+        downloadErr = bridgeErr;
+      }
+    }
+
     return {
       ok: false,
       reason: 'telegram_download_failed',
-      error: downloadErr?.message ?? 'تعذر تنزيل محتوى الملف من تيليجرام.',
+      error:
+        downloadErr?.message ??
+        'حجم الملف يتجاوز 20MB وتعذر الاتصال بجسر النقل المباشر (MTProto Bridge).',
     };
   }
 
@@ -932,14 +1162,39 @@ export async function dualUploadMediaMessage({
     }
   }
 
-  // Build a direct Telegram link to the channel post so >20MB files always have a permanent bridge in Drive
-  let channelLink = null;
-  if (channelOutcome.ok && channelOutcome.messageId && channelTarget) {
-    const rawTarget = String(channelTarget).trim();
-    if (rawTarget.startsWith('@')) {
-      channelLink = `https://t.me/${rawTarget.slice(1)}/${channelOutcome.messageId}`;
-    } else if (/^-100\d+$/.test(rawTarget)) {
-      channelLink = `https://t.me/c/${rawTarget.slice(4)}/${channelOutcome.messageId}`;
+  const channelLine = channelOutcome.ok
+    ? channelOutcome.skippedDuplicate
+      ? `✅ موجود مسبقاً في قناة البوت (تم منع تكرار النشر في <code>${escapeHtml(channelTarget)}</code>)`
+      : `✅ تم الرفع والنشر في قناة البوت (<code>${escapeHtml(channelTarget)}</code>)`
+    : channelOutcome.configured
+      ? `⚠️ تعذر الرفع للقناة: <code>${escapeHtml(String(channelOutcome.error || '').slice(0, 120))}</code>`
+      : '⚪️ القناة غير مربوطة بعد (اضبط <code>MEDBOT_ARCHIVE_CHANNEL</code> أو اربطها من لوحة الإدارة)';
+
+  // If the file is > 20 MB, send an initial live-progress status message in the user's chat
+  // so the MTProto Large-File Streamer can update progress % and edit it with the final Drive link!
+  const isLargeFile = Number(media.fileSize) > 20 * 1024 * 1024;
+  const userChatId = message?.chat?.id ?? message?.from?.id ?? null;
+  let statusMessageId = null;
+
+  if (isLargeFile && isDriveConfigured(env) && userChatId && typeof bot?.sendMessage === 'function') {
+    const sizeMb = (Number(media.fileSize) / (1024 * 1024)).toFixed(1);
+    try {
+      const progressMsg = await bot.sendMessage(
+        userChatId,
+        [
+          '☁️ <b>جاري رفع الملف الكبير إلى حسابك في Google Drive...</b>',
+          '━━━━━━━━━━━━━━━━━━',
+          `📄 <b>الملف:</b> ${escapeHtml(media.filename)} (<code>${sizeMb} MB</code>)`,
+          '',
+          `1️⃣ <b>قناة البوت:</b>\n${channelLine}`,
+          '',
+          '2️⃣ <b>حساب Google Drive:</b>\n⏳ جاري النقل المباشر للملف الكامل عبر بروتوكول MTProto (بدون حد 20MB)... سيتم تحديث هذه الرسالة تلقائياً فور اكتمال الرفع!',
+        ].join('\n'),
+        { parse_mode: 'HTML' },
+      );
+      statusMessageId = progressMsg?.message_id ?? null;
+    } catch {
+      statusMessageId = null;
     }
   }
 
@@ -951,9 +1206,14 @@ export async function dualUploadMediaMessage({
       fileId: media.fileId,
       filename: media.filename,
       mimeType: media.mimeType,
+      fileSize: media.fileSize,
       title,
       description: captionRaw || title,
-      channelLink,
+      message,
+      channelTarget,
+      channelMessageId: channelOutcome.messageId,
+      statusChatId: userChatId,
+      statusMessageId,
       env,
       fetchImpl,
     });
@@ -974,16 +1234,25 @@ export async function dualUploadMediaMessage({
     driveLink: driveOutcome.webViewLink || null,
   });
 
-  const channelLine = channelOutcome.ok
-    ? channelOutcome.skippedDuplicate
-      ? `✅ موجود مسبقاً في قناة البوت (تم منع تكرار النشر في <code>${escapeHtml(channelTarget)}</code>)`
-      : `✅ تم الرفع والنشر في قناة البوت (<code>${escapeHtml(channelTarget)}</code>)`
-    : channelOutcome.configured
-      ? `⚠️ تعذر الرفع للقناة: <code>${escapeHtml(String(channelOutcome.error || '').slice(0, 120))}</code>`
-      : '⚪️ القناة غير مربوطة بعد (اضبط <code>MEDBOT_ARCHIVE_CHANNEL</code> أو اربطها من لوحة الإدارة)';
+  // If the MTProto bridge accepted the background transfer and will update `statusMessageId` itself:
+  if (driveOutcome.asyncTransfer && statusMessageId) {
+    return {
+      ok: true,
+      alreadyReplied: true,
+      title,
+      filename: media.filename,
+      fileType: media.fileType,
+      channelOutcome,
+      driveOutcome,
+      summaryText: '',
+      replyMarkup: { inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]] },
+    };
+  }
 
   const driveLine = driveOutcome.ok
-    ? `✅ تم الرفع إلى حسابك في Google Drive (<a href="${escapeHtml(driveOutcome.webViewLink)}">فتح الملف في Drive</a>)`
+    ? driveOutcome.asyncTransfer
+      ? '⏳ جاري إكمال رفع الملف الكبير الكامل إلى حسابك في Google Drive في الخلفية...'
+      : `✅ تم الرفع إلى حسابك في Google Drive (<a href="${escapeHtml(driveOutcome.webViewLink)}">فتح الملف في Drive</a>)`
     : driveOutcome.configured
       ? `⚠️ تعذر الرفع إلى Google Drive: <code>${escapeHtml(String(driveOutcome.error || '').slice(0, 220))}</code>`
       : '⚪️ حساب Google Drive غير مربوط بعد (سجّل الدخول بحسابك من واجهة الويب أو اضبط <code>GOOGLE_DRIVE_ACCESS_TOKEN</code>)';
@@ -1004,8 +1273,34 @@ export async function dualUploadMediaMessage({
   }
   inlineRows.push([{ text: '🏠 الرئيسية', callback_data: 'home' }]);
 
+  // If we already created `statusMessageId` and synchronous upload finished (e.g. via public CDN stream), edit `statusMessageId` in place!
+  if (statusMessageId && userChatId && typeof bot?.editMessageText === 'function') {
+    try {
+      await bot.editMessageText(summaryText, {
+        chat_id: userChatId,
+        message_id: statusMessageId,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: inlineRows },
+      });
+      return {
+        ok: channelOutcome.ok || driveOutcome.ok,
+        alreadyReplied: true,
+        title,
+        filename: media.filename,
+        fileType: media.fileType,
+        channelOutcome,
+        driveOutcome,
+        summaryText,
+        replyMarkup: { inline_keyboard: inlineRows },
+      };
+    } catch {
+      // Fall through to normal reply
+    }
+  }
+
   return {
     ok: channelOutcome.ok || driveOutcome.ok,
+    alreadyReplied: false,
     title,
     filename: media.filename,
     fileType: media.fileType,
@@ -1015,3 +1310,4 @@ export async function dualUploadMediaMessage({
     replyMarkup: { inline_keyboard: inlineRows },
   };
 }
+

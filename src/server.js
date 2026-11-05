@@ -31,6 +31,7 @@ import {
   setRuntimeDriveSession,
   uploadBytesToGoogleDrive,
 } from './storage/googleDrive.js';
+import { streamLargeTelegramFileToDrive } from './storage/mtprotoLargeFile.js';
 
 export const DEFAULT_PORT = 3000;
 export const HEALTH_TEXT = 'MEDBOT is active and running';
@@ -271,6 +272,74 @@ async function handleApiRequest(request, response, pathname) {
       });
     } catch (err) {
       return sendJson(response, 400, { ok: false, error: err?.message || 'Upload failed' });
+    }
+  }
+
+  if (method === 'POST' && pathname === '/api/drive/transfer-large-file') {
+    try {
+      const body = await readJsonBody(request);
+      const botToken = String(body.botToken || process.env.BOT_TOKEN || '').trim();
+      const sessionUri = String(body.sessionUri || '').trim();
+      if (!botToken || !sessionUri) {
+        return sendJson(response, 400, { ok: false, error: 'Missing botToken or sessionUri' });
+      }
+
+      const transferParams = {
+        botToken,
+        sessionUri,
+        channelId: body.channelId ?? null,
+        channelMessageId: body.channelMessageId ?? null,
+        userChatId: body.userChatId ?? null,
+        userMessageId: body.userMessageId ?? null,
+        statusChatId: body.statusChatId ?? null,
+        statusMessageId: body.statusMessageId ?? null,
+        filename: String(body.filename || 'large-file.mp4'),
+        mimeType: String(body.mimeType || 'application/octet-stream'),
+        fileSize: body.fileSize ?? null,
+      };
+
+      // If statusChatId + statusMessageId are provided, run asynchronously in the background
+      // and update the user's Telegram message with live progress and final completion link!
+      if (transferParams.statusChatId && transferParams.statusMessageId) {
+        streamLargeTelegramFileToDrive(transferParams).catch(async (err) => {
+          try {
+            await fetch(`https://api.telegram.org/bot${botToken}/editMessageText`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: transferParams.statusChatId,
+                message_id: transferParams.statusMessageId,
+                parse_mode: 'HTML',
+                text: [
+                  '☁️ <b>تقرير الرفع المزدوج التلقائي (القناة + Google Drive)</b>',
+                  '━━━━━━━━━━━━━━━━━━',
+                  `📄 <b>الملف:</b> ${transferParams.filename}`,
+                  '',
+                  `1️⃣ <b>قناة البوت:</b>\n✅ تم الرفع والنشر في قناة البوت (<code>${transferParams.channelId || ''}</code>)`,
+                  '',
+                  `2️⃣ <b>حساب Google Drive:</b>\n⚠️ تعذر نقل الملف الكبير: <code>${String(err?.message || err).slice(0, 180)}</code>`,
+                ].join('\n'),
+                reply_markup: {
+                  inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]],
+                },
+              }),
+            });
+          } catch {
+            // Ignore Telegram edit error
+          }
+        });
+
+        return sendJson(response, 200, {
+          ok: true,
+          asyncTransfer: true,
+          status: 'transferring',
+        });
+      }
+
+      const result = await streamLargeTelegramFileToDrive(transferParams);
+      return sendJson(response, 200, result);
+    } catch (err) {
+      return sendJson(response, 400, { ok: false, error: err?.message || 'Large file transfer failed' });
     }
   }
 
