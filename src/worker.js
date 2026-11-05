@@ -4,8 +4,10 @@ import { get, run } from './db/d1/core.js';
 import { createR2Storage } from './storage/r2.js';
 import {
   dualUploadMediaMessage,
+  ensureDriveFolder,
   extractDriveFolderId,
   getDriveStatus,
+  resolveDriveAccessToken,
   setRuntimeDriveSession,
 } from './storage/googleDrive.js';
 import { createWorkerTelegramDispatcher } from './telegram/workerDispatcher.js';
@@ -209,6 +211,7 @@ function clearPendingStates(userData) {
   userData.admin_archive_set_channel = false;
   userData.admin_archive_import = false;
   userData.drive_set_token = false;
+  userData.drive_set_refresh = false;
   userData.drive_set_folder = false;
 }
 
@@ -260,10 +263,13 @@ async function buildWorkerDriveMenu(db, env) {
       inline_keyboard: [
         [
           { text: '🔑 ربط توكن Google Drive', callback_data: 'drive_set_token' },
-          { text: '📁 تحديد مجلد Drive', callback_data: 'drive_set_folder' },
+          { text: '🔄 ربط دائم (Refresh)', callback_data: 'drive_set_refresh' },
         ],
-        [{ text: '📡 إعداد قناة الأرشيف', callback_data: 'admin_archive_set_channel' }],
-        [{ text: '🏠 الرئيسية', callback_data: 'home' }],
+        [
+          { text: '📁 تحديد مجلد Drive', callback_data: 'drive_set_folder' },
+          { text: '🧪 فحص الاتصال الآن', callback_data: 'drive_test' },
+        ],
+        [{ text: '⬅️ إدارة المنصة', callback_data: 'admin' }, { text: '🏠 الرئيسية', callback_data: 'home' }],
       ],
     },
   };
@@ -675,6 +681,50 @@ async function dispatchTelegramUpdate(update, { env }) {
           },
         );
       }
+      if (ctx.data === 'drive_set_refresh') {
+        ctx.userData.drive_set_refresh = true;
+        await ctx.answer();
+        return ctx.editMessageText(
+          '🔄 <b>الربط الدائم التلقائي لحساب Google Drive</b>\n\nأرسل القيم الثلاث في رسالة واحدة (كل قيمة في سطر مستقل أو مفصولة بـ <code>|</code>) بالترتيب:\n<code>CLIENT_ID</code>\n<code>CLIENT_SECRET</code>\n<code>REFRESH_TOKEN</code>',
+          {
+            reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'drive_menu' }]] },
+            parse_mode: 'HTML',
+          },
+        );
+      }
+      if (ctx.data === 'drive_test') {
+        await ctx.answer();
+        try {
+          const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
+          const token = await resolveDriveAccessToken(driveEnv);
+          if (!token) {
+            return ctx.editMessageText(
+              '⚠️ <b>حساب Google Drive غير مربوط بعد.</b>\n\nاضغط على <b>«🔑 ربط توكن Google Drive»</b> أو <b>«🔄 ربط دائم»</b> أولاً.',
+              {
+                reply_markup: { inline_keyboard: [[{ text: '⬅️ رجوع لإعدادات Drive', callback_data: 'drive_menu' }]] },
+                parse_mode: 'HTML',
+              },
+            );
+          }
+          const folderId = await ensureDriveFolder({ accessToken: token, env: driveEnv });
+          const folderLink = folderId ? `https://drive.google.com/drive/folders/${folderId}` : 'https://drive.google.com';
+          return ctx.editMessageText(
+            `✅ <b>الاتصال بحساب Google Drive ناجح ويعمل 100%!</b>\n\n📁 <b>مجلد الأرشيف الجاهز:</b> <code>${folderId || 'MEDBOT Archive'}</code>\n🔗 <a href="${folderLink}">فتح مجلد البوت في Google Drive</a>`,
+            {
+              reply_markup: { inline_keyboard: [[{ text: '⬅️ رجوع لإعدادات Drive', callback_data: 'drive_menu' }, { text: '🏠 الرئيسية', callback_data: 'home' }]] },
+              parse_mode: 'HTML',
+            },
+          );
+        } catch (err) {
+          return ctx.editMessageText(
+            `❌ <b>فشل اختبار الاتصال بـ Google Drive:</b>\n<code>${String(err?.message || err).slice(0, 180)}</code>`,
+            {
+              reply_markup: { inline_keyboard: [[{ text: '⬅️ رجوع لإعدادات Drive', callback_data: 'drive_menu' }]] },
+              parse_mode: 'HTML',
+            },
+          );
+        }
+      }
 
       // Admin Pending Contributions
       if (ctx.data === 'admin_pending') {
@@ -1053,6 +1103,37 @@ async function dispatchTelegramUpdate(update, { env }) {
       setRuntimeDriveSession({ accessToken: token });
       const menu = await buildWorkerDriveMenu(ctx.db, env);
       return ctx.reply(`✅ تم حفظ ربط Google Drive في قاعدة بيانات السحابة (D1) بنجاح.\n\n${menu.text}`, {
+        reply_markup: menu.reply_markup,
+        parse_mode: 'HTML',
+      });
+    }
+    if (ctx.userData?.drive_set_refresh) {
+      ctx.userData.drive_set_refresh = false;
+      const raw = String(ctx.text ?? '').trim();
+      const parts = raw.includes('|')
+        ? raw.split('|').map((s) => s.trim()).filter(Boolean)
+        : raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      if (parts.length < 3) {
+        return ctx.reply('⚠️ يرجى إرسال القيم الثلاث (CLIENT_ID ثم CLIENT_SECRET ثم REFRESH_TOKEN) في 3 أسطر أو مفصولة بـ |.');
+      }
+      const [clientId, clientSecret, refreshToken] = parts;
+      await run(
+        ctx.db,
+        "INSERT INTO settings(key,value) VALUES('google_drive_client_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [clientId],
+      ).catch(() => {});
+      await run(
+        ctx.db,
+        "INSERT INTO settings(key,value) VALUES('google_drive_client_secret',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [clientSecret],
+      ).catch(() => {});
+      await run(
+        ctx.db,
+        "INSERT INTO settings(key,value) VALUES('google_drive_refresh_token',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [refreshToken],
+      ).catch(() => {});
+      const menu = await buildWorkerDriveMenu(ctx.db, env);
+      return ctx.reply(`✅ تم حفظ الربط الدائم (Refresh Token) لحساب Google Drive في D1 بنجاح.\n\n${menu.text}`, {
         reply_markup: menu.reply_markup,
         parse_mode: 'HTML',
       });

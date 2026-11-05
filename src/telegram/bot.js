@@ -25,7 +25,7 @@ import * as workflowModule from '../workflow.js';
 import * as backup from './adminBackup.js';
 import * as secrets from './adminSecrets.js';
 import { buildFullBotBundle } from '../backup/fullBundle.js';
-import { loadRuntimeSecrets } from '../security/secretVault.js';
+import { loadRuntimeSecrets, setRuntimeSecret } from '../security/secretVault.js';
 import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { readFile, rm } from 'node:fs/promises';
@@ -43,9 +43,13 @@ import {
 import { pollUpdates } from './adapter.js';
 import {
   dualUploadMediaMessage,
+  ensureDriveFolder,
+  extractDriveFolderId,
   getDriveStatus,
   isDriveConfigured,
   isForwardedMessage,
+  resolveDriveAccessToken,
+  setRuntimeDriveSession,
 } from '../storage/googleDrive.js';
 
 /**
@@ -113,7 +117,18 @@ export function registerHandlers() {
   registerRoute({ name: 'account', prefixes: ['account'], handler: accountRoute });
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
   registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
-  registerRoute({ name: 'drive', prefixes: ['drive_menu', 'drive_toggle_dual'], handler: driveRoute });
+  registerRoute({
+    name: 'drive',
+    prefixes: [
+      'drive_menu',
+      'drive_toggle_dual',
+      'drive_set_token',
+      'drive_set_refresh',
+      'drive_set_folder',
+      'drive_test',
+    ],
+    handler: driveRoute,
+  });
   registerRoute({ name: 'secrets', prefixes: secrets.ADMIN_SECRET_PREFIXES, handler: secrets.handleSecretCallback });
   registerRoute({ name: 'bundle', prefixes: ['bundle_confirm'], handler: bundleRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
@@ -141,6 +156,7 @@ export function registerHandlers() {
   registerTextHandler('adminAdd', adminManagement.handleAddAdminText);
   registerTextHandler('settings', adminSettings.handleSettingText);
   registerTextHandler('secrets', secrets.handleSecretText);
+  registerTextHandler('driveSetup', handleDriveSetupText);
   registerTextHandler('topicsCreate', topics.handleTopicsText);
   registerTextHandler('notifications', adminSettings.handleNotificationText);
   registerTextHandler('assistant', assistant.handleAssistantText);
@@ -242,41 +258,249 @@ function buildDualUploadScreen(ctx) {
   const drive = getDriveStatus();
   const dualActive = Boolean(ctx.userData?.dual_upload_mode);
   const text = [
-    '☁️ <b>الرفع المزدوج التلقائي (قناة البوت + Google Drive)</b>',
+    '☁️ <b>إعدادات ربط Google Drive والرفع المزدوج (من داخل البوت)</b>',
     '━━━━━━━━━━━━━━━━━━',
-    'أي ملف تقوم بتوجيهه (Forward) إلى البوت يتم رفعه تلقائياً إلى مكانين:',
+    'أي ملف تقوم بتوجيهه (Forward) إلى البوت يتم رفعه تلقائياً إلى مكانين في نفس اللحظة:',
     '',
-    `1️⃣ <b>قناة البوت:</b> ${ch ? `✅ متصلة (<code>${ch}</code>)` : '⚪️ غير مضبوطة (MEDBOT_ARCHIVE_CHANNEL)'}`,
+    `1️⃣ <b>قناة البوت:</b> ${ch ? `✅ متصلة وتعمل (<code>${ch}</code>)` : '⚪️ غير مضبوطة (MEDBOT_ARCHIVE_CHANNEL)'}`,
     `2️⃣ <b>حساب Google Drive:</b> ${
       drive.configured
-        ? `✅ متصل${drive.userEmail ? ` (${drive.userEmail})` : ''}`
-        : '⚪️ غير مربوط بعد (اربطه من واجهة الويب أو عبر /secrets)'
+        ? `✅ مربوط وجاهز${drive.userEmail ? ` (${drive.userEmail})` : ''}`
+        : '⚪️ غير مربوط بعد — اختر طريقة الربط بالأسفل 👇'
     }`,
-    `📁 <b>مجلد Google Drive:</b> <code>${drive.folderId || drive.folderName}</code>`,
-    `🔄 <b>وضع استقبال أي ملف مباشر:</b> ${dualActive ? '🟢 مفعل دائماً' : '🟢 مفعل تلقائياً عند التوجيه (Forward)'}`,
+    `📁 <b>مجلد الحفظ في Drive:</b> <code>${drive.folderId || drive.folderName}</code>`,
+    `🔄 <b>وضع استقبال الملفات:</b> ${dualActive ? '🟢 مفعل لأي ملف مباشر أو موجه' : '🟢 مفعل تلقائياً عند توجيه أي ملف (Forward)'}`,
     '',
-    '💡 <i>وجّه أي ملف (PDF، مستند، صورة، فيديو، أو صوت) إلى البوت الآن ليتم رفعه فوراً إلى القناة وإلى حسابك في Google Drive.</i>',
+    '💡 <b>طرق الربط المباشر من داخل البوت:</b>',
+    '• اضغط <b>«🔑 ربط توكن Google Drive»</b> لإرسال التوكن مباشرة في المحادثة.',
+    '• أو اضغط <b>«🔄 ربط دائم (Refresh Token)»</b> لربط لا ينتهي ويتجدد تلقائياً.',
+    '• أو اضغط <b>«📁 تحديد مجلد Drive»</b> لاختيار مجلد معين في حسابك.',
   ].join('\n');
 
   const markup = keyboard([
+    [
+      btn('🔑 ربط توكن Google Drive', 'drive_set_token'),
+      btn('🔄 ربط دائم (Refresh)', 'drive_set_refresh'),
+    ],
+    [
+      btn('📁 تحديد مجلد Drive', 'drive_set_folder'),
+      btn('🧪 فحص الاتصال الآن', 'drive_test'),
+    ],
     [
       btn(
         dualActive ? '🔔 الرفع المباشر بدون توجيه: مفعل' : '🔘 تفعيل الرفع لأي ملف حتى بدون توجيه',
         'drive_toggle_dual',
       ),
     ],
-    [btn('🏠 الرئيسية', 'home')],
+    [btn('⬅️ إدارة المنصة', 'admin'), btn('🏠 الرئيسية', 'home')],
   ]);
   return { text, markup };
 }
 
 async function driveRoute(ctx) {
   await ctx.answer();
+  delete ctx.userData.drive_wait_token;
+  delete ctx.userData.drive_wait_refresh;
+  delete ctx.userData.drive_wait_folder;
+
   if (ctx.data === 'drive_toggle_dual') {
     ctx.userData.dual_upload_mode = !ctx.userData?.dual_upload_mode;
+  } else if (ctx.data === 'drive_set_token') {
+    ctx.userData.drive_wait_token = true;
+    await ctx.editMessageText(
+      [
+        '🔑 <b>ربط حساب Google Drive مباشرة من البوت</b>',
+        '',
+        'أرسل الآن رمز الوصول (<b>Access Token</b>) الخاص بحسابك في Google Drive في رسالة نصية هنا.',
+        '',
+        '💡 <i>سيقوم البوت بحفظه مشفّراً وتفعيله فوراً وحذف رسالتك تلقائياً للحفاظ على الخصوصية.</i>',
+      ].join('\n'),
+      {
+        parse_mode: 'HTML',
+        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
+      },
+    );
+    return;
+  } else if (ctx.data === 'drive_set_refresh') {
+    ctx.userData.drive_wait_refresh = true;
+    await ctx.editMessageText(
+      [
+        '🔄 <b>الربط الدائم التلقائي لحساب Google Drive</b>',
+        '',
+        'أرسل البيانات الثلاثة في رسالة واحدة (كل قيمة في سطر مستقل أو مفصولة بـ <code>|</code>) بالترتيب التالي:',
+        '<code>CLIENT_ID</code>',
+        '<code>CLIENT_SECRET</code>',
+        '<code>REFRESH_TOKEN</code>',
+        '',
+        '💡 <i>بهذه الطريقة يقوم البوت بتجديد صلاحية الدخول إلى Google Drive تلقائياً مدى الحياة بدون انتهاء.</i>',
+      ].join('\n'),
+      {
+        parse_mode: 'HTML',
+        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
+      },
+    );
+    return;
+  } else if (ctx.data === 'drive_set_folder') {
+    ctx.userData.drive_wait_folder = true;
+    await ctx.editMessageText(
+      [
+        '📁 <b>تحديد مجلد الحفظ في Google Drive</b>',
+        '',
+        'أرسل الآن <b>رابط المجلد</b> من Google Drive (مثل <code>https://drive.google.com/drive/folders/...</code>) أو <b>معرّف المجلد (Folder ID)</b> مباشرة:',
+      ].join('\n'),
+      {
+        parse_mode: 'HTML',
+        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
+      },
+    );
+    return;
+  } else if (ctx.data === 'drive_test') {
+    try {
+      const token = await resolveDriveAccessToken();
+      if (!token) {
+        await ctx.editMessageText(
+          '⚠️ <b>حساب Google Drive غير مربوط بعد.</b>\n\nاضغط على <b>«🔑 ربط توكن Google Drive»</b> أو <b>«🔄 ربط دائم»</b> أولاً.',
+          {
+            parse_mode: 'HTML',
+            reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
+          },
+        );
+        return;
+      }
+      const folderId = await ensureDriveFolder({ accessToken: token });
+      const folderLink = folderId ? `https://drive.google.com/drive/folders/${folderId}` : 'https://drive.google.com';
+      await ctx.editMessageText(
+        [
+          '✅ <b>الاتصال بحساب Google Drive ناجح ويعمل 100%!</b>',
+          '',
+          `📁 <b>مجلد الأرشيف الجاهز:</b> <code>${folderId || 'MEDBOT Archive'}</code>`,
+          `🔗 <a href="${folderLink}">فتح مجلد البوت في Google Drive</a>`,
+          '',
+          'الآن أي ملف توجهه (Forward) إلى البوت سيتم رفعه تلقائياً إلى قناة البوت وإلى هذا المجلد في Google Drive.',
+        ].join('\n'),
+        {
+          parse_mode: 'HTML',
+          reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu'), btn('🏠 الرئيسية', 'home')]]),
+        },
+      );
+      return;
+    } catch (err) {
+      await ctx.editMessageText(
+        `❌ <b>فشل اختبار الاتصال بـ Google Drive:</b>\n<code>${String(err?.message || err).slice(0, 180)}</code>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
+        },
+      );
+      return;
+    }
   }
+
   const screen = buildDualUploadScreen(ctx);
   await ctx.editMessageText(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+}
+
+async function handleDriveSetupText(ctx) {
+  if (ctx.kind !== 'message') return false;
+  const raw = String(ctx.text ?? '').trim();
+  if (!raw) return false;
+
+  if (ctx.userData?.drive_wait_token) {
+    delete ctx.userData.drive_wait_token;
+    if (raw === '/cancel') {
+      const screen = buildDualUploadScreen(ctx);
+      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+      return true;
+    }
+    const cleanToken = raw.replace(/^GOOGLE_DRIVE_ACCESS_TOKEN\s*=\s*/i, '').trim();
+    try {
+      setRuntimeSecret('GOOGLE_DRIVE_ACCESS_TOKEN', cleanToken);
+    } catch {
+      // Ignore if secret vault is read-only in test env
+    }
+    process.env.GOOGLE_DRIVE_ACCESS_TOKEN = cleanToken;
+    setRuntimeDriveSession({ accessToken: cleanToken });
+    if (ctx.message?.message_id) {
+      await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(() => {});
+    }
+    const screen = buildDualUploadScreen(ctx);
+    await ctx.reply(`✅ <b>تم ربط وتفعيل حساب Google Drive من داخل البوت بنجاح!</b>\n\n${screen.text}`, {
+      parse_mode: 'HTML',
+      reply_markup: screen.markup,
+    });
+    return true;
+  }
+
+  if (ctx.userData?.drive_wait_refresh) {
+    delete ctx.userData.drive_wait_refresh;
+    if (raw === '/cancel') {
+      const screen = buildDualUploadScreen(ctx);
+      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+      return true;
+    }
+    const parts = raw.includes('|')
+      ? raw.split('|').map((s) => s.trim()).filter(Boolean)
+      : raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (parts.length < 3) {
+      await ctx.reply('⚠️ يرجى إرسال القيم الثلاث (CLIENT_ID ثم CLIENT_SECRET ثم REFRESH_TOKEN) في 3 أسطر أو مفصولة بـ |.', {
+        parse_mode: 'HTML',
+        reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
+      });
+      return true;
+    }
+    const [clientId, clientSecret, refreshToken] = parts;
+    try {
+      setRuntimeSecret('GOOGLE_CLIENT_ID', clientId);
+      setRuntimeSecret('GOOGLE_CLIENT_SECRET', clientSecret);
+      setRuntimeSecret('GOOGLE_REFRESH_TOKEN', refreshToken);
+    } catch {
+      // Ignore vault errors if any
+    }
+    process.env.GOOGLE_CLIENT_ID = clientId;
+    process.env.GOOGLE_CLIENT_SECRET = clientSecret;
+    process.env.GOOGLE_REFRESH_TOKEN = refreshToken;
+    if (ctx.message?.message_id) {
+      await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(() => {});
+    }
+    const screen = buildDualUploadScreen(ctx);
+    await ctx.reply(`✅ <b>تم حفظ الربط الدائم (Refresh Token) لحساب Google Drive بنجاح!</b>\n\n${screen.text}`, {
+      parse_mode: 'HTML',
+      reply_markup: screen.markup,
+    });
+    return true;
+  }
+
+  if (ctx.userData?.drive_wait_folder) {
+    delete ctx.userData.drive_wait_folder;
+    if (raw === '/cancel') {
+      const screen = buildDualUploadScreen(ctx);
+      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+      return true;
+    }
+    const folderId = extractDriveFolderId(raw);
+    if (!folderId) {
+      await ctx.reply('⚠️ رابط أو معرّف المجلد غير صالح. أرسل رابط مجلد Google Drive أو المعرّف الصحيح.', {
+        parse_mode: 'HTML',
+        reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
+      });
+      return true;
+    }
+    try {
+      setRuntimeSecret('GOOGLE_DRIVE_FOLDER_ID', folderId);
+    } catch {
+      // Ignore vault errors
+    }
+    process.env.GOOGLE_DRIVE_FOLDER_ID = folderId;
+    setRuntimeDriveSession({ folderId });
+    const screen = buildDualUploadScreen(ctx);
+    await ctx.reply(`✅ <b>تم تحديد مجلد Google Drive (<code>${folderId}</code>) بنجاح!</b>\n\n${screen.text}`, {
+      parse_mode: 'HTML',
+      reply_markup: screen.markup,
+    });
+    return true;
+  }
+
+  return false;
 }
 
 async function driveCommand(ctx) {

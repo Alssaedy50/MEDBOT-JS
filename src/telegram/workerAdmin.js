@@ -108,6 +108,7 @@ export async function buildWorkerAdmin(db, user) {
   }
   if (await hasPermission(db, id, 'can_archive')) {
     items.push(btn('🗄 أرشيف القناة', 'admin_archive'));
+    items.push(btn('☁️ ربط Google Drive', 'drive_menu'));
   }
   if (await hasPermission(db, id, 'can_settings')) {
     items.push(btn('⚙️ إعدادات المنصة', 'admin_settings'));
