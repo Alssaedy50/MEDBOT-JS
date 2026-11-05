@@ -210,6 +210,7 @@ function clearPendingStates(userData) {
   userData.admin_add_new = false;
   userData.admin_archive_set_channel = false;
   userData.admin_archive_import = false;
+  userData.drive_set_script = false;
   userData.drive_set_token = false;
   userData.drive_set_refresh = false;
   userData.drive_set_folder = false;
@@ -220,6 +221,7 @@ async function resolveWorkerDriveEnv(db, env) {
   if (!db) return merged;
   try {
     const keys = [
+      ['google_drive_script_url', 'GOOGLE_DRIVE_SCRIPT_URL'],
       ['google_drive_access_token', 'GOOGLE_DRIVE_ACCESS_TOKEN'],
       ['google_drive_refresh_token', 'GOOGLE_REFRESH_TOKEN'],
       ['google_drive_client_id', 'GOOGLE_CLIENT_ID'],
@@ -232,8 +234,9 @@ async function resolveWorkerDriveEnv(db, env) {
         if (row?.[0]) merged[envKey] = String(row[0]).trim();
       }
     }
-    if (merged.GOOGLE_DRIVE_ACCESS_TOKEN || merged.GOOGLE_DRIVE_FOLDER_ID) {
+    if (merged.GOOGLE_DRIVE_SCRIPT_URL || merged.GOOGLE_DRIVE_ACCESS_TOKEN || merged.GOOGLE_DRIVE_FOLDER_ID) {
       setRuntimeDriveSession({
+        scriptUrl: merged.GOOGLE_DRIVE_SCRIPT_URL || undefined,
         accessToken: merged.GOOGLE_DRIVE_ACCESS_TOKEN || undefined,
         folderId: merged.GOOGLE_DRIVE_FOLDER_ID || undefined,
       });
@@ -261,6 +264,7 @@ async function buildWorkerDriveMenu(db, env) {
     text,
     reply_markup: {
       inline_keyboard: [
+        [{ text: '⚡ ربط دائم سريع (Google Script — الأسهل)', callback_data: 'drive_set_script' }],
         [
           { text: '🔑 ربط توكن Google Drive', callback_data: 'drive_set_token' },
           { text: '🔄 ربط دائم (Refresh)', callback_data: 'drive_set_refresh' },
@@ -681,13 +685,48 @@ async function dispatchTelegramUpdate(update, { env }) {
           },
         );
       }
+      if (ctx.data === 'drive_set_script') {
+        ctx.userData.drive_set_script = true;
+        await ctx.answer();
+        return ctx.editMessageText(
+          [
+            '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (في دقيقة واحدة وبدون Client ID)</b>',
+            '',
+            '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> واضغط <b>New project (مشروع جديد)</b>.',
+            '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط:',
+            '<pre>function doGet() {\n  DriveApp.getRootFolder();\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
+            '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على الصلاحية.',
+            '4️⃣ انسخ الرابط الناتج (ينتهي بـ <code>/exec</code>) وأرسله هنا في المحادثة الآن!',
+          ].join('\n'),
+          {
+            reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'drive_menu' }]] },
+            parse_mode: 'HTML',
+          },
+        );
+      }
       if (ctx.data === 'drive_set_refresh') {
         ctx.userData.drive_set_refresh = true;
         await ctx.answer();
         return ctx.editMessageText(
-          '🔄 <b>الربط الدائم التلقائي لحساب Google Drive</b>\n\nأرسل القيم الثلاث في رسالة واحدة (كل قيمة في سطر مستقل أو مفصولة بـ <code>|</code>) بالترتيب:\n<code>CLIENT_ID</code>\n<code>CLIENT_SECRET</code>\n<code>REFRESH_TOKEN</code>',
+          [
+            '🔄 <b>الربط الدائم التلقائي لحساب Google Drive (عبر OAuth)</b>',
+            '',
+            '<b>من أين تحصل عليها؟</b>',
+            '1️⃣ من <a href="https://console.cloud.google.com/apis/credentials">Google Cloud Credentials</a> أنشئ <b>OAuth client ID</b> (نوع Web application) وأضف <code>https://developers.google.com/oauthplayground</code> في Authorized redirect URIs لتحصل على <code>CLIENT_ID</code> و <code>CLIENT_SECRET</code>.',
+            '2️⃣ افتح <a href="https://developers.google.com/oauthplayground">OAuth 2.0 Playground</a>، ومن الإعدادات ⚙️ فعّل <i>Use your own OAuth credentials</i>، ثم اختر صلاحية <code>https://www.googleapis.com/auth/drive.file</code> واضغط Authorize ثم <b>Exchange authorization code for tokens</b> لتحصل على <code>REFRESH_TOKEN</code>.',
+            '',
+            'أرسل القيم الثلاث في رسالة واحدة (كل قيمة في سطر مستقل أو مفصولة بـ <code>|</code>):',
+            '<code>CLIENT_ID</code>',
+            '<code>CLIENT_SECRET</code>',
+            '<code>REFRESH_TOKEN</code>',
+          ].join('\n'),
           {
-            reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'drive_menu' }]] },
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '⚡ استخدام Google Script الأسهل', callback_data: 'drive_set_script' }],
+                [{ text: '❌ إلغاء', callback_data: 'drive_menu' }],
+              ],
+            },
             parse_mode: 'HTML',
           },
         );
@@ -1090,6 +1129,24 @@ async function dispatchTelegramUpdate(update, { env }) {
     if (ctx.userData?.admin_archive_import) {
       const res = await importWorkerArchiveInput(ctx.db, ctx.from, ctx.message, bot);
       return ctx.reply(res.text, { reply_markup: res.reply_markup, parse_mode: 'HTML' });
+    }
+    if (ctx.userData?.drive_set_script) {
+      ctx.userData.drive_set_script = false;
+      const scriptUrl = String(ctx.text ?? '').trim();
+      if (!/^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl)) {
+        return ctx.reply('⚠️ يرجى إرسال رابط Google Apps Script Web App الصحيح (يبدأ بـ https://script.google.com/macros/s/ وينتهي بـ /exec).');
+      }
+      await run(
+        ctx.db,
+        "INSERT INTO settings(key,value) VALUES('google_drive_script_url',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [scriptUrl],
+      ).catch(() => {});
+      setRuntimeDriveSession({ scriptUrl });
+      const menu = await buildWorkerDriveMenu(ctx.db, env);
+      return ctx.reply(`✅ تم حفظ وتفعيل الربط الدائم عبر Google Script في قاعدة بيانات السحابة (D1) بنجاح!\n\n${menu.text}`, {
+        reply_markup: menu.reply_markup,
+        parse_mode: 'HTML',
+      });
     }
     if (ctx.userData?.drive_set_token) {
       ctx.userData.drive_set_token = false;

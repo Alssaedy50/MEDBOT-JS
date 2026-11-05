@@ -16,6 +16,7 @@ export const DEFAULT_DRIVE_FOLDER_NAME = 'MEDBOT Archive';
 // In-memory OAuth session (populated from the Web Dashboard Google Sign-In or runtime config)
 const runtimeDriveSession = {
   accessToken: null,
+  scriptUrl: null,
   userEmail: null,
   userName: null,
   folderId: null,
@@ -44,9 +45,18 @@ export function getRecentDualUploads() {
   return [...recentDualUploads];
 }
 
-export function setRuntimeDriveSession({ accessToken, userEmail = null, userName = null, folderId = null } = {}) {
+export function setRuntimeDriveSession({
+  accessToken,
+  scriptUrl,
+  userEmail = null,
+  userName = null,
+  folderId = null,
+} = {}) {
   if (accessToken !== undefined) {
     runtimeDriveSession.accessToken = accessToken ? String(accessToken).trim() : null;
+  }
+  if (scriptUrl !== undefined) {
+    runtimeDriveSession.scriptUrl = scriptUrl ? String(scriptUrl).trim() : null;
   }
   if (userEmail !== undefined) {
     runtimeDriveSession.userEmail = userEmail ? String(userEmail).trim() : null;
@@ -64,6 +74,7 @@ export function setRuntimeDriveSession({ accessToken, userEmail = null, userName
 
 export function clearRuntimeDriveSession() {
   runtimeDriveSession.accessToken = null;
+  runtimeDriveSession.scriptUrl = null;
   runtimeDriveSession.userEmail = null;
   runtimeDriveSession.userName = null;
   runtimeDriveSession.cachedArchiveFolderId = null;
@@ -99,8 +110,12 @@ export function resolveConfiguredFolderId(env = defaultEnv()) {
 }
 
 export function isDriveConfigured(env = defaultEnv()) {
-  if (runtimeDriveSession.accessToken) return true;
+  if (runtimeDriveSession.accessToken || runtimeDriveSession.scriptUrl) return true;
   const fallback = defaultEnv();
+  const scriptUrl = String(
+    env?.GOOGLE_DRIVE_SCRIPT_URL || fallback.GOOGLE_DRIVE_SCRIPT_URL || '',
+  ).trim();
+  if (scriptUrl) return true;
   const directToken = String(
     env?.GOOGLE_DRIVE_ACCESS_TOKEN || fallback.GOOGLE_DRIVE_ACCESS_TOKEN || '',
   ).trim();
@@ -135,6 +150,10 @@ export function getDriveStatus(env = defaultEnv()) {
 
 /**
  * Resolve an active Google Drive OAuth 2.0 Bearer access token.
+ * Supports:
+ *   1. Direct Bearer token
+ *   2. Google Apps Script Web App URL (`GOOGLE_DRIVE_SCRIPT_URL`) returning `{ access_token }`
+ *   3. OAuth 2.0 Refresh Token (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REFRESH_TOKEN`)
  */
 export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken = null, fetchImpl = fetch } = {}) {
   const explicit = String(bearerToken ?? '').replace(/^Bearer\s+/i, '').trim();
@@ -149,6 +168,22 @@ export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken 
     env?.GOOGLE_DRIVE_ACCESS_TOKEN || fallback.GOOGLE_DRIVE_ACCESS_TOKEN || '',
   ).trim();
   if (direct) return direct;
+
+  const scriptUrl = String(
+    runtimeDriveSession.scriptUrl ||
+      env?.GOOGLE_DRIVE_SCRIPT_URL ||
+      fallback.GOOGLE_DRIVE_SCRIPT_URL ||
+      '',
+  ).trim();
+  if (scriptUrl && /^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl)) {
+    const res = await fetchImpl(scriptUrl, { method: 'GET', redirect: 'follow' });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.access_token) {
+      runtimeDriveSession.accessToken = data.access_token;
+      runtimeDriveSession.updatedAt = new Date().toISOString();
+      return data.access_token;
+    }
+  }
 
   const refreshToken = String(
     env?.GOOGLE_REFRESH_TOKEN || fallback.GOOGLE_REFRESH_TOKEN || '',
@@ -276,6 +311,49 @@ export async function uploadBytesToGoogleDrive({
     metadata.parents = [targetFolderId];
   }
 
+  const fileBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const RESUMABLE_THRESHOLD_BYTES = 4 * 1024 * 1024; // Use resumable direct binary upload for files > 4 MB
+
+  if (fileBytes.byteLength > RESUMABLE_THRESHOLD_BYTES) {
+    const initUrl =
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,size,createdTime,webViewLink,webContentLink';
+    const initRes = await fetchImpl(initUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': mimeType || 'application/octet-stream',
+        'X-Upload-Content-Length': String(fileBytes.byteLength),
+      },
+      body: JSON.stringify(metadata),
+    });
+    const sessionUri = initRes.headers?.get?.('Location') || initRes.headers?.get?.('location');
+    if (initRes.ok && sessionUri) {
+      const putRes = await fetchImpl(sessionUri, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': mimeType || 'application/octet-stream',
+          'Content-Length': String(fileBytes.byteLength),
+        },
+        body: fileBytes,
+      });
+      const putData = await putRes.json().catch(() => null);
+      if (putRes.ok && putData?.id) {
+        return {
+          ok: true,
+          id: putData.id,
+          name: putData.name || metadata.name,
+          mimeType: putData.mimeType || mimeType,
+          size: Number(putData.size ?? fileBytes.byteLength),
+          createdTime: putData.createdTime || new Date().toISOString(),
+          webViewLink: putData.webViewLink || `https://drive.google.com/file/d/${putData.id}/view`,
+          webContentLink: putData.webContentLink || null,
+          folderId: targetFolderId || null,
+        };
+      }
+    }
+  }
+
   const boundary = `medbot_drive_boundary_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const metaPart =
     `--${boundary}\r\n` +
@@ -288,7 +366,6 @@ export async function uploadBytesToGoogleDrive({
   const encoder = new TextEncoder();
   const headBytes = encoder.encode(metaPart);
   const tailBytes = encoder.encode(closingPart);
-  const fileBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
 
   const combined = new Uint8Array(headBytes.length + fileBytes.length + tailBytes.length);
   combined.set(headBytes, 0);
@@ -460,6 +537,7 @@ export async function uploadTelegramFileToGoogleDrive({
   title = '',
   description = '',
   folderId = null,
+  channelLink = null,
   env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
@@ -472,6 +550,7 @@ export async function uploadTelegramFileToGoogleDrive({
 
   let bytes = null;
   let detectedPath = '';
+  let downloadErr = null;
   try {
     if (typeof bot.downloadFileBytes === 'function') {
       const downloaded = await bot.downloadFileBytes(fileId);
@@ -490,11 +569,7 @@ export async function uploadTelegramFileToGoogleDrive({
       bytes = new TextEncoder().encode(`MEDBOT_TEST_CONTENT:${fileId}:${title || filename || ''}`);
     }
   } catch (err) {
-    return { ok: false, reason: 'telegram_download_failed', error: err?.message ?? String(err) };
-  }
-
-  if (!bytes) {
-    return { ok: false, reason: 'empty_file_bytes', error: 'تعذر تنزيل محتوى الملف من تيليجرام.' };
+    downloadErr = err;
   }
 
   let finalName = String(filename || title || '').trim();
@@ -504,6 +579,36 @@ export async function uploadTelegramFileToGoogleDrive({
   } else if (!finalName.includes('.') && detectedPath.includes('.')) {
     const ext = detectedPath.split('.').pop();
     if (ext && ext.length <= 6) finalName = `${finalName}.${ext}`;
+  }
+
+  // Fallback for files > 20 MB where public Telegram Bot API getFile returns "file is too big":
+  // Save a direct cloud launcher card in Google Drive pointing to the Archive Channel post so no file of any size is ever lost.
+  if (!bytes) {
+    if (channelLink) {
+      const safeTitle = String(title || finalName).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const htmlBridge = [
+        '<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">',
+        `<meta http-equiv="refresh" content="0;url=${channelLink}">`,
+        `<title>${safeTitle} — MEDBOT Archive</title>`,
+        '<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}.card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:32px;max-width:480px}a{display:inline-block;margin-top:20px;padding:12px 24px;background:#10b981;color:#052e16;font-weight:700;text-decoration:none;border-radius:10px}</style></head>',
+        `<body><div class="card"><h2>📄 ${safeTitle}</h2><p>ملف كبير الحجم محفوظ في أرشيف قناة البوت الرسمية.</p><a href="${channelLink}">📥 فتح وتنزيل الملف الكامل الآن</a></div></body></html>`,
+      ].join('');
+      const bridgeBytes = new TextEncoder().encode(htmlBridge);
+      return uploadBytesToGoogleDrive({
+        filename: `${finalName} (رابط مباشر للملف الكبير).html`,
+        mimeType: 'text/html; charset=utf-8',
+        bytes: bridgeBytes,
+        folderId,
+        description: `${description || title || finalName} — Direct Channel Link: ${channelLink}`,
+        env,
+        fetchImpl,
+      });
+    }
+    return {
+      ok: false,
+      reason: 'telegram_download_failed',
+      error: downloadErr?.message ?? 'تعذر تنزيل محتوى الملف من تيليجرام.',
+    };
   }
 
   return uploadBytesToGoogleDrive({
@@ -607,6 +712,17 @@ export async function dualUploadMediaMessage({
     }
   }
 
+  // Build a direct Telegram link to the channel post so >20MB files always have a permanent bridge in Drive
+  let channelLink = null;
+  if (channelOutcome.ok && channelOutcome.messageId && channelTarget) {
+    const rawTarget = String(channelTarget).trim();
+    if (rawTarget.startsWith('@')) {
+      channelLink = `https://t.me/${rawTarget.slice(1)}/${channelOutcome.messageId}`;
+    } else if (/^-100\d+$/.test(rawTarget)) {
+      channelLink = `https://t.me/c/${rawTarget.slice(4)}/${channelOutcome.messageId}`;
+    }
+  }
+
   // 2. Upload to Google Drive
   let driveOutcome = { ok: false, configured: isDriveConfigured(env), error: null };
   if (driveOutcome.configured) {
@@ -617,6 +733,7 @@ export async function dualUploadMediaMessage({
       mimeType: media.mimeType,
       title,
       description: captionRaw || title,
+      channelLink,
       env,
       fetchImpl,
     });

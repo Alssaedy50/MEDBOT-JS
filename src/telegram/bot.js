@@ -122,6 +122,7 @@ export function registerHandlers() {
     prefixes: [
       'drive_menu',
       'drive_toggle_dual',
+      'drive_set_script',
       'drive_set_token',
       'drive_set_refresh',
       'drive_set_folder',
@@ -278,6 +279,7 @@ function buildDualUploadScreen(ctx) {
   ].join('\n');
 
   const markup = keyboard([
+    [btn('⚡ ربط دائم سريع (Google Script — الأسهل)', 'drive_set_script')],
     [
       btn('🔑 ربط توكن Google Drive', 'drive_set_token'),
       btn('🔄 ربط دائم (Refresh)', 'drive_set_refresh'),
@@ -299,12 +301,31 @@ function buildDualUploadScreen(ctx) {
 
 async function driveRoute(ctx) {
   await ctx.answer();
+  delete ctx.userData.drive_wait_script;
   delete ctx.userData.drive_wait_token;
   delete ctx.userData.drive_wait_refresh;
   delete ctx.userData.drive_wait_folder;
 
   if (ctx.data === 'drive_toggle_dual') {
     ctx.userData.dual_upload_mode = !ctx.userData?.dual_upload_mode;
+  } else if (ctx.data === 'drive_set_script') {
+    ctx.userData.drive_wait_script = true;
+    await ctx.editMessageText(
+      [
+        '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (في دقيقة واحدة وبدون Client ID)</b>',
+        '',
+        '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> واضغط <b>New project (مشروع جديد)</b>.',
+        '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط:',
+        '<pre>function doGet() {\n  DriveApp.getRootFolder();\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
+        '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على الصلاحية.',
+        '4️⃣ انسخ الرابط الناتج (ينتهي بـ <code>/exec</code>) وأرسله هنا في المحادثة الآن!',
+      ].join('\n'),
+      {
+        parse_mode: 'HTML',
+        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
+      },
+    );
+    return;
   } else if (ctx.data === 'drive_set_token') {
     ctx.userData.drive_wait_token = true;
     await ctx.editMessageText(
@@ -325,18 +346,22 @@ async function driveRoute(ctx) {
     ctx.userData.drive_wait_refresh = true;
     await ctx.editMessageText(
       [
-        '🔄 <b>الربط الدائم التلقائي لحساب Google Drive</b>',
+        '🔄 <b>الربط الدائم التلقائي لحساب Google Drive (عبر OAuth)</b>',
         '',
-        'أرسل البيانات الثلاثة في رسالة واحدة (كل قيمة في سطر مستقل أو مفصولة بـ <code>|</code>) بالترتيب التالي:',
+        '<b>من أين تحصل عليها؟</b>',
+        '1️⃣ من <a href="https://console.cloud.google.com/apis/credentials">Google Cloud Credentials</a> أنشئ <b>OAuth client ID</b> (نوع Web application) وأضف الرابط <code>https://developers.google.com/oauthplayground</code> في Authorized redirect URIs لتحصل على <code>CLIENT_ID</code> و <code>CLIENT_SECRET</code>.',
+        '2️⃣ افتح <a href="https://developers.google.com/oauthplayground">OAuth 2.0 Playground</a>، ومن أيقونة الإعدادات ⚙️ (أعلى اليمين) فعّل <i>Use your own OAuth credentials</i> وأدخل الـ ID والـ Secret، ثم اختر صلاحية <code>https://www.googleapis.com/auth/drive.file</code> واضغط Authorize ثم <b>Exchange authorization code for tokens</b> لتحصل على <code>REFRESH_TOKEN</code>.',
+        '',
+        'أرسل القيم الثلاث في رسالة واحدة (كل قيمة في سطر مستقل أو مفصولة بـ <code>|</code>):',
         '<code>CLIENT_ID</code>',
         '<code>CLIENT_SECRET</code>',
         '<code>REFRESH_TOKEN</code>',
         '',
-        '💡 <i>بهذه الطريقة يقوم البوت بتجديد صلاحية الدخول إلى Google Drive تلقائياً مدى الحياة بدون انتهاء.</i>',
+        '💡 <i>أو استخدم زر «⚡ ربط دائم سريع (Google Script)» للربط الدائم في دقيقة واحدة بدون الحاجة لـ Client ID!</i>',
       ].join('\n'),
       {
         parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
+        reply_markup: keyboard([[btn('⚡ استخدام Google Script الأسهل', 'drive_set_script')], [btn('❌ إلغاء والعودة', 'drive_menu')]]),
       },
     );
     return;
@@ -404,6 +429,38 @@ async function handleDriveSetupText(ctx) {
   if (ctx.kind !== 'message') return false;
   const raw = String(ctx.text ?? '').trim();
   if (!raw) return false;
+
+  if (ctx.userData?.drive_wait_script) {
+    delete ctx.userData.drive_wait_script;
+    if (raw === '/cancel') {
+      const screen = buildDualUploadScreen(ctx);
+      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+      return true;
+    }
+    if (!/^https:\/\/script\.google\.com\/macros\/s\//i.test(raw)) {
+      await ctx.reply('⚠️ يرجى إرسال رابط Google Apps Script Web App الصحيح (يبدأ بـ <code>https://script.google.com/macros/s/</code> وينتهي بـ <code>/exec</code>).', {
+        parse_mode: 'HTML',
+        reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
+      });
+      return true;
+    }
+    try {
+      setRuntimeSecret('GOOGLE_DRIVE_SCRIPT_URL', raw);
+    } catch {
+      // Ignore vault errors
+    }
+    process.env.GOOGLE_DRIVE_SCRIPT_URL = raw;
+    setRuntimeDriveSession({ scriptUrl: raw });
+    if (ctx.message?.message_id) {
+      await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(() => {});
+    }
+    const screen = buildDualUploadScreen(ctx);
+    await ctx.reply(`✅ <b>تم حفظ وتفعيل الربط الدائم عبر Google Script بنجاح!</b>\n\n${screen.text}`, {
+      parse_mode: 'HTML',
+      reply_markup: screen.markup,
+    });
+    return true;
+  }
 
   if (ctx.userData?.drive_wait_token) {
     delete ctx.userData.drive_wait_token;
