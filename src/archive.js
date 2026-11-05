@@ -27,6 +27,7 @@ import { createHash } from 'node:crypto';
 import * as db from './db/index.js';
 import { logFailure } from './log.js';
 import { safeTruncate } from './truncate.js';
+import { isDriveConfigured, uploadTelegramFileToGoogleDrive } from './storage/googleDrive.js';
 
 /** Environment variables that may carry the archive channel. */
 export const ARCHIVE_CHANNEL_ENV_VARS = ['MEDBOT_ARCHIVE_CHANNEL', 'ARCHIVE_CHANNEL_ID'];
@@ -547,6 +548,22 @@ export async function publishResource(bot, contentId, withHeader = false) {
       db.markArchivePublished(fingerprint, channel, messageId);
       result.status = 'published';
       result.message_id = messageId;
+      if (isDriveConfigured()) {
+        try {
+          const driveRes = await uploadTelegramFileToGoogleDrive({
+            bot,
+            fileId: snapshot[3],
+            title: snapshot[2],
+            description: buildCaption(snapshot).replace(/<[^>]+>/g, ''),
+          });
+          if (driveRes?.ok) {
+            result.drive_file_id = driveRes.id;
+            result.drive_link = driveRes.webViewLink;
+          }
+        } catch {
+          // Google Drive mirror is best-effort and never fails channel archive.
+        }
+      }
       return result;
     } catch (error) {
       result.status = 'failed';

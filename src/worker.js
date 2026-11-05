@@ -2,6 +2,12 @@ import { handleTelegramWebhook } from './telegram/webhook.js';
 import { createD1TelegramIdempotencyStore, initTelegramWebhookStore } from './db/d1/telegramUpdates.js';
 import { get, run } from './db/d1/core.js';
 import { createR2Storage } from './storage/r2.js';
+import {
+  dualUploadMediaMessage,
+  extractDriveFolderId,
+  getDriveStatus,
+  setRuntimeDriveSession,
+} from './storage/googleDrive.js';
 import { createWorkerTelegramDispatcher } from './telegram/workerDispatcher.js';
 import { buildWorkerHome, buildWorkerAccount } from './telegram/workerHome.js';
 import { buildWorkerLibraryRoot, buildWorkerFolder, findWorkerResources, buildWorkerFile } from './telegram/workerResources.js';
@@ -32,7 +38,6 @@ import {
   uploadWorkerAdminMedia,
   buildWorkerArchiveAdmin,
   syncWorkerArchiveAll,
-  resolveWorkerArchiveChannel,
   resolveWorkerArchiveChannelAsync,
   saveWorkerArchiveChannel,
   publishWorkerCloudBackupToArchive,
@@ -158,6 +163,13 @@ function telegramBot(token) {
       if (!res.ok) throw new Error(`telegram_file_download_failed_${res.status}`);
       return res.text();
     },
+    downloadFileBytes: async (fileId) => {
+      const f = await call('getFile', { file_id: fileId });
+      if (!f?.file_path) throw new Error('telegram_file_path_missing');
+      const res = await fetch(`https://api.telegram.org/file/bot${token}/${f.file_path}`);
+      if (!res.ok) throw new Error(`telegram_file_download_failed_${res.status}`);
+      return { bytes: new Uint8Array(await res.arrayBuffer()), filePath: f.file_path };
+    },
     sendBufferDocument: async (chatId, filename, contentString, options = {}) => {
       const form = new globalThis.FormData();
       form.append('chat_id', String(chatId));
@@ -196,6 +208,65 @@ function clearPendingStates(userData) {
   userData.admin_add_new = false;
   userData.admin_archive_set_channel = false;
   userData.admin_archive_import = false;
+  userData.drive_set_token = false;
+  userData.drive_set_folder = false;
+}
+
+async function resolveWorkerDriveEnv(db, env) {
+  const merged = { ...(env || {}) };
+  if (!db) return merged;
+  try {
+    const keys = [
+      ['google_drive_access_token', 'GOOGLE_DRIVE_ACCESS_TOKEN'],
+      ['google_drive_refresh_token', 'GOOGLE_REFRESH_TOKEN'],
+      ['google_drive_client_id', 'GOOGLE_CLIENT_ID'],
+      ['google_drive_client_secret', 'GOOGLE_CLIENT_SECRET'],
+      ['google_drive_folder_id', 'GOOGLE_DRIVE_FOLDER_ID'],
+    ];
+    for (const [dbKey, envKey] of keys) {
+      if (!merged[envKey]) {
+        const row = await get(db, 'SELECT value FROM settings WHERE key = ?', [dbKey]).catch(() => null);
+        if (row?.[0]) merged[envKey] = String(row[0]).trim();
+      }
+    }
+    if (merged.GOOGLE_DRIVE_ACCESS_TOKEN || merged.GOOGLE_DRIVE_FOLDER_ID) {
+      setRuntimeDriveSession({
+        accessToken: merged.GOOGLE_DRIVE_ACCESS_TOKEN || undefined,
+        folderId: merged.GOOGLE_DRIVE_FOLDER_ID || undefined,
+      });
+    }
+  } catch {
+    // Ignore D1 lookup errors
+  }
+  return merged;
+}
+
+async function buildWorkerDriveMenu(db, env) {
+  const driveEnv = await resolveWorkerDriveEnv(db, env);
+  const status = getDriveStatus(driveEnv);
+  const channel = await resolveWorkerArchiveChannelAsync(db, driveEnv);
+  const text = [
+    '☁️ <b>إعدادات الرفع المزدوج (القناة + Google Drive) — Cloudflare Worker</b>',
+    '━━━━━━━━━━━━━━━━━━',
+    `1️⃣ <b>قناة البوت:</b> ${channel ? `✅ مربوطة (<code>${channel}</code>)` : '⚠️ غير مضبوطة'}`,
+    `2️⃣ <b>Google Drive:</b> ${status.configured ? '✅ مربوط وجاهز' : '⚠️ غير مربوط بعد'}`,
+    status.folderId ? `📁 <b>مجلد Drive:</b> <code>${status.folderId}</code>` : '📁 <b>مجلد Drive:</b> <code>MEDBOT Archive</code> (تلقائي)',
+    '',
+    '💡 أي ملف توجهه (Forward) أو ترسله للبوت سيتم رفعه تلقائياً إلى القناة وإلى حسابك في Google Drive.',
+  ].join('\n');
+  return {
+    text,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '🔑 ربط توكن Google Drive', callback_data: 'drive_set_token' },
+          { text: '📁 تحديد مجلد Drive', callback_data: 'drive_set_folder' },
+        ],
+        [{ text: '📡 إعداد قناة الأرشيف', callback_data: 'admin_archive_set_channel' }],
+        [{ text: '🏠 الرئيسية', callback_data: 'home' }],
+      ],
+    },
+  };
 }
 
 async function sendMediaByType(bot, chatId, fileType, fileId, options = {}) {
@@ -286,6 +357,10 @@ async function dispatchTelegramUpdate(update, { env }) {
           reply_markup: { inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]] },
           parse_mode: 'HTML',
         });
+      }
+      if (command === 'drive' || command === 'dual') {
+        const menu = await buildWorkerDriveMenu(ctx.db, env);
+        return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
       const fallback = await buildWorkerHome(ctx.db, ctx.from);
       return ctx.reply(fallback.text, { reply_markup: fallback.reply_markup, parse_mode: 'HTML' });
@@ -569,6 +644,33 @@ async function dispatchTelegramUpdate(update, { env }) {
           `• أو اكتب الأمر <code>/connect_archive</code> داخل القناة نفسها!`,
           {
             reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'admin_archive' }]] },
+            parse_mode: 'HTML',
+          },
+        );
+      }
+      if (ctx.data === 'drive_menu') {
+        const menu = await buildWorkerDriveMenu(ctx.db, env);
+        await ctx.answer();
+        return ctx.editMessageText(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
+      }
+      if (ctx.data === 'drive_set_token') {
+        ctx.userData.drive_set_token = true;
+        await ctx.answer();
+        return ctx.editMessageText(
+          '🔑 <b>ربط حساب Google Drive في Cloudflare Worker</b>\n\nأرسل الآن رمز الوصول (<code>GOOGLE_DRIVE_ACCESS_TOKEN</code>) ليتم حفظه في قاعدة بيانات D1 واستخدامه تلقائياً:',
+          {
+            reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'drive_menu' }]] },
+            parse_mode: 'HTML',
+          },
+        );
+      }
+      if (ctx.data === 'drive_set_folder') {
+        ctx.userData.drive_set_folder = true;
+        await ctx.answer();
+        return ctx.editMessageText(
+          '📁 <b>تحديد مجلد Google Drive</b>\n\nأرسل الآن رابط المجلد في Google Drive أو معرّف المجلد (Folder ID):',
+          {
+            reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'drive_menu' }]] },
             parse_mode: 'HTML',
           },
         );
@@ -939,16 +1041,49 @@ async function dispatchTelegramUpdate(update, { env }) {
       const res = await importWorkerArchiveInput(ctx.db, ctx.from, ctx.message, bot);
       return ctx.reply(res.text, { reply_markup: res.reply_markup, parse_mode: 'HTML' });
     }
+    if (ctx.userData?.drive_set_token) {
+      ctx.userData.drive_set_token = false;
+      const token = String(ctx.text ?? '').trim();
+      if (!token) return ctx.reply('⚠️ يرجى إرسال رمز وصول صالح.');
+      await run(
+        ctx.db,
+        "INSERT INTO settings(key,value) VALUES('google_drive_access_token',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [token],
+      ).catch(() => {});
+      setRuntimeDriveSession({ accessToken: token });
+      const menu = await buildWorkerDriveMenu(ctx.db, env);
+      return ctx.reply(`✅ تم حفظ ربط Google Drive في قاعدة بيانات السحابة (D1) بنجاح.\n\n${menu.text}`, {
+        reply_markup: menu.reply_markup,
+        parse_mode: 'HTML',
+      });
+    }
+    if (ctx.userData?.drive_set_folder) {
+      ctx.userData.drive_set_folder = false;
+      const folderId = extractDriveFolderId(ctx.text);
+      if (!folderId) return ctx.reply('⚠️ يرجى إرسال رابط مجلد Google Drive أو معرّف مجلد صالح.');
+      await run(
+        ctx.db,
+        "INSERT INTO settings(key,value) VALUES('google_drive_folder_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [folderId],
+      ).catch(() => {});
+      setRuntimeDriveSession({ folderId });
+      const menu = await buildWorkerDriveMenu(ctx.db, env);
+      return ctx.reply(`✅ تم حفظ مجلد Google Drive (<code>${folderId}</code>) في D1.\n\n${menu.text}`, {
+        reply_markup: menu.reply_markup,
+        parse_mode: 'HTML',
+      });
+    }
     return ctx.reply('ℹ️ استخدم أزرار MEDBOT للتنقل، أو /search للبحث داخل الموارد.', {
       reply_markup: { inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]] },
     });
   };
 
   handlers.media = async (ctx) => {
+    const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
     if (ctx.userData?.admin_archive_set_channel) {
       ctx.userData.admin_archive_set_channel = false;
       const res = await saveWorkerArchiveChannel(ctx.db, ctx.from, ctx.message, bot);
-      const menu = await buildWorkerArchiveAdmin(ctx.db, ctx.from, env, bot);
+      const menu = await buildWorkerArchiveAdmin(ctx.db, ctx.from, driveEnv, bot);
       return ctx.reply(`${res.text}\n\n${menu.text}`, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
     }
     if (ctx.userData?.admin_archive_import) {
@@ -957,13 +1092,26 @@ async function dispatchTelegramUpdate(update, { env }) {
     }
     if (ctx.userData?.admin_upload_folder) {
       const fid = Number(ctx.userData.admin_upload_folder);
-      const result = await uploadWorkerAdminMedia(ctx.db, ctx.from, ctx.message, fid, bot, env);
+      const result = await uploadWorkerAdminMedia(ctx.db, ctx.from, ctx.message, fid, bot, driveEnv);
       return ctx.reply(result.text, { reply_markup: result.reply_markup, parse_mode: 'HTML' });
     }
     if (ctx.userData?.contribution_folder) {
       const result = await handleWorkerContributionMedia(ctx.db, ctx.from, ctx.message, ctx.userData.contribution_folder);
       ctx.userData.contribution_folder = null;
       return ctx.reply(result.text, { parse_mode: 'HTML' });
+    }
+    const channelTarget = await resolveWorkerArchiveChannelAsync(ctx.db, driveEnv);
+    const dualOutcome = await dualUploadMediaMessage({
+      bot,
+      message: ctx.message,
+      channelTarget,
+      env: driveEnv,
+    });
+    if (dualOutcome.reason !== 'no_media') {
+      return ctx.reply(dualOutcome.summaryText, {
+        parse_mode: 'HTML',
+        reply_markup: dualOutcome.replyMarkup,
+      });
     }
     return ctx.reply('ℹ️ اختر أولاً القسم المناسب ثم أرسل المورد.');
   };

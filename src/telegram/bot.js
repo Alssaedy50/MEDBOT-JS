@@ -41,6 +41,12 @@ import {
   setMediaHandler,
 } from './router.js';
 import { pollUpdates } from './adapter.js';
+import {
+  dualUploadMediaMessage,
+  getDriveStatus,
+  isDriveConfigured,
+  isForwardedMessage,
+} from '../storage/googleDrive.js';
 
 /**
  * Register every callback route, text handler and command.
@@ -107,6 +113,7 @@ export function registerHandlers() {
   registerRoute({ name: 'account', prefixes: ['account'], handler: accountRoute });
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
   registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
+  registerRoute({ name: 'drive', prefixes: ['drive_menu', 'drive_toggle_dual'], handler: driveRoute });
   registerRoute({ name: 'secrets', prefixes: secrets.ADMIN_SECRET_PREFIXES, handler: secrets.handleSecretCallback });
   registerRoute({ name: 'bundle', prefixes: ['bundle_confirm'], handler: bundleRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
@@ -149,6 +156,29 @@ export function registerHandlers() {
     if (await adminFolders.handleUploadMedia(ctx)) return;
     if (await contributions.handleContributionMedia(ctx)) return;
     if (await contributions.handleResubmitMedia(ctx)) return;
+
+    // Dual-upload any file forwarded to the bot (or sent when dual-upload/channel/Drive is configured)
+    const shouldDualUpload =
+      isForwardedMessage(ctx.message) ||
+      Boolean(ctx.userData?.dual_upload_mode) ||
+      archive.isConfigured() ||
+      isDriveConfigured();
+
+    if (shouldDualUpload) {
+      const outcome = await dualUploadMediaMessage({
+        bot: ctx.bot,
+        message: ctx.message,
+        channelTarget: archive.channelForSend(),
+      });
+      if (outcome.reason !== 'no_media') {
+        await ctx.reply(outcome.summaryText, {
+          parse_mode: 'HTML',
+          reply_markup: outcome.replyMarkup,
+        });
+        return;
+      }
+    }
+
     await ctx.reply('ℹ️ لا توجد عملية رفع جارية. ابدأ من 📤 مساهمات الطلاب أو 🛠 إدارة المنصة.');
   });
 
@@ -164,6 +194,8 @@ export function registerHandlers() {
   registerCommand('restore', restoreCommand);
   registerCommand('secrets', secretsCommand);
   registerCommand('bundle', bundleCommand);
+  registerCommand('drive', driveCommand);
+  registerCommand('dual', driveCommand);
   registerCommand('cancel', cancelCommand);
   registerCommand('text', unhandledText);
 }
@@ -203,6 +235,54 @@ async function backupRoute(ctx) {
   if (data === 'backup_menu') return backup.showBackupMenu(ctx);
   if (data === 'backup_chat') return backup.sendDatabaseBackup(ctx, { toChannel: false });
   if (data === 'backup_channel') return backup.sendDatabaseBackup(ctx, { toChannel: true });
+}
+
+function buildDualUploadScreen(ctx) {
+  const ch = archive.resolveChannel();
+  const drive = getDriveStatus();
+  const dualActive = Boolean(ctx.userData?.dual_upload_mode);
+  const text = [
+    '☁️ <b>الرفع المزدوج التلقائي (قناة البوت + Google Drive)</b>',
+    '━━━━━━━━━━━━━━━━━━',
+    'أي ملف تقوم بتوجيهه (Forward) إلى البوت يتم رفعه تلقائياً إلى مكانين:',
+    '',
+    `1️⃣ <b>قناة البوت:</b> ${ch ? `✅ متصلة (<code>${ch}</code>)` : '⚪️ غير مضبوطة (MEDBOT_ARCHIVE_CHANNEL)'}`,
+    `2️⃣ <b>حساب Google Drive:</b> ${
+      drive.configured
+        ? `✅ متصل${drive.userEmail ? ` (${drive.userEmail})` : ''}`
+        : '⚪️ غير مربوط بعد (اربطه من واجهة الويب أو عبر /secrets)'
+    }`,
+    `📁 <b>مجلد Google Drive:</b> <code>${drive.folderId || drive.folderName}</code>`,
+    `🔄 <b>وضع استقبال أي ملف مباشر:</b> ${dualActive ? '🟢 مفعل دائماً' : '🟢 مفعل تلقائياً عند التوجيه (Forward)'}`,
+    '',
+    '💡 <i>وجّه أي ملف (PDF، مستند، صورة، فيديو، أو صوت) إلى البوت الآن ليتم رفعه فوراً إلى القناة وإلى حسابك في Google Drive.</i>',
+  ].join('\n');
+
+  const markup = keyboard([
+    [
+      btn(
+        dualActive ? '🔔 الرفع المباشر بدون توجيه: مفعل' : '🔘 تفعيل الرفع لأي ملف حتى بدون توجيه',
+        'drive_toggle_dual',
+      ),
+    ],
+    [btn('🏠 الرئيسية', 'home')],
+  ]);
+  return { text, markup };
+}
+
+async function driveRoute(ctx) {
+  await ctx.answer();
+  if (ctx.data === 'drive_toggle_dual') {
+    ctx.userData.dual_upload_mode = !ctx.userData?.dual_upload_mode;
+  }
+  const screen = buildDualUploadScreen(ctx);
+  await ctx.editMessageText(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+}
+
+async function driveCommand(ctx) {
+  ctx.userData.dual_upload_mode = true;
+  const screen = buildDualUploadScreen(ctx);
+  await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
 }
 
 async function bundleRoute(ctx) {

@@ -89,7 +89,16 @@ export function installProcessHandlers() {
 // global handlers; importing the module (tests) must have no side effects.
 if (import.meta.url === `file://${process.argv[1]}`) {
   installProcessHandlers();
-  startApp();
+  if (process.env.BOT_TOKEN) {
+    startApp();
+  } else {
+    console.warn(
+      'BOT_TOKEN is not set. Starting HTTP health server in standalone mode until BOT_TOKEN is configured.',
+    );
+    startHealthServer({
+      onListening: (port) => console.log(`[MEDBOT] HTTP_LISTENING port=${port}`),
+    });
+  }
 }
 
 export { createBot, startHealthServer };

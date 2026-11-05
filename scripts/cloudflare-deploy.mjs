@@ -311,6 +311,11 @@ async function main() {
   putWorkerSecret('GEMINI_API_KEY', process.env.GEMINI_API_KEY, cfEnv);
   putWorkerSecret('GROQ_API_KEY', process.env.GROQ_API_KEY, cfEnv);
   putWorkerSecret('OPENROUTER_API_KEY', process.env.OPENROUTER_API_KEY, cfEnv);
+  putWorkerSecret('GOOGLE_DRIVE_ACCESS_TOKEN', process.env.GOOGLE_DRIVE_ACCESS_TOKEN, cfEnv);
+  putWorkerSecret('GOOGLE_REFRESH_TOKEN', process.env.GOOGLE_REFRESH_TOKEN, cfEnv);
+  putWorkerSecret('GOOGLE_CLIENT_ID', process.env.GOOGLE_CLIENT_ID, cfEnv);
+  putWorkerSecret('GOOGLE_CLIENT_SECRET', process.env.GOOGLE_CLIENT_SECRET, cfEnv);
+  putWorkerSecret('GOOGLE_DRIVE_FOLDER_ID', process.env.GOOGLE_DRIVE_FOLDER_ID, cfEnv);
 
   // 8. Discover Worker URL and register Telegram Webhook
   const urlMatch = deployOut.match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i);
