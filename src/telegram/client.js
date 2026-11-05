@@ -150,6 +150,16 @@ export class TelegramTransport {
     });
   }
 
+  editMessageCaption(chatId, messageId, caption, options = {}) {
+    return this.call('editMessageCaption', {
+      chat_id: chatId,
+      message_id: messageId,
+      caption,
+      parse_mode: options.parse_mode ?? 'HTML',
+      reply_markup: options.reply_markup,
+    });
+  }
+
   answerCallbackQuery(callbackQueryId, options = {}) {
     return this.call('answerCallbackQuery', {
       callback_query_id: callbackQueryId,

@@ -120,6 +120,13 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;');
 }
 
+function buildVisualProgressBar(pct, width = 10) {
+  const clamped = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  const filled = Math.round((clamped / 100) * width);
+  const empty = Math.max(0, width - filled);
+  return `${'▓'.repeat(filled)}${'░'.repeat(empty)} ${clamped}%`;
+}
+
 export async function updateTelegramProgressMessage({
   botToken,
   chatId,
@@ -137,12 +144,143 @@ export async function updateTelegramProgressMessage({
         message_id: messageId,
         text,
         parse_mode: 'HTML',
+        disable_web_page_preview: true,
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       }),
     });
   } catch {
     // Non-fatal progress update error
   }
+}
+
+const DEFAULT_WORKER_PROGRESS_URL =
+  process.env.WORKER_SESSION_PROGRESS_URL ||
+  'https://medbot-js.alssaedy500.workers.dev/api/drive/session-progress';
+
+async function syncProgressWithWorkerOrTelegram({
+  sessionId,
+  workerProgressUrl = DEFAULT_WORKER_PROGRESS_URL,
+  botToken,
+  statusChatId,
+  statusMessageId,
+  channelId,
+  filename,
+  uploadedBytes,
+  totalBytes,
+  driveStatus = 'uploading',
+  driveFileId = null,
+  driveLink = null,
+  error = null,
+}) {
+  const pct = totalBytes
+    ? Math.min(driveStatus === 'completed' ? 100 : 99, Math.round((uploadedBytes / totalBytes) * 100))
+    : driveStatus === 'completed'
+      ? 100
+      : 0;
+
+  if (sessionId && workerProgressUrl) {
+    try {
+      const res = await fetch(workerProgressUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          uploadedBytes,
+          totalBytes,
+          progressPct: pct,
+          driveStatus,
+          driveFileId,
+          driveLink,
+          error,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.ok) {
+          return { cancelled: Boolean(data.cancelled), updatedViaWorker: true };
+        }
+      }
+    } catch {
+      // Fallback to direct Telegram edit below
+    }
+  }
+
+  if (botToken && statusChatId && statusMessageId) {
+    const mbDone = (uploadedBytes / (1024 * 1024)).toFixed(1);
+    const mbTotal = totalBytes ? (totalBytes / (1024 * 1024)).toFixed(1) : '?';
+    const bar = buildVisualProgressBar(pct);
+    const cancelBtn = sessionId
+      ? [{ text: '🛑 إلغاء الرفع وحذف الملف', callback_data: `du_cancel:${sessionId}` }]
+      : [];
+
+    if (driveStatus === 'completed' && driveLink) {
+      await updateTelegramProgressMessage({
+        botToken,
+        chatId: statusChatId,
+        messageId: statusMessageId,
+        text: [
+          '☁️ <b>مركز الرفع المزدوج والدمج الذكي في البوت</b>',
+          '━━━━━━━━━━━━━━━━━━',
+          `📄 <b>الملف:</b> ${escapeHtml(filename)} (<code>${mbDone} MB</code>)`,
+          '',
+          `1️⃣ <b>قناة الأرشيف:</b> ✅ تم النشر في القناة (<code>${escapeHtml(channelId || '')}</code>)`,
+          `2️⃣ <b>Google Drive:</b> ✅ تم الرفع الكامل بنجاح (<a href="${escapeHtml(driveLink)}">فتح الملف في Drive</a>)`,
+          `   📊 <code>${bar}</code>`,
+        ].join('\n'),
+        replyMarkup: {
+          inline_keyboard: [
+            [{ text: '📂 فتح الملف في Google Drive', url: driveLink }],
+            ...(cancelBtn.length ? [cancelBtn] : []),
+            [{ text: '🏠 الرئيسية', callback_data: 'home' }],
+          ],
+        },
+      });
+    } else if (driveStatus === 'failed') {
+      await updateTelegramProgressMessage({
+        botToken,
+        chatId: statusChatId,
+        messageId: statusMessageId,
+        text: [
+          '☁️ <b>مركز الرفع المزدوج والدمج الذكي في البوت</b>',
+          '━━━━━━━━━━━━━━━━━━',
+          `📄 <b>الملف:</b> ${escapeHtml(filename)}`,
+          '',
+          `1️⃣ <b>قناة الأرشيف:</b> ✅ تم النشر في القناة (<code>${escapeHtml(channelId || '')}</code>)`,
+          `2️⃣ <b>Google Drive:</b> ⚠️ تعذر النقل: <code>${escapeHtml(String(error || '').slice(0, 180))}</code>`,
+        ].join('\n'),
+        replyMarkup: {
+          inline_keyboard: [
+            ...(cancelBtn.length ? [cancelBtn] : []),
+            [{ text: '🏠 الرئيسية', callback_data: 'home' }],
+          ],
+        },
+      });
+    } else {
+      await updateTelegramProgressMessage({
+        botToken,
+        chatId: statusChatId,
+        messageId: statusMessageId,
+        text: [
+          '☁️ <b>مركز الرفع المزدوج والدمج الذكي في البوت</b>',
+          '━━━━━━━━━━━━━━━━━━',
+          `📄 <b>الملف:</b> ${escapeHtml(filename)}`,
+          '',
+          `1️⃣ <b>قناة الأرشيف:</b> ✅ تم النشر في القناة (<code>${escapeHtml(channelId || '')}</code>)`,
+          '2️⃣ <b>Google Drive:</b> ⏳ جاري الرفع المباشر إلى Google Drive...',
+          `   📊 <code>${bar}</code> (<code>${mbDone} MB / ${mbTotal} MB</code>)`,
+        ].join('\n'),
+        replyMarkup: {
+          inline_keyboard: [
+            ...(sessionId ? [[{ text: '🔄 تحديث نسبة التقدم الآن', callback_data: `du_refresh:${sessionId}` }]] : []),
+            ...(cancelBtn.length ? [cancelBtn] : []),
+            [{ text: '🏠 الرئيسية', callback_data: 'home' }],
+          ],
+        },
+      });
+    }
+  }
+
+  return { cancelled: false, updatedViaWorker: false };
 }
 
 /**
@@ -220,6 +358,7 @@ async function locateMtprotoMediaMessage(client, { channelId, channelMessageId, 
  */
 export async function streamLargeTelegramFileToDrive({
   botToken,
+  sessionId = null,
   fileId = null,
   sessionUri,
   channelId = null,
@@ -231,6 +370,7 @@ export async function streamLargeTelegramFileToDrive({
   filename = 'large-file.mp4',
   mimeType = 'application/octet-stream',
   fileSize = null,
+  workerProgressUrl = DEFAULT_WORKER_PROGRESS_URL,
 } = {}) {
   if (!sessionUri) {
     throw new Error('Missing Google Drive resumable sessionUri');
@@ -271,12 +411,29 @@ export async function streamLargeTelegramFileToDrive({
 
   const totalBytes = docSize > 0 ? docSize : null;
 
+  // Initial 1% progress ping so the user immediately sees active streaming
+  const initCheck = await syncProgressWithWorkerOrTelegram({
+    sessionId,
+    workerProgressUrl,
+    botToken,
+    statusChatId,
+    statusMessageId,
+    channelId,
+    filename,
+    uploadedBytes: 0,
+    totalBytes,
+    driveStatus: 'uploading',
+  });
+  if (initCheck.cancelled) {
+    return { ok: false, cancelled: true };
+  }
+
   // Google Drive Resumable Upload requires intermediate chunk sizes to be multiples of 256 KB.
   // 4 MB = 16 * 256 KB = 4,194,304 bytes.
   const CHUNK_SIZE = 4 * 1024 * 1024;
   let buffer = new Uint8Array(0);
   let offset = 0;
-  let lastProgressUpdate = Date.now() - 4000;
+  let lastProgressUpdate = Date.now() - 2500;
   let finalResult = null;
 
   const appendBytes = (existing, incoming) => {
@@ -316,25 +473,25 @@ export async function streamLargeTelegramFileToDrive({
         finalResult = res;
       }
 
-      if (statusChatId && statusMessageId && Date.now() - lastProgressUpdate > 5000) {
+      if (Date.now() - lastProgressUpdate > 3500) {
         lastProgressUpdate = Date.now();
-        const mbDone = (offset / (1024 * 1024)).toFixed(1);
-        const mbTotal = totalBytes ? (totalBytes / (1024 * 1024)).toFixed(1) : '?';
-        const pct = totalBytes ? Math.min(99, Math.round((offset / totalBytes) * 100)) : '';
-        await updateTelegramProgressMessage({
+        const prog = await syncProgressWithWorkerOrTelegram({
+          sessionId,
+          workerProgressUrl,
           botToken,
-          chatId: statusChatId,
-          messageId: statusMessageId,
-          text: [
-            '☁️ <b>جاري رفع الملف الكبير إلى حسابك في Google Drive...</b>',
-            '━━━━━━━━━━━━━━━━━━',
-            `📄 <b>الملف:</b> ${escapeHtml(filename)}`,
-            `📊 <b>التقدم:</b> <code>${mbDone} MB / ${mbTotal} MB${pct ? ` (${pct}%)` : ''}</code>`,
-            '',
-            `1️⃣ <b>قناة البوت:</b> ✅ تم الرفع والنشر في قناة البوت (<code>${escapeHtml(channelId || '')}</code>)`,
-            '2️⃣ <b>حساب Google Drive:</b> ⏳ جاري النقل المباشر للملف الكامل عبر MTProto...',
-          ].join('\n'),
+          statusChatId,
+          statusMessageId,
+          channelId,
+          filename,
+          uploadedBytes: offset,
+          totalBytes,
+          driveStatus: 'uploading',
         });
+        if (prog.cancelled) {
+          // Abort the Google Drive resumable session if cancelled by user
+          await fetch(sessionUri, { method: 'DELETE' }).catch(() => null);
+          return { ok: false, cancelled: true };
+        }
       }
     }
   }
@@ -359,30 +516,21 @@ export async function streamLargeTelegramFileToDrive({
     throw new Error('لم يكتمل حفظ الملف الكبير في Google Drive.');
   }
 
-  // Update the Telegram status message with the final Drive link and real file size!
-  if (statusChatId && statusMessageId) {
-    const sizeMb = (offset / (1024 * 1024)).toFixed(1);
-    await updateTelegramProgressMessage({
-      botToken,
-      chatId: statusChatId,
-      messageId: statusMessageId,
-      text: [
-        '☁️ <b>تقرير الرفع المزدوج التلقائي (القناة + Google Drive)</b>',
-        '━━━━━━━━━━━━━━━━━━',
-        `📄 <b>الملف:</b> ${escapeHtml(filename)} (<code>${sizeMb} MB</code>)`,
-        '',
-        `1️⃣ <b>قناة البوت:</b>\n✅ تم الرفع والنشر في قناة البوت (<code>${escapeHtml(channelId || '')}</code>)`,
-        '',
-        `2️⃣ <b>حساب Google Drive:</b>\n✅ تم رفع الملف الكامل بنجاح إلى Google Drive (<a href="${escapeHtml(finalResult.webViewLink)}">فتح الملف في Drive</a>)`,
-      ].join('\n'),
-      replyMarkup: {
-        inline_keyboard: [
-          [{ text: '📂 فتح الملف في Google Drive', url: finalResult.webViewLink }],
-          [{ text: '🏠 الرئيسية', callback_data: 'home' }],
-        ],
-      },
-    });
-  }
+  // Update the Worker session & Telegram status message with the final Drive link and 100% progress!
+  await syncProgressWithWorkerOrTelegram({
+    sessionId,
+    workerProgressUrl,
+    botToken,
+    statusChatId,
+    statusMessageId,
+    channelId,
+    filename,
+    uploadedBytes: offset,
+    totalBytes: offset,
+    driveStatus: 'completed',
+    driveFileId: finalResult.id,
+    driveLink: finalResult.webViewLink,
+  });
 
   return finalResult;
 }

@@ -9,6 +9,14 @@
  *      uploads when files are forwarded to the Telegram bot.
  */
 
+import {
+  createUploadSessionId,
+  detectDetailedMediaKind,
+  findSmartFolderSuggestion,
+  renderDualUploadSessionMessage,
+  saveUploadSession,
+} from './dualUploadInteractive.js';
+
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
 
 export const DEFAULT_DRIVE_FOLDER_NAME = 'MEDBOT Archive';
@@ -56,6 +64,11 @@ export function markChannelPostPublished(key, messageId = null) {
 export function isChannelPostPublished(key) {
   if (!key) return false;
   return publishedChannelPosts.has(String(key));
+}
+
+export function unmarkChannelPostPublished(key) {
+  if (!key) return;
+  publishedChannelPosts.delete(String(key));
 }
 
 export function setRuntimeDriveSession({
@@ -888,6 +901,7 @@ export async function uploadTelegramFileToGoogleDrive({
   channelMessageId = null,
   statusChatId = null,
   statusMessageId = null,
+  sessionId = null,
   db = null,
   env = defaultEnv(),
   fetchImpl = fetch,
@@ -968,7 +982,10 @@ export async function uploadTelegramFileToGoogleDrive({
       fetchImpl,
     });
     if (publicStreamed?.ok) {
-      return publicStreamed;
+      return {
+        ...publicStreamed,
+        sessionUri: session.sessionUri,
+      };
     }
 
     // 2. Enqueue or dispatch to MTProto 2GB Large-File Streamer Bridge to transfer the full binary file to Google Drive
@@ -983,6 +1000,7 @@ export async function uploadTelegramFileToGoogleDrive({
 
     const jobPayload = {
       jobId: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      sessionId: sessionId || null,
       botToken,
       fileId,
       sessionUri: session.sessionUri,
@@ -1029,6 +1047,7 @@ export async function uploadTelegramFileToGoogleDrive({
         return {
           ok: true,
           asyncTransfer: true,
+          sessionUri: session.sessionUri,
           name: finalName,
           mimeType,
           folderId: session.folderId,
@@ -1263,37 +1282,65 @@ export async function dualUploadMediaMessage({
     }
   }
 
-  const channelLine = channelOutcome.ok
-    ? channelOutcome.skippedDuplicate
-      ? `✅ موجود مسبقاً في قناة البوت (تم منع تكرار النشر في <code>${escapeHtml(channelTarget)}</code>)`
-      : `✅ تم الرفع والنشر في قناة البوت (<code>${escapeHtml(channelTarget)}</code>)`
-    : channelOutcome.configured
-      ? `⚠️ تعذر الرفع للقناة: <code>${escapeHtml(String(channelOutcome.error || '').slice(0, 120))}</code>`
-      : '⚪️ القناة غير مربوطة بعد (اضبط <code>MEDBOT_ARCHIVE_CHANNEL</code> أو اربطها من لوحة الإدارة)';
-
-  // If the file is > 20 MB, send an initial live-progress status message in the user's chat
-  // so the MTProto Large-File Streamer can update progress % and edit it with the final Drive link!
+  // Detect detailed media kind and find smart academic folder suggestion
+  const detailedKind = detectDetailedMediaKind(message, media);
+  const suggestion = await findSmartFolderSuggestion(db, title, captionRaw, detailedKind);
+  const sessionId = createUploadSessionId();
   const isLargeFile = Number(media.fileSize) > 20 * 1024 * 1024;
   const userChatId = message?.chat?.id ?? message?.from?.id ?? null;
-  let statusMessageId = null;
 
+  const session = {
+    id: sessionId,
+    title,
+    filename: media.filename,
+    fileId: media.fileId,
+    fileType: media.fileType,
+    dbType: detailedKind.dbType,
+    kindIcon: detailedKind.icon,
+    kindLabel: detailedKind.label,
+    mimeType: media.mimeType,
+    fileSize: media.fileSize ?? null,
+    dedupeFp,
+    altFp,
+    userChatId,
+    statusMessageId: null,
+    channelId: channelTarget ? String(channelTarget) : null,
+    channelMessageId: channelOutcome.messageId ?? null,
+    channelOk: channelOutcome.ok,
+    channelSkippedDuplicate: Boolean(channelOutcome.skippedDuplicate),
+    channelError: channelOutcome.error ?? null,
+    driveStatus: isDriveConfigured(env) ? (isLargeFile ? 'uploading' : 'pending') : 'unconfigured',
+    driveFileId: null,
+    driveWebViewLink: null,
+    driveSessionUri: null,
+    driveError: null,
+    progressPct: 0,
+    uploadedBytes: 0,
+    contentId: null,
+    selectedFolderId: null,
+    selectedFolderName: null,
+    selectedFolderPath: null,
+    browseFolderId: 0,
+    pickingFolder: true,
+    suggestedFolderId: suggestion?.folderId ?? null,
+    suggestedFolderPath: suggestion?.fullPath ?? null,
+    cancelled: false,
+    createdAt: Date.now(),
+  };
+
+  await saveUploadSession(db, session);
+
+  let statusMessageId = null;
   if (isLargeFile && isDriveConfigured(env) && userChatId && typeof bot?.sendMessage === 'function') {
-    const sizeMb = (Number(media.fileSize) / (1024 * 1024)).toFixed(1);
     try {
-      const progressMsg = await bot.sendMessage(
-        userChatId,
-        [
-          '☁️ <b>جاري رفع الملف الكبير إلى حسابك في Google Drive...</b>',
-          '━━━━━━━━━━━━━━━━━━',
-          `📄 <b>الملف:</b> ${escapeHtml(media.filename)} (<code>${sizeMb} MB</code>)`,
-          '',
-          `1️⃣ <b>قناة البوت:</b>\n${channelLine}`,
-          '',
-          '2️⃣ <b>حساب Google Drive:</b>\n⏳ جاري النقل المباشر للملف الكامل عبر بروتوكول MTProto (بدون حد 20MB)... سيتم تحديث هذه الرسالة تلقائياً فور اكتمال الرفع!',
-        ].join('\n'),
-        { parse_mode: 'HTML' },
-      );
+      const initialView = await renderDualUploadSessionMessage(db, session);
+      const progressMsg = await bot.sendMessage(userChatId, initialView.text, {
+        parse_mode: 'HTML',
+        reply_markup: initialView.reply_markup,
+      });
       statusMessageId = progressMsg?.message_id ?? null;
+      session.statusMessageId = statusMessageId;
+      await saveUploadSession(db, session);
     } catch {
       statusMessageId = null;
     }
@@ -1315,6 +1362,7 @@ export async function dualUploadMediaMessage({
       channelMessageId: channelOutcome.messageId,
       statusChatId: userChatId,
       statusMessageId,
+      sessionId: session.id,
       db,
       env,
       fetchImpl,
@@ -1324,6 +1372,25 @@ export async function dualUploadMediaMessage({
       configured: true,
     };
   }
+
+  if (driveOutcome.sessionUri) {
+    session.driveSessionUri = driveOutcome.sessionUri;
+  }
+
+  if (driveOutcome.asyncTransfer) {
+    session.driveStatus = 'uploading';
+  } else if (driveOutcome.ok) {
+    session.driveStatus = 'done';
+    session.driveFileId = driveOutcome.id || null;
+    session.driveWebViewLink = driveOutcome.webViewLink || null;
+    session.progressPct = 100;
+    session.uploadedBytes = Number(media.fileSize || driveOutcome.size || 0);
+  } else if (driveOutcome.configured) {
+    session.driveStatus = 'failed';
+    session.driveError = driveOutcome.error || null;
+  }
+
+  await saveUploadSession(db, session);
 
   recordDualUploadEvent({
     title,
@@ -1336,64 +1403,45 @@ export async function dualUploadMediaMessage({
     driveLink: driveOutcome.webViewLink || null,
   });
 
-  // If the MTProto bridge accepted the background transfer and will update `statusMessageId` itself:
+  // If the MTProto bridge accepted the background transfer and we already sent the initial interactive progress card:
   if (driveOutcome.asyncTransfer && statusMessageId) {
+    const view = await renderDualUploadSessionMessage(db, session);
     return {
       ok: true,
       alreadyReplied: true,
+      sessionId: session.id,
       title,
       filename: media.filename,
       fileType: media.fileType,
       channelOutcome,
       driveOutcome,
-      summaryText: '',
-      replyMarkup: { inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]] },
+      summaryText: view.text,
+      replyMarkup: view.reply_markup,
     };
   }
 
-  const driveLine = driveOutcome.ok
-    ? driveOutcome.asyncTransfer
-      ? '⏳ جاري إكمال رفع الملف الكبير الكامل إلى حسابك في Google Drive في الخلفية...'
-      : `✅ تم الرفع إلى حسابك في Google Drive (<a href="${escapeHtml(driveOutcome.webViewLink)}">فتح الملف في Drive</a>)`
-    : driveOutcome.configured
-      ? `⚠️ تعذر الرفع إلى Google Drive: <code>${escapeHtml(String(driveOutcome.error || '').slice(0, 220))}</code>`
-      : '⚪️ حساب Google Drive غير مربوط بعد (سجّل الدخول بحسابك من واجهة الويب أو اضبط <code>GOOGLE_DRIVE_ACCESS_TOKEN</code>)';
-
-  const summaryText = [
-    '☁️ <b>تقرير الرفع المزدوج التلقائي (القناة + Google Drive)</b>',
-    '━━━━━━━━━━━━━━━━━━',
-    `📄 <b>الملف:</b> ${escapeHtml(media.filename)}`,
-    '',
-    `1️⃣ <b>قناة البوت:</b>\n${channelLine}`,
-    '',
-    `2️⃣ <b>حساب Google Drive:</b>\n${driveLine}`,
-  ].join('\n');
-
-  const inlineRows = [];
-  if (driveOutcome.ok && driveOutcome.webViewLink) {
-    inlineRows.push([{ text: '📂 فتح الملف في Google Drive', url: driveOutcome.webViewLink }]);
-  }
-  inlineRows.push([{ text: '🏠 الرئيسية', callback_data: 'home' }]);
+  const finalView = await renderDualUploadSessionMessage(db, session);
 
   // If we already created `statusMessageId` and synchronous upload finished (e.g. via public CDN stream), edit `statusMessageId` in place!
   if (statusMessageId && userChatId && typeof bot?.editMessageText === 'function') {
     try {
-      await bot.editMessageText(summaryText, {
+      await bot.editMessageText(finalView.text, {
         chat_id: userChatId,
         message_id: statusMessageId,
         parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: inlineRows },
+        reply_markup: finalView.reply_markup,
       });
       return {
         ok: channelOutcome.ok || driveOutcome.ok,
         alreadyReplied: true,
+        sessionId: session.id,
         title,
         filename: media.filename,
         fileType: media.fileType,
         channelOutcome,
         driveOutcome,
-        summaryText,
-        replyMarkup: { inline_keyboard: inlineRows },
+        summaryText: finalView.text,
+        replyMarkup: finalView.reply_markup,
       };
     } catch {
       // Fall through to normal reply
@@ -1403,13 +1451,15 @@ export async function dualUploadMediaMessage({
   return {
     ok: channelOutcome.ok || driveOutcome.ok,
     alreadyReplied: false,
+    sessionId: session.id,
     title,
     filename: media.filename,
     fileType: media.fileType,
     channelOutcome,
     driveOutcome,
-    summaryText,
-    replyMarkup: { inline_keyboard: inlineRows },
+    summaryText: finalView.text,
+    replyMarkup: finalView.reply_markup,
   };
 }
+
 

@@ -106,8 +106,9 @@ test('dualUploadMediaMessage uploads to both Telegram channel and Google Drive',
   assert.equal(channelCalls.length, 1);
   assert.equal(channelCalls[0].chatId, '@medbot_channel');
   assert.equal(fetchCalls.length, 2);
-  assert.match(result.summaryText, /تم الرفع والنشر في قناة البوت/);
-  assert.match(result.summaryText, /تم الرفع إلى حسابك في Google Drive/);
+  assert.match(result.summaryText, /تم النشر والأرشفة في قناة البوت/);
+  assert.match(result.summaryText, /تم الرفع الكامل إلى Google Drive/);
+  assert.match(result.summaryText, /مستند PDF \/ مقرر أو ملخص دراسي/);
 
   // Sending the same file a second time must NOT duplicate the post in the channel
   const secondResult = await dualUploadMediaMessage({
@@ -130,7 +131,7 @@ test('dualUploadMediaMessage uploads to both Telegram channel and Google Drive',
   assert.equal(secondResult.channelOutcome.ok, true);
   assert.equal(secondResult.channelOutcome.skippedDuplicate, true);
   assert.equal(channelCalls.length, 1);
-  assert.match(secondResult.summaryText, /منع تكرار النشر/);
+  assert.match(secondResult.summaryText, /منع التكرار/);
 
   clearRuntimeDriveSession();
 });
@@ -258,6 +259,7 @@ test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too
 
   const sessionPuts = [];
   let savedJobsJson = null;
+  const kvStore = new Map();
   const mockDb = {
     prepare(sql) {
       return {
@@ -265,9 +267,19 @@ test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too
           if (sql.includes('pending_large_drive_jobs') && sql.includes('INSERT')) {
             savedJobsJson = args[0];
           }
+          if (sql.includes('INSERT INTO bot_settings') && args.length >= 2) {
+            kvStore.set(args[0], args[1]);
+          }
           return {
             async first() {
+              if (sql.includes('FROM bot_settings WHERE key = ?')) {
+                const v = kvStore.get(args[0]);
+                return v ? { value: v } : null;
+              }
               return null;
+            },
+            async all() {
+              return { results: [] };
             },
             async run() {
               return { success: true };
@@ -276,6 +288,9 @@ test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too
         },
         async first() {
           return null;
+        },
+        async all() {
+          return { results: [] };
         },
       };
     },
@@ -322,18 +337,31 @@ test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too
     };
   };
 
+  const sentMessages = [];
+  const editedMessages = [];
+  const deletedChannelMessages = [];
   const fakeBot = {
     async sendVideo(chatId, fileId) {
       return { message_id: 902, chat: { id: chatId }, video: { file_id: fileId } };
     },
-    async sendMessage() {
+    async sendMessage(chatId, text, extra) {
+      sentMessages.push({ chatId, text, extra });
       return { message_id: 555 };
+    },
+    async editMessageText(chatId, messageId, text, extra) {
+      editedMessages.push({ chatId, messageId, text, extra });
+      return { message_id: messageId };
+    },
+    async deleteMessage(chatId, messageId) {
+      deletedChannelMessages.push({ chatId, messageId });
+      return true;
     },
   };
 
   const outcome = await dualUploadMediaMessage({
     message: {
       message_id: 400,
+      from: { id: 777 },
       chat: { id: 12345, type: 'private' },
       forward_from_chat: { id: -100999888, username: 'public_series', type: 'channel' },
       forward_from_message_id: 451,
@@ -355,18 +383,31 @@ test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too
 
   // 1. Must NOT have uploaded the 12.4 KB JPEG thumbnail to sessionUri
   assert.equal(sessionPuts.length, 0);
-  // 2. Must have enqueued the MTProto job in D1 `pending_large_drive_jobs`
+  // 2. Must have enqueued the MTProto job in D1 `pending_large_drive_jobs` with `sessionId`
   assert.equal(outcome.ok, true);
   assert.equal(outcome.alreadyReplied, true);
   assert.equal(outcome.driveOutcome.asyncTransfer, true);
+  assert.ok(outcome.sessionId);
   assert.ok(savedJobsJson);
   const jobs = JSON.parse(savedJobsJson);
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].fileId, 'BAACAgIAAxkBAAIB');
   assert.equal(jobs[0].statusMessageId, 555);
+  assert.equal(jobs[0].sessionId, outcome.sessionId);
+
+  // 3. Sent message must include detected media type, progress bar, and cancel/delete button
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].text, /مقطع فيديو \/ محاضرة مسجلة/);
+  assert.match(sentMessages[0].text, /░░░░░░░░░░ 0%/);
+  const flatCallbacks = sentMessages[0].extra.reply_markup.inline_keyboard
+    .flat()
+    .map((b) => b.callback_data)
+    .filter(Boolean);
+  assert.ok(flatCallbacks.includes(`du_cancel:${outcome.sessionId}`));
 
   clearRuntimeDriveSession();
 });
+
 
 
 

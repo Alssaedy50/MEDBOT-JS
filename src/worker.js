@@ -76,6 +76,13 @@ import {
 } from './telegram/workerAdmin.js';
 import { ensureConfiguredAdmin } from './db/d1/admins.js';
 import { D1_SCHEMA_STATEMENTS } from './db/d1/migrations.js';
+import {
+  applySessionProgressUpdate,
+  getUploadSession,
+  handleDualUploadCallback,
+  handleDualUploadNewFolderText,
+  saveUploadSession,
+} from './storage/dualUploadInteractive.js';
 
 const initializedWebhookStores = new WeakSet();
 let lastWorkerError = null;
@@ -147,6 +154,9 @@ function telegramBot(token) {
   return {
     sendMessage: (chatId, text, options = {}) => call('sendMessage', { parse_mode: 'HTML', chat_id: chatId, text, ...options }),
     editMessageText: (text, options = {}) => call('editMessageText', { parse_mode: 'HTML', text, ...options }),
+    editMessageCaption: (chatId, messageId, caption, options = {}) =>
+      call('editMessageCaption', { parse_mode: 'HTML', chat_id: chatId, message_id: messageId, caption, ...options }),
+    deleteMessage: (chatId, messageId) => call('deleteMessage', { chat_id: chatId, message_id: messageId }),
     answerCallbackQuery: (id) => call('answerCallbackQuery', { callback_query_id: id }),
     sendDocument: (chatId, document, options = {}) => call('sendDocument', { chat_id: chatId, document, ...options }),
     sendPhoto: (chatId, photo, options = {}) => call('sendPhoto', { chat_id: chatId, photo, ...options }),
@@ -214,6 +224,8 @@ function clearPendingStates(userData) {
   userData.drive_set_token = false;
   userData.drive_set_refresh = false;
   userData.drive_set_folder = false;
+  userData.du_new_folder_session = null;
+  userData.du_new_folder_parent = null;
 }
 
 async function resolveWorkerDriveEnv(db, env) {
@@ -388,6 +400,11 @@ async function dispatchTelegramUpdate(update, { env }) {
       // Clear transient input flags on navigation unless selecting folder type
       if (!ctx.data.startsWith('admin_ftype:')) {
         clearPendingStates(ctx.userData);
+      }
+
+      if (ctx.data.startsWith('du_')) {
+        const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
+        return handleDualUploadCallback(ctx, ctx.data, bot, driveEnv);
       }
 
       if (ctx.data === 'language') {
@@ -1065,6 +1082,10 @@ async function dispatchTelegramUpdate(update, { env }) {
   };
 
   handlers.message = async (ctx) => {
+    if (ctx.userData?.du_new_folder_session) {
+      const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
+      return handleDualUploadNewFolderText(ctx, ctx.text, bot, driveEnv);
+    }
     if (ctx.userData?.ai_chat) {
       ctx.userData.ai_chat = false;
       const result = await answerWorkerAi(ctx.db, ctx.from, ctx.text, env);
@@ -1267,10 +1288,18 @@ async function dispatchTelegramUpdate(update, { env }) {
     });
     if (dualOutcome.reason !== 'no_media') {
       if (dualOutcome.alreadyReplied) return null;
-      return ctx.reply(dualOutcome.summaryText, {
+      const sent = await ctx.reply(dualOutcome.summaryText, {
         parse_mode: 'HTML',
         reply_markup: dualOutcome.replyMarkup,
       });
+      if (dualOutcome.sessionId && sent?.message_id) {
+        const sess = await getUploadSession(ctx.db, dualOutcome.sessionId);
+        if (sess) {
+          sess.statusMessageId = sent.message_id;
+          await saveUploadSession(ctx.db, sess);
+        }
+      }
+      return sent;
     }
     return ctx.reply('ℹ️ اختر أولاً القسم المناسب ثم أرسل المورد.');
   };
@@ -1360,6 +1389,22 @@ export default {
         return json({ ok: true, jobs });
       } catch (err) {
         return json({ ok: false, error: String(err?.message || err), jobs: [] }, 500);
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/api/drive/session-progress') {
+      if (!env.DB) return json({ ok: false, error: 'd1_not_configured' }, 503);
+      try {
+        await ensureWorkerSchema(env.DB);
+        const payload = await request.json().catch(() => ({}));
+        const driveEnv = await resolveWorkerDriveEnv(env.DB, env);
+        const token = String(
+          payload.botToken || env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN || '',
+        ).trim();
+        const bot = telegramBot(token);
+        const res = await applySessionProgressUpdate(env.DB, bot, driveEnv, payload);
+        return json(res, res.ok ? 200 : 400);
+      } catch (err) {
+        return json({ ok: false, error: String(err?.message || err) }, 500);
       }
     }
     if (url.pathname === '/storage/status') {

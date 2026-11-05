@@ -286,6 +286,7 @@ async function handleApiRequest(request, response, pathname) {
 
       const transferParams = {
         botToken,
+        sessionId: body.sessionId ?? null,
         fileId: body.fileId ?? null,
         sessionUri,
         channelId: body.channelId ?? null,
@@ -1048,6 +1049,7 @@ function startLargeFileQueuePoller() {
 
         streamLargeTelegramFileToDrive({
           botToken: job.botToken,
+          sessionId: job.sessionId ?? null,
           fileId: job.fileId ?? null,
           sessionUri: job.sessionUri,
           channelId: job.channelId ?? null,
@@ -1061,6 +1063,27 @@ function startLargeFileQueuePoller() {
           fileSize: job.fileSize ?? null,
         })
           .catch(async (err) => {
+            const errText = String(err?.message || err).slice(0, 180);
+            if (job.sessionId) {
+              try {
+                await fetch(
+                  process.env.WORKER_SESSION_PROGRESS_URL ||
+                    'https://medbot-js.alssaedy500.workers.dev/api/drive/session-progress',
+                  {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      sessionId: job.sessionId,
+                      driveStatus: 'failed',
+                      error: errText,
+                    }),
+                  },
+                );
+                return;
+              } catch {
+                // Fallback below
+              }
+            }
             if (job.statusChatId && job.statusMessageId && job.botToken) {
               try {
                 await fetch(`https://api.telegram.org/bot${job.botToken}/editMessageText`, {
@@ -1071,16 +1094,20 @@ function startLargeFileQueuePoller() {
                     message_id: job.statusMessageId,
                     parse_mode: 'HTML',
                     text: [
-                      '☁️ <b>تقرير الرفع المزدوج التلقائي (القناة + Google Drive)</b>',
+                      '☁️ <b>مركز الرفع المزدوج والدمج الذكي في البوت</b>',
                       '━━━━━━━━━━━━━━━━━━',
                       `📄 <b>الملف:</b> ${job.filename || 'ملف كبير'}`,
                       '',
-                      `1️⃣ <b>قناة البوت:</b>\n✅ تم الرفع والنشر في قناة البوت (<code>${job.channelId || ''}</code>)`,
-                      '',
-                      `2️⃣ <b>حساب Google Drive:</b>\n⚠️ تعذر نقل الملف الكبير: <code>${String(err?.message || err).slice(0, 180)}</code>`,
+                      `1️⃣ <b>قناة الأرشيف:</b> ✅ تم النشر في القناة (<code>${job.channelId || ''}</code>)`,
+                      `2️⃣ <b>Google Drive:</b> ⚠️ تعذر نقل الملف الكبير: <code>${errText}</code>`,
                     ].join('\n'),
                     reply_markup: {
-                      inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]],
+                      inline_keyboard: [
+                        ...(job.sessionId
+                          ? [[{ text: '🛑 إلغاء الرفع وحذف الملف', callback_data: `du_cancel:${job.sessionId}` }]]
+                          : []),
+                        [{ text: '🏠 الرئيسية', callback_data: 'home' }],
+                      ],
                     },
                   }),
                 });

@@ -446,7 +446,7 @@ export async function saveWorkerArchiveChannel(db, user, inputOrMessage, bot = n
   };
 }
 
-async function getFolderHierarchyChain(db, folderId) {
+export async function getFolderHierarchyChain(db, folderId) {
   const allFolders = await all(db, 'SELECT id, parent_id, name, node_type FROM folders');
   const byId = new Map(allFolders.map((r) => [Number(r[0]), {
     id: Number(r[0]),
