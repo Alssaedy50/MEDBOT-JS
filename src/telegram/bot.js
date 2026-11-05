@@ -314,13 +314,14 @@ async function driveRoute(ctx) {
     ctx.userData.drive_wait_script = true;
     await ctx.editMessageText(
       [
-        '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (في دقيقة واحدة وبدون Client ID)</b>',
+        '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (بدون أقواس متداخلة لمنع خطأ السطر 7)</b>',
         '',
-        '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> واضغط <b>New project (مشروع جديد)</b>.',
-        '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط (يتضمن سطر <code>createFile</code> لمنح صلاحية الكتابة والرفع الكاملة):',
-        '<pre>function doGet() {\n  if (false) DriveApp.createFile("", "");\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
-        '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على صلاحية الإنشاء والرفع.',
-        '4️⃣ انسخ الرابط الناتج (ينتهي بـ <code>/exec</code>) وأرسله هنا في المحادثة الآن!',
+        '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> وامسح كل الكود الموجود في الصفحة بالكامل (حتى تصبح الصفحة فارغة تماماً بدون أي قوس <code>}</code> في الأسفل).',
+        '2️⃣ الصق هذه الأسطر الأربعة فقط:',
+        '<pre>function doGet() {\n  if (false) DriveApp.createFile("", "");\n  return ContentService.createTextOutput(ScriptApp.getOAuthToken());\n}</pre>',
+        '⚠️ <b>تأكد من عدم وجود قوس <code>}</code> إضافي في السطر الخامس تحت الكود!</b>',
+        '3️⃣ اضغط أيقونة الحفظ 💾، ثم اضغط <b>نشر (Deploy)</b> ← <b>نشر جديد (New deployment)</b> ← اختر <b>تطبيق ويب (Web app)</b> واجعل الوصول <b>أي شخص (Anyone)</b> ثم اضغط نشر ووافق على الصلاحيات.',
+        '4️⃣ انسخ الرابط الجديد الذي ينتهي بـ <code>/exec</code> وأرسله هنا في المحادثة مباشرةً!',
       ].join('\n'),
       {
         parse_mode: 'HTML',
@@ -435,14 +436,16 @@ async function handleDriveSetupText(ctx) {
   const raw = String(ctx.text ?? '').trim();
   if (!raw) return false;
 
-  if (ctx.userData?.drive_wait_script) {
+  const autoScriptMatch = /https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/i.exec(raw);
+  if (ctx.userData?.drive_wait_script || autoScriptMatch) {
     delete ctx.userData.drive_wait_script;
     if (raw === '/cancel') {
       const screen = buildDualUploadScreen(ctx);
       await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
       return true;
     }
-    if (!/^https:\/\/script\.google\.com\/macros\/s\//i.test(raw)) {
+    const scriptUrl = autoScriptMatch ? autoScriptMatch[0].trim() : raw;
+    if (!/^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl)) {
       await ctx.reply('⚠️ يرجى إرسال رابط Google Apps Script Web App الصحيح (يبدأ بـ <code>https://script.google.com/macros/s/</code> وينتهي بـ <code>/exec</code>).', {
         parse_mode: 'HTML',
         reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
@@ -450,12 +453,12 @@ async function handleDriveSetupText(ctx) {
       return true;
     }
     try {
-      setRuntimeSecret('GOOGLE_DRIVE_SCRIPT_URL', raw);
+      setRuntimeSecret('GOOGLE_DRIVE_SCRIPT_URL', scriptUrl);
     } catch {
       // Ignore vault errors
     }
-    process.env.GOOGLE_DRIVE_SCRIPT_URL = raw;
-    setRuntimeDriveSession({ scriptUrl: raw });
+    process.env.GOOGLE_DRIVE_SCRIPT_URL = scriptUrl;
+    setRuntimeDriveSession({ scriptUrl });
     if (ctx.message?.message_id) {
       await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(() => {});
     }

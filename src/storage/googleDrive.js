@@ -201,12 +201,36 @@ export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken 
   if (direct && !forceRefresh) return direct;
 
   if (scriptUrl && /^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl)) {
-    const res = await fetchImpl(scriptUrl, { method: 'GET', redirect: 'follow' });
-    const data = await res.json().catch(() => null);
-    if (res.ok && data?.access_token) {
-      runtimeDriveSession.accessToken = data.access_token;
-      runtimeDriveSession.updatedAt = new Date().toISOString();
-      return data.access_token;
+    const sep = scriptUrl.includes('?') ? '&' : '?';
+    const fetchUrl = forceRefresh ? `${scriptUrl}${sep}_t=${Date.now()}` : scriptUrl;
+    const res = await fetchImpl(fetchUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (res.ok) {
+      let tokenCandidate = null;
+      if (typeof res.text === 'function') {
+        const rawText = (await res.text().catch(() => '')).trim();
+        if (rawText.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(rawText);
+            tokenCandidate = parsed?.access_token ? String(parsed.access_token).trim() : null;
+          } catch {
+            tokenCandidate = null;
+          }
+        } else if (/^ya29\.[A-Za-z0-9._-]+$/.test(rawText)) {
+          tokenCandidate = rawText;
+        }
+      } else if (typeof res.json === 'function') {
+        const data = await res.json().catch(() => null);
+        tokenCandidate = data?.access_token ? String(data.access_token).trim() : null;
+      }
+      if (tokenCandidate) {
+        runtimeDriveSession.accessToken = tokenCandidate;
+        runtimeDriveSession.updatedAt = new Date().toISOString();
+        return tokenCandidate;
+      }
     }
   }
 

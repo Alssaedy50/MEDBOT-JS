@@ -698,13 +698,14 @@ async function dispatchTelegramUpdate(update, { env }) {
         await ctx.answer();
         return ctx.editMessageText(
           [
-            '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (في دقيقة واحدة وبدون Client ID)</b>',
+            '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (بدون أقواس متداخلة لمنع خطأ السطر 7)</b>',
             '',
-            '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> واضغط <b>New project (مشروع جديد)</b>.',
-            '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط (يتضمن سطر <code>createFile</code> لمنح صلاحية الكتابة والرفع الكاملة):',
-            '<pre>function doGet() {\n  if (false) DriveApp.createFile("", "");\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
-            '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على صلاحية الإنشاء والرفع.',
-            '4️⃣ انسخ الرابط الناتج (ينتهي بـ <code>/exec</code>) وأرسله هنا في المحادثة الآن!',
+            '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> وامسح كل الكود الموجود في الصفحة بالكامل (حتى تصبح الصفحة فارغة تماماً بدون أي قوس <code>}</code> في الأسفل).',
+            '2️⃣ الصق هذه الأسطر الأربعة فقط:',
+            '<pre>function doGet() {\n  if (false) DriveApp.createFile("", "");\n  return ContentService.createTextOutput(ScriptApp.getOAuthToken());\n}</pre>',
+            '⚠️ <b>تأكد من عدم وجود قوس <code>}</code> إضافي في السطر الخامس تحت الكود!</b>',
+            '3️⃣ اضغط أيقونة الحفظ 💾، ثم اضغط <b>نشر (Deploy)</b> ← <b>نشر جديد (New deployment)</b> ← اختر <b>تطبيق ويب (Web app)</b> واجعل الوصول <b>أي شخص (Anyone)</b> ثم اضغط نشر ووافق على الصلاحيات.',
+            '4️⃣ انسخ الرابط الجديد الذي ينتهي بـ <code>/exec</code> وأرسله هنا في المحادثة مباشرةً!',
           ].join('\n'),
           {
             reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'drive_menu' }]] },
@@ -1143,9 +1144,12 @@ async function dispatchTelegramUpdate(update, { env }) {
       const res = await importWorkerArchiveInput(ctx.db, ctx.from, ctx.message, bot);
       return ctx.reply(res.text, { reply_markup: res.reply_markup, parse_mode: 'HTML' });
     }
-    if (ctx.userData?.drive_set_script) {
+    const autoScriptMatch = /https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/i.exec(
+      String(ctx.text ?? ''),
+    );
+    if (ctx.userData?.drive_set_script || autoScriptMatch) {
       ctx.userData.drive_set_script = false;
-      const scriptUrl = String(ctx.text ?? '').trim();
+      const scriptUrl = autoScriptMatch ? autoScriptMatch[0].trim() : String(ctx.text ?? '').trim();
       if (!/^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl)) {
         return ctx.reply('⚠️ يرجى إرسال رابط Google Apps Script Web App الصحيح (يبدأ بـ https://script.google.com/macros/s/ وينتهي بـ /exec).');
       }
