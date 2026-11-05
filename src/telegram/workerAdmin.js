@@ -44,7 +44,7 @@ import {
 import { recordNotification, getNotifications } from '../db/d1/notifications.js';
 import { aiUsageStats, aiRegistryGetAll } from '../db/d1/aiRegistry.js';
 import { adminHasScopes, folderInAdminScope } from '../db/d1/scopes.js';
-import { isDriveConfigured, uploadTelegramFileToGoogleDrive } from '../storage/googleDrive.js';
+import { isDriveConfigured, markChannelPostPublished, uploadTelegramFileToGoogleDrive } from '../storage/googleDrive.js';
 import {
   FEATURES,
   FEATURE_LABELS,
@@ -303,18 +303,29 @@ export async function uploadWorkerAdminMedia(db, user, message, folderId, bot = 
   }
   if (!fileId) return { ok: false, text: '⚠️ يرجى إرسال ملف أو صورة أو فيديو أو مقطع صوتي صالح.' };
   const title = String(message?.caption || defaultTitle).trim().slice(0, 160);
-  const contentId = await addContent(db, fid, title, fileId, fileType, 'direct', null, uid);
+  const existingContent = await get(
+    db,
+    'SELECT id FROM content WHERE folder_id = ? AND (file_id = ? OR title = ?) LIMIT 1',
+    [fid, String(fileId), title],
+  ).catch(() => null);
 
-  try {
-    const newsId = await createResourceNewsForContent(db, contentId, uid, 'published');
-    if (newsId) await publishNews(db, newsId);
-  } catch {
-    // Non-fatal
+  let contentId = existingContent?.[0] ? Number(existingContent[0]) : null;
+  if (!contentId) {
+    contentId = await addContent(db, fid, title, fileId, fileType, 'direct', null, uid);
+    try {
+      const newsId = await createResourceNewsForContent(db, contentId, uid, 'published');
+      if (newsId) await publishNews(db, newsId);
+    } catch {
+      // Non-fatal
+    }
   }
 
   let archived = false;
   try {
-    const arc = await publishResourceToWorkerArchive(db, bot, env, contentId);
+    const arc = await publishResourceToWorkerArchive(db, bot, env, contentId, {
+      skipAutoBackup: true,
+      includeSectionHeader: false,
+    });
     archived = Boolean(arc?.ok);
   } catch {
     archived = false;
@@ -632,7 +643,11 @@ export function buildStructuredArchiveCaption({
 async function publishSectionHeaderToArchive(db, bot, channel, folderId, chain) {
   if (!folderId || !chain?.length || !bot?.sendMessage) return;
   const fp = `folder:${folderId}`;
-  const existing = await get(db, "SELECT status FROM archive_sync WHERE content_fingerprint=? AND status='published'", [fp]).catch(() => null);
+  const existing = await get(
+    db,
+    "SELECT status FROM archive_sync WHERE (content_fingerprint=? OR (object_type='folder' AND folder_id=?)) AND status='published' LIMIT 1",
+    [fp, Number(folderId)],
+  ).catch(() => null);
   if (existing) return;
 
   const h = analyzeAcademicHierarchy(chain);
@@ -671,16 +686,27 @@ async function publishSectionHeaderToArchive(db, bot, channel, folderId, chain) 
   }
 }
 
-export async function publishResourceToWorkerArchive(db, bot, env, contentId, { skipAutoBackup = false } = {}) {
+export async function publishResourceToWorkerArchive(
+  db,
+  bot,
+  env,
+  contentId,
+  { skipAutoBackup = true, includeSectionHeader = false } = {},
+) {
   const channel = await resolveWorkerArchiveChannelAsync(db, env);
   if (!channel || !bot) return { ok: false, reason: 'not_configured' };
   const snap = await getResourceSnapshot(db, Number(contentId));
   if (!snap) return { ok: false, reason: 'not_found' };
   const [id, folderId, title, fileId, fileType] = snap;
   const fingerprint = `${fileType}:${fileId}:${title}`.slice(0, 240);
+  const dualFp = `dual:${fileId}:${title}`.slice(0, 240);
 
-  const existing = await get(db, "SELECT status FROM archive_sync WHERE content_fingerprint=? AND status='published'", [fingerprint]).catch(() => null);
-  if (existing) return { ok: true, skipped: true };
+  const existing = await get(
+    db,
+    "SELECT status, channel_message_id FROM archive_sync WHERE status='published' AND (content_fingerprint = ? OR content_fingerprint = ? OR content_ids = ?) LIMIT 1",
+    [fingerprint, dualFp, String(id)],
+  ).catch(() => null);
+  if (existing) return { ok: true, skipped: true, message_id: existing[1] ?? null };
 
   const chain = await getFolderHierarchyChain(db, folderId);
   const detailsRow = await get(
@@ -694,7 +720,9 @@ export async function publishResourceToWorkerArchive(db, bot, env, contentId, { 
   const contributorName = detailsRow?.[6] || detailsRow?.[4] || (detailsRow?.[5] ? `@${detailsRow[5]}` : null);
   const createdAt = detailsRow?.[3] || new Date().toISOString();
 
-  await publishSectionHeaderToArchive(db, bot, channel, folderId, chain);
+  if (includeSectionHeader) {
+    await publishSectionHeaderToArchive(db, bot, channel, folderId, chain);
+  }
 
   const caption = buildStructuredArchiveCaption({
     id,
@@ -734,13 +762,16 @@ export async function publishResourceToWorkerArchive(db, bot, env, contentId, { 
     }
     if (!sent && lastErr) throw lastErr;
 
+    markChannelPostPublished(fingerprint, sent?.message_id ?? null);
+    markChannelPostPublished(dualFp, sent?.message_id ?? null);
+
     await run(
       db,
       `INSERT INTO archive_sync (object_type, content_fingerprint, folder_id, content_ids, channel_id, channel_message_id, status, attempts, published_at)
        VALUES ('content', ?, ?, ?, ?, ?, 'published', 1, CURRENT_TIMESTAMP)
        ON CONFLICT(content_fingerprint) DO UPDATE SET status='published', channel_id=excluded.channel_id, channel_message_id=excluded.channel_message_id, error=NULL, updated_at=CURRENT_TIMESTAMP, published_at=CURRENT_TIMESTAMP`,
       [fingerprint, folderId, String(id), String(channel), sent?.message_id ?? null],
-    );
+    ).catch(() => {});
 
     if (!skipAutoBackup) {
       await publishWorkerCloudBackupToArchive(db, bot, env, { pin: true }).catch(() => {});

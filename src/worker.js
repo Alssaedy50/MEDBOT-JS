@@ -234,6 +234,14 @@ async function resolveWorkerDriveEnv(db, env) {
         if (row?.[0]) merged[envKey] = String(row[0]).trim();
       }
     }
+    if (
+      !merged.GOOGLE_DRIVE_SCRIPT_URL &&
+      !merged.GOOGLE_DRIVE_ACCESS_TOKEN &&
+      !merged.GOOGLE_REFRESH_TOKEN
+    ) {
+      merged.GOOGLE_DRIVE_SCRIPT_URL =
+        'https://script.google.com/macros/s/AKfycbxoIi_d67ysL6BUZ-ENutkMvmo-MpC5aRPhJEYgcq9q_KI5dDxRHl9TTy7cX9XNys6U/exec';
+    }
     if (merged.GOOGLE_DRIVE_SCRIPT_URL || merged.GOOGLE_DRIVE_ACCESS_TOKEN || merged.GOOGLE_DRIVE_FOLDER_ID) {
       setRuntimeDriveSession({
         scriptUrl: merged.GOOGLE_DRIVE_SCRIPT_URL || undefined,
@@ -693,9 +701,9 @@ async function dispatchTelegramUpdate(update, { env }) {
             '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (في دقيقة واحدة وبدون Client ID)</b>',
             '',
             '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> واضغط <b>New project (مشروع جديد)</b>.',
-            '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط:',
-            '<pre>function doGet() {\n  DriveApp.getRootFolder();\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
-            '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على الصلاحية.',
+            '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط (يتضمن سطر <code>createFile</code> لمنح صلاحية الكتابة والرفع الكاملة):',
+            '<pre>function doGet() {\n  if (false) DriveApp.createFile("", "");\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
+            '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على صلاحية الإنشاء والرفع.',
             '4️⃣ انسخ الرابط الناتج (ينتهي بـ <code>/exec</code>) وأرسله هنا في المحادثة الآن!',
           ].join('\n'),
           {
@@ -735,20 +743,20 @@ async function dispatchTelegramUpdate(update, { env }) {
         await ctx.answer();
         try {
           const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
-          const token = await resolveDriveAccessToken(driveEnv);
+          const token = await resolveDriveAccessToken(driveEnv, { forceRefresh: true });
           if (!token) {
             return ctx.editMessageText(
-              '⚠️ <b>حساب Google Drive غير مربوط بعد.</b>\n\nاضغط على <b>«🔑 ربط توكن Google Drive»</b> أو <b>«🔄 ربط دائم»</b> أولاً.',
+              '⚠️ <b>حساب Google Drive غير مربوط بعد.</b>\n\nاضغط على <b>«⚡ ربط دائم سريع (Google Script)»</b> أولاً.',
               {
                 reply_markup: { inline_keyboard: [[{ text: '⬅️ رجوع لإعدادات Drive', callback_data: 'drive_menu' }]] },
                 parse_mode: 'HTML',
               },
             );
           }
-          const folderId = await ensureDriveFolder({ accessToken: token, env: driveEnv });
+          const folderId = await ensureDriveFolder({ accessToken: token, env: driveEnv, strict: true });
           const folderLink = folderId ? `https://drive.google.com/drive/folders/${folderId}` : 'https://drive.google.com';
           return ctx.editMessageText(
-            `✅ <b>الاتصال بحساب Google Drive ناجح ويعمل 100%!</b>\n\n📁 <b>مجلد الأرشيف الجاهز:</b> <code>${folderId || 'MEDBOT Archive'}</code>\n🔗 <a href="${folderLink}">فتح مجلد البوت في Google Drive</a>`,
+            `✅ <b>الاتصال وصلاحية الرفع في Google Drive ناجحة وتعمل 100%!</b>\n\n📁 <b>مجلد الأرشيف الجاهز:</b> <code>${folderId || 'MEDBOT Archive'}</code>\n🔗 <a href="${folderLink}">فتح مجلد البوت في Google Drive</a>`,
             {
               reply_markup: { inline_keyboard: [[{ text: '⬅️ رجوع لإعدادات Drive', callback_data: 'drive_menu' }, { text: '🏠 الرئيسية', callback_data: 'home' }]] },
               parse_mode: 'HTML',
@@ -756,9 +764,14 @@ async function dispatchTelegramUpdate(update, { env }) {
           );
         } catch (err) {
           return ctx.editMessageText(
-            `❌ <b>فشل اختبار الاتصال بـ Google Drive:</b>\n<code>${String(err?.message || err).slice(0, 180)}</code>`,
+            `❌ <b>فشل اختبار صلاحية الرفع إلى Google Drive:</b>\n<code>${String(err?.message || err).slice(0, 260)}</code>`,
             {
-              reply_markup: { inline_keyboard: [[{ text: '⬅️ رجوع لإعدادات Drive', callback_data: 'drive_menu' }]] },
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '⚡ عرض الكود الصحيح لـ Google Script', callback_data: 'drive_set_script' }],
+                  [{ text: '⬅️ رجوع لإعدادات Drive', callback_data: 'drive_menu' }],
+                ],
+              },
               parse_mode: 'HTML',
             },
           );
@@ -1217,6 +1230,8 @@ async function dispatchTelegramUpdate(update, { env }) {
   };
 
   handlers.media = async (ctx) => {
+    if (ctx.message?.is_automatic_forward) return null;
+    if (ctx.message?.chat?.type && ctx.message.chat.type !== 'private') return null;
     const driveEnv = await resolveWorkerDriveEnv(ctx.db, env);
     if (ctx.userData?.admin_archive_set_channel) {
       ctx.userData.admin_archive_set_channel = false;
@@ -1243,6 +1258,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       bot,
       message: ctx.message,
       channelTarget,
+      db: ctx.db,
       env: driveEnv,
     });
     if (dualOutcome.reason !== 'no_media') {

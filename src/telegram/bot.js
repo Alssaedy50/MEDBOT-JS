@@ -165,6 +165,8 @@ export function registerHandlers() {
 
   // ---- Media handler (uploads) ------------------------------------
   setMediaHandler(async (ctx) => {
+    if (ctx.message?.is_automatic_forward) return;
+    if (ctx.message?.chat?.type && ctx.message.chat.type !== 'private') return;
     if (ctx.userData?.restore_waiting && ctx.message?.document?.file_id) {
       await backup.restoreFromUploadedFile(ctx, ctx.message.document.file_id);
       delete ctx.userData.restore_waiting;
@@ -315,9 +317,9 @@ async function driveRoute(ctx) {
         '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (في دقيقة واحدة وبدون Client ID)</b>',
         '',
         '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> واضغط <b>New project (مشروع جديد)</b>.',
-        '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط:',
-        '<pre>function doGet() {\n  DriveApp.getRootFolder();\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
-        '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على الصلاحية.',
+        '2️⃣ امسح الكود الموجود والصق هذا الكود الصغير فقط (يتضمن سطر <code>createFile</code> لمنح صلاحية الكتابة والرفع الكاملة):',
+        '<pre>function doGet() {\n  if (false) DriveApp.createFile("", "");\n  return ContentService.createTextOutput(JSON.stringify({\n    access_token: ScriptApp.getOAuthToken()\n  })).setMimeType(ContentService.MimeType.JSON);\n}</pre>',
+        '3️⃣ اضغط <b>Deploy (نشر)</b> ← <b>New deployment</b> ← اختر النوع <b>Web app</b>، واجعل <i>Who has access</i> على <b>Anyone (أي شخص)</b> ثم اضغط Deploy ووافق على صلاحية الإنشاء والرفع.',
         '4️⃣ انسخ الرابط الناتج (ينتهي بـ <code>/exec</code>) وأرسله هنا في المحادثة الآن!',
       ].join('\n'),
       {
@@ -381,10 +383,10 @@ async function driveRoute(ctx) {
     return;
   } else if (ctx.data === 'drive_test') {
     try {
-      const token = await resolveDriveAccessToken();
+      const token = await resolveDriveAccessToken(undefined, { forceRefresh: true });
       if (!token) {
         await ctx.editMessageText(
-          '⚠️ <b>حساب Google Drive غير مربوط بعد.</b>\n\nاضغط على <b>«🔑 ربط توكن Google Drive»</b> أو <b>«🔄 ربط دائم»</b> أولاً.',
+          '⚠️ <b>حساب Google Drive غير مربوط بعد.</b>\n\nاضغط على <b>«⚡ ربط دائم سريع (Google Script)»</b> أولاً.',
           {
             parse_mode: 'HTML',
             reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
@@ -392,11 +394,11 @@ async function driveRoute(ctx) {
         );
         return;
       }
-      const folderId = await ensureDriveFolder({ accessToken: token });
+      const folderId = await ensureDriveFolder({ accessToken: token, strict: true });
       const folderLink = folderId ? `https://drive.google.com/drive/folders/${folderId}` : 'https://drive.google.com';
       await ctx.editMessageText(
         [
-          '✅ <b>الاتصال بحساب Google Drive ناجح ويعمل 100%!</b>',
+          '✅ <b>الاتصال وصلاحية الرفع في Google Drive ناجحة وتعمل 100%!</b>',
           '',
           `📁 <b>مجلد الأرشيف الجاهز:</b> <code>${folderId || 'MEDBOT Archive'}</code>`,
           `🔗 <a href="${folderLink}">فتح مجلد البوت في Google Drive</a>`,
@@ -411,10 +413,13 @@ async function driveRoute(ctx) {
       return;
     } catch (err) {
       await ctx.editMessageText(
-        `❌ <b>فشل اختبار الاتصال بـ Google Drive:</b>\n<code>${String(err?.message || err).slice(0, 180)}</code>`,
+        `❌ <b>فشل اختبار صلاحية الرفع إلى Google Drive:</b>\n<code>${String(err?.message || err).slice(0, 260)}</code>`,
         {
           parse_mode: 'HTML',
-          reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
+          reply_markup: keyboard([
+            [btn('⚡ عرض الكود الصحيح لـ Google Script', 'drive_set_script')],
+            [btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')],
+          ]),
         },
       );
       return;

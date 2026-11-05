@@ -109,5 +109,29 @@ test('dualUploadMediaMessage uploads to both Telegram channel and Google Drive',
   assert.match(result.summaryText, /تم الرفع والنشر في قناة البوت/);
   assert.match(result.summaryText, /تم الرفع إلى حسابك في Google Drive/);
 
+  // Sending the same file a second time must NOT duplicate the post in the channel
+  const secondResult = await dualUploadMediaMessage({
+    message: {
+      forward_from_chat: { id: -100111 },
+      caption: 'محاضرة الباطنة',
+      document: {
+        file_id: 'tg-file-55',
+        file_name: 'lecture.pdf',
+        mime_type: 'application/pdf',
+      },
+    },
+    bot: fakeBot,
+    channelTarget: '@medbot_channel',
+    env: {},
+    fetchImpl: mockFetch,
+  });
+
+  assert.equal(secondResult.ok, true);
+  assert.equal(secondResult.channelOutcome.ok, true);
+  assert.equal(secondResult.channelOutcome.skippedDuplicate, true);
+  assert.equal(channelCalls.length, 1);
+  assert.match(secondResult.summaryText, /منع تكرار النشر/);
+
   clearRuntimeDriveSession();
 });
+

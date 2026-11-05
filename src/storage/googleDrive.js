@@ -28,6 +28,9 @@ const runtimeDriveSession = {
 const recentDualUploads = [];
 const MAX_RECENT_UPLOADS = 50;
 
+// In-memory deduplication map for channel uploads: key -> messageId
+const publishedChannelPosts = new Map();
+
 export function recordDualUploadEvent(entry) {
   const item = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -45,6 +48,16 @@ export function getRecentDualUploads() {
   return [...recentDualUploads];
 }
 
+export function markChannelPostPublished(key, messageId = null) {
+  if (!key) return;
+  publishedChannelPosts.set(String(key), messageId ?? true);
+}
+
+export function isChannelPostPublished(key) {
+  if (!key) return false;
+  return publishedChannelPosts.has(String(key));
+}
+
 export function setRuntimeDriveSession({
   accessToken,
   scriptUrl,
@@ -57,6 +70,10 @@ export function setRuntimeDriveSession({
   }
   if (scriptUrl !== undefined) {
     runtimeDriveSession.scriptUrl = scriptUrl ? String(scriptUrl).trim() : null;
+    // Clear cached token when scriptUrl changes so a fresh token with updated scopes is fetched
+    if (accessToken === undefined) {
+      runtimeDriveSession.accessToken = null;
+    }
   }
   if (userEmail !== undefined) {
     runtimeDriveSession.userEmail = userEmail ? String(userEmail).trim() : null;
@@ -79,6 +96,7 @@ export function clearRuntimeDriveSession() {
   runtimeDriveSession.userName = null;
   runtimeDriveSession.cachedArchiveFolderId = null;
   runtimeDriveSession.updatedAt = new Date().toISOString();
+  publishedChannelPosts.clear();
 }
 
 /**
@@ -97,6 +115,16 @@ export function extractDriveFolderId(raw) {
 
 function defaultEnv() {
   return typeof process !== 'undefined' && process?.env ? process.env : {};
+}
+
+export function resolveConfiguredScriptUrl(env = defaultEnv()) {
+  const fallback = defaultEnv();
+  return String(
+    runtimeDriveSession.scriptUrl ||
+      env?.GOOGLE_DRIVE_SCRIPT_URL ||
+      fallback.GOOGLE_DRIVE_SCRIPT_URL ||
+      '',
+  ).trim();
 }
 
 export function resolveConfiguredFolderId(env = defaultEnv()) {
@@ -155,11 +183,14 @@ export function getDriveStatus(env = defaultEnv()) {
  *   2. Google Apps Script Web App URL (`GOOGLE_DRIVE_SCRIPT_URL`) returning `{ access_token }`
  *   3. OAuth 2.0 Refresh Token (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REFRESH_TOKEN`)
  */
-export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken = null, fetchImpl = fetch } = {}) {
+export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken = null, forceRefresh = false, fetchImpl = fetch } = {}) {
   const explicit = String(bearerToken ?? '').replace(/^Bearer\s+/i, '').trim();
   if (explicit) return explicit;
 
-  if (runtimeDriveSession.accessToken) {
+  const scriptUrl = resolveConfiguredScriptUrl(env);
+
+  // If we use a Google Apps Script URL, always fetch a fresh token when forceRefresh is true or when no manual token is set
+  if (!forceRefresh && runtimeDriveSession.accessToken && !scriptUrl) {
     return runtimeDriveSession.accessToken;
   }
 
@@ -167,14 +198,8 @@ export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken 
   const direct = String(
     env?.GOOGLE_DRIVE_ACCESS_TOKEN || fallback.GOOGLE_DRIVE_ACCESS_TOKEN || '',
   ).trim();
-  if (direct) return direct;
+  if (direct && !forceRefresh) return direct;
 
-  const scriptUrl = String(
-    runtimeDriveSession.scriptUrl ||
-      env?.GOOGLE_DRIVE_SCRIPT_URL ||
-      fallback.GOOGLE_DRIVE_SCRIPT_URL ||
-      '',
-  ).trim();
   if (scriptUrl && /^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl)) {
     const res = await fetchImpl(scriptUrl, { method: 'GET', redirect: 'follow' });
     const data = await res.json().catch(() => null);
@@ -183,6 +208,10 @@ export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken 
       runtimeDriveSession.updatedAt = new Date().toISOString();
       return data.access_token;
     }
+  }
+
+  if (runtimeDriveSession.accessToken) {
+    return runtimeDriveSession.accessToken;
   }
 
   const refreshToken = String(
@@ -221,17 +250,19 @@ export async function resolveDriveAccessToken(env = defaultEnv(), { bearerToken 
 
 /**
  * Find or create the target Google Drive folder (`MEDBOT Archive` by default).
+ * When `strict: true` is passed (e.g. during connection test), throws if the token lacks write permissions.
  */
 export async function ensureDriveFolder({
   accessToken,
   folderName = DEFAULT_DRIVE_FOLDER_NAME,
   folderId = null,
+  strict = false,
   env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
   const configuredId = extractDriveFolderId(folderId) || resolveConfiguredFolderId(env);
-  if (configuredId) return configuredId;
-  if (runtimeDriveSession.cachedArchiveFolderId && folderName === DEFAULT_DRIVE_FOLDER_NAME) {
+  if (configuredId && !strict) return configuredId;
+  if (runtimeDriveSession.cachedArchiveFolderId && folderName === DEFAULT_DRIVE_FOLDER_NAME && !strict) {
     return runtimeDriveSession.cachedArchiveFolderId;
   }
 
@@ -239,22 +270,30 @@ export async function ensureDriveFolder({
   const q = `mimeType='application/vnd.google-apps.folder' and name='${safeName}' and trashed=false`;
   const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1`;
 
-  try {
-    const searchRes = await fetchImpl(searchUrl, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (searchRes.ok) {
-      const searchData = await searchRes.json().catch(() => null);
-      if (searchData?.files?.[0]?.id) {
-        if (folderName === DEFAULT_DRIVE_FOLDER_NAME) {
-          runtimeDriveSession.cachedArchiveFolderId = searchData.files[0].id;
+  let foundFolderId = configuredId || null;
+  if (!foundFolderId) {
+    try {
+      const searchRes = await fetchImpl(searchUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (searchRes.ok) {
+        const searchData = await searchRes.json().catch(() => null);
+        if (searchData?.files?.[0]?.id) {
+          foundFolderId = searchData.files[0].id;
+          if (folderName === DEFAULT_DRIVE_FOLDER_NAME) {
+            runtimeDriveSession.cachedArchiveFolderId = foundFolderId;
+          }
+          if (!strict) return foundFolderId;
         }
-        return searchData.files[0].id;
       }
+    } catch {
+      // Proceed to folder creation
     }
-  } catch {
-    // Proceed to folder creation
+  }
+
+  if (foundFolderId && !strict) {
+    return foundFolderId;
   }
 
   const createRes = await fetchImpl('https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink', {
@@ -263,21 +302,49 @@ export async function ensureDriveFolder({
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json; charset=utf-8',
     },
-    body: JSON.stringify({
-      name: folderName || DEFAULT_DRIVE_FOLDER_NAME,
-      mimeType: 'application/vnd.google-apps.folder',
-      description: 'مجلد أرشيف ملفات بوت MEDBOT التلقائي',
-    }),
+    body: JSON.stringify(
+      foundFolderId
+        ? {
+            name: folderName || DEFAULT_DRIVE_FOLDER_NAME,
+            mimeType: 'application/vnd.google-apps.folder',
+            description: 'مجلد أرشيف ملفات بوت MEDBOT التلقائي',
+          }
+        : {
+            name: folderName || DEFAULT_DRIVE_FOLDER_NAME,
+            mimeType: 'application/vnd.google-apps.folder',
+            description: 'مجلد أرشيف ملفات بوت MEDBOT التلقائي',
+          },
+    ),
   });
 
   if (!createRes.ok) {
-    return null;
+    const errBody = await createRes.json().catch(() => null);
+    const rawMsg = String(errBody?.error?.message || `HTTP ${createRes.status}`);
+    if (strict) {
+      if (/insufficient authentication scopes/i.test(rawMsg)) {
+        throw new Error(
+          'الكود في Google Script يمنح صلاحية القراءة فقط (drive.readonly). أضف السطر if (false) DriveApp.createFile("", ""); داخل الكود في script.google.com ثم اعمل New deployment ووافق على صلاحية الإنشاء.',
+        );
+      }
+      throw new Error(rawMsg);
+    }
+    return foundFolderId || null;
   }
   const created = await createRes.json().catch(() => null);
-  if (created?.id && folderName === DEFAULT_DRIVE_FOLDER_NAME) {
-    runtimeDriveSession.cachedArchiveFolderId = created.id;
+  const finalId = foundFolderId || created?.id || null;
+  if (finalId && folderName === DEFAULT_DRIVE_FOLDER_NAME) {
+    runtimeDriveSession.cachedArchiveFolderId = finalId;
   }
-  return created?.id ?? null;
+  return finalId;
+}
+
+function uint8ToBase64(bytes) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return globalThis.btoa(binary);
 }
 
 /**
@@ -386,9 +453,50 @@ export async function uploadBytesToGoogleDrive({
 
   const data = await response.json().catch(() => null);
   if (!response.ok || !data?.id) {
-    const errMsg = data?.error?.message || `Google Drive upload failed (${response.status})`;
-    if (response.status === 401) {
+    let errMsg = data?.error?.message || `Google Drive upload failed (${response.status})`;
+    if (response.status === 401 || response.status === 403) {
       runtimeDriveSession.accessToken = null;
+    }
+
+    // If a Google Apps Script Web App URL is configured and supports doPost direct upload, try it automatically
+    const scriptUrl = resolveConfiguredScriptUrl(env);
+    if (scriptUrl && /^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl) && fileBytes.byteLength <= 35 * 1024 * 1024) {
+      try {
+        const postRes = await fetchImpl(scriptUrl, {
+          method: 'POST',
+          redirect: 'follow',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'upload',
+            filename: metadata.name,
+            mimeType: mimeType || 'application/octet-stream',
+            description: metadata.description,
+            folderId: targetFolderId || null,
+            base64: uint8ToBase64(fileBytes),
+          }),
+        });
+        const postData = await postRes.json().catch(() => null);
+        if (postRes.ok && postData?.ok && postData?.id) {
+          return {
+            ok: true,
+            id: postData.id,
+            name: postData.name || metadata.name,
+            mimeType: postData.mimeType || mimeType,
+            size: Number(postData.size ?? fileBytes.length),
+            createdTime: postData.createdTime || new Date().toISOString(),
+            webViewLink: postData.webViewLink || `https://drive.google.com/file/d/${postData.id}/view`,
+            webContentLink: postData.webContentLink || null,
+            folderId: postData.folderId || targetFolderId || null,
+          };
+        }
+      } catch {
+        // Ignore doPost fallback failure and report main error
+      }
+    }
+
+    if (/insufficient authentication scopes/i.test(errMsg)) {
+      errMsg =
+        'الكود في Google Script يمنح صلاحية القراءة فقط (drive.readonly). افتح script.google.com وأضف السطر if (false) DriveApp.createFile("", ""); داخل الكود ثم اضغط Deploy -> New deployment ووافق على الصلاحية.';
     }
     return { ok: false, status: response.status, error: errMsg };
   }
@@ -526,6 +634,18 @@ export function inferMediaFilenameAndMime(message, fallbackTitle = 'medbot-file'
   return null;
 }
 
+function extractMediaUniqueId(message, media) {
+  if (message?.document?.file_unique_id) return message.document.file_unique_id;
+  if (Array.isArray(message?.photo) && message.photo.length > 0) {
+    const largest = message.photo[message.photo.length - 1];
+    if (largest?.file_unique_id) return largest.file_unique_id;
+  }
+  if (message?.video?.file_unique_id) return message.video.file_unique_id;
+  if (message?.audio?.file_unique_id) return message.audio.file_unique_id;
+  if (message?.voice?.file_unique_id) return message.voice.file_unique_id;
+  return media?.fileId || '';
+}
+
 /**
  * Download a Telegram file by `fileId` and upload it to Google Drive.
  */
@@ -652,9 +772,18 @@ export async function dualUploadMediaMessage({
   bot,
   message,
   channelTarget = null,
+  db = null,
   env = defaultEnv(),
   fetchImpl = fetch,
 } = {}) {
+  // Never re-upload automatic channel discussion forwards or non-private group messages
+  if (message?.is_automatic_forward) {
+    return { ok: false, reason: 'no_media' };
+  }
+  if (message?.chat?.type && message.chat.type !== 'private') {
+    return { ok: false, reason: 'no_media' };
+  }
+
   const captionRaw = String(message?.caption || message?.text || '').trim();
   const firstLine = captionRaw.split(/\r?\n/)[0]?.trim() || '';
   const fallbackBase =
@@ -671,6 +800,10 @@ export async function dualUploadMediaMessage({
   }
 
   const title = firstLine || media.filename || 'مورد مرفوع';
+  const uniqueId = extractMediaUniqueId(message, media);
+  const dedupeFp = `dual:${uniqueId || media.fileId}:${title}`.slice(0, 240);
+  const altFp = `${media.fileType}:${media.fileId}:${title}`.slice(0, 240);
+
   const channelCaption = [
     '🗄 <b>أرشيف ملفات منصة MEDBOT</b>',
     '━━━━━━━━━━━━━━━━━━',
@@ -681,34 +814,97 @@ export async function dualUploadMediaMessage({
     .filter(Boolean)
     .join('\n');
 
-  // 1. Upload to Telegram Bot Channel
-  let channelOutcome = { ok: false, configured: Boolean(channelTarget), messageId: null, error: null };
+  // Check if message was forwarded FROM the archive channel itself
+  const fwdChatId =
+    message?.forward_from_chat?.id ??
+    message?.forward_origin?.chat?.id ??
+    message?.sender_chat?.id ??
+    null;
+  const fwdChatUsername =
+    message?.forward_from_chat?.username ??
+    message?.forward_origin?.chat?.username ??
+    message?.sender_chat?.username ??
+    null;
+  const normTarget = String(channelTarget || '').trim();
+  const isFromArchiveChannel = Boolean(
+    normTarget &&
+      ((fwdChatId && String(fwdChatId) === normTarget) ||
+        (fwdChatUsername && `@${fwdChatUsername}`.toLowerCase() === normTarget.toLowerCase())),
+  );
+
+  // 1. Upload to Telegram Bot Channel (with strict deduplication so posts are never duplicated)
+  let channelOutcome = { ok: false, configured: Boolean(channelTarget), messageId: null, error: null, skippedDuplicate: false };
   if (channelTarget && bot) {
-    const target = /^-\d+$/.test(String(channelTarget)) ? Number(channelTarget) : channelTarget;
-    try {
-      let sent = null;
-      if (media.fileType === 'photo' && typeof bot.sendPhoto === 'function') {
-        sent = await bot.sendPhoto(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
-      } else if (media.fileType === 'video' && typeof bot.sendVideo === 'function') {
-        sent = await bot.sendVideo(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
-      } else if (media.fileType === 'audio' && typeof bot.sendAudio === 'function') {
-        sent = await bot.sendAudio(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
-      } else if (typeof bot.sendDocument === 'function') {
-        sent = await bot.sendDocument(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
+    let existingMsgId = isFromArchiveChannel
+      ? (message?.forward_from_message_id ?? message?.forward_origin?.message_id ?? true)
+      : (publishedChannelPosts.get(dedupeFp) ?? publishedChannelPosts.get(altFp) ?? null);
+
+    if (!existingMsgId && db && typeof db.prepare === 'function') {
+      try {
+        const row = await db
+          .prepare(
+            "SELECT channel_message_id FROM archive_sync WHERE status='published' AND (content_fingerprint = ? OR content_fingerprint = ?) LIMIT 1",
+          )
+          .bind(dedupeFp, altFp)
+          .first();
+        if (row) {
+          existingMsgId = row.channel_message_id ?? true;
+        }
+      } catch {
+        // Ignore D1 lookup error
       }
+    }
+
+    if (existingMsgId) {
       channelOutcome = {
         ok: true,
         configured: true,
+        skippedDuplicate: true,
         channel: String(channelTarget),
-        messageId: sent?.message_id ?? null,
+        messageId: typeof existingMsgId === 'number' ? existingMsgId : null,
       };
-    } catch (err) {
-      channelOutcome = {
-        ok: false,
-        configured: true,
-        channel: String(channelTarget),
-        error: err?.message ?? String(err),
-      };
+    } else {
+      const target = /^-\d+$/.test(String(channelTarget)) ? Number(channelTarget) : channelTarget;
+      try {
+        let sent = null;
+        if (media.fileType === 'photo' && typeof bot.sendPhoto === 'function') {
+          sent = await bot.sendPhoto(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
+        } else if (media.fileType === 'video' && typeof bot.sendVideo === 'function') {
+          sent = await bot.sendVideo(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
+        } else if (media.fileType === 'audio' && typeof bot.sendAudio === 'function') {
+          sent = await bot.sendAudio(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
+        } else if (typeof bot.sendDocument === 'function') {
+          sent = await bot.sendDocument(target, media.fileId, { caption: channelCaption, parse_mode: 'HTML' });
+        }
+        const msgId = sent?.message_id ?? null;
+        publishedChannelPosts.set(dedupeFp, msgId ?? true);
+        publishedChannelPosts.set(altFp, msgId ?? true);
+        if (db && typeof db.prepare === 'function') {
+          await db
+            .prepare(
+              `INSERT INTO archive_sync (object_type, content_fingerprint, channel_id, channel_message_id, status, attempts, published_at)
+               VALUES ('dual', ?, ?, ?, 'published', 1, CURRENT_TIMESTAMP)
+               ON CONFLICT(content_fingerprint) DO UPDATE SET status='published', channel_id=excluded.channel_id, channel_message_id=excluded.channel_message_id, updated_at=CURRENT_TIMESTAMP`,
+            )
+            .bind(dedupeFp, String(channelTarget), msgId)
+            .run()
+            .catch(() => {});
+        }
+        channelOutcome = {
+          ok: true,
+          configured: true,
+          skippedDuplicate: false,
+          channel: String(channelTarget),
+          messageId: msgId,
+        };
+      } catch (err) {
+        channelOutcome = {
+          ok: false,
+          configured: true,
+          channel: String(channelTarget),
+          error: err?.message ?? String(err),
+        };
+      }
     }
   }
 
@@ -755,7 +951,9 @@ export async function dualUploadMediaMessage({
   });
 
   const channelLine = channelOutcome.ok
-    ? `✅ تم الرفع والنشر في قناة البوت (<code>${escapeHtml(channelTarget)}</code>)`
+    ? channelOutcome.skippedDuplicate
+      ? `✅ موجود مسبقاً في قناة البوت (تم منع تكرار النشر في <code>${escapeHtml(channelTarget)}</code>)`
+      : `✅ تم الرفع والنشر في قناة البوت (<code>${escapeHtml(channelTarget)}</code>)`
     : channelOutcome.configured
       ? `⚠️ تعذر الرفع للقناة: <code>${escapeHtml(String(channelOutcome.error || '').slice(0, 120))}</code>`
       : '⚪️ القناة غير مربوطة بعد (اضبط <code>MEDBOT_ARCHIVE_CHANNEL</code> أو اربطها من لوحة الإدارة)';
@@ -763,7 +961,7 @@ export async function dualUploadMediaMessage({
   const driveLine = driveOutcome.ok
     ? `✅ تم الرفع إلى حسابك في Google Drive (<a href="${escapeHtml(driveOutcome.webViewLink)}">فتح الملف في Drive</a>)`
     : driveOutcome.configured
-      ? `⚠️ تعذر الرفع إلى Google Drive: <code>${escapeHtml(String(driveOutcome.error || '').slice(0, 120))}</code>`
+      ? `⚠️ تعذر الرفع إلى Google Drive: <code>${escapeHtml(String(driveOutcome.error || '').slice(0, 220))}</code>`
       : '⚪️ حساب Google Drive غير مربوط بعد (سجّل الدخول بحسابك من واجهة الويب أو اضبط <code>GOOGLE_DRIVE_ACCESS_TOKEN</code>)';
 
   const summaryText = [
