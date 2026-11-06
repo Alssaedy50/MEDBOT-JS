@@ -574,26 +574,27 @@ test('startInteractiveUploadWizard displays destination picker and transitions t
   assert.equal(sAfterName.title, 'محاضرة التشريح العملي الأولى');
   assert.equal(sAfterName.step, 'pick_folder');
 
-  // 4. Click 'du_newf' to create a new section under subject 3 (أناتومي)
-  const resNewF = await handleDualUploadCallback(mockCtx, `du_newf:${wiz.sessionId}:3`, fakeBot, {});
-  assert.match(resNewF.text, /نظام الإدارة/);
+  // 4. Click 'du_fnew' to create a new section under subject 3 (أناتومي)
+  const resNewF = await handleDualUploadCallback(mockCtx, `du_fnew:${wiz.sessionId}:3`, fakeBot, {});
+  assert.match(resNewF.text, /إنشاء قسم فرعي جديد/);
 
   // 5. Send name of the new section
   const resSectionText = await handleDualUploadNewFolderText(mockCtx, 'تحديد عظام الأطراف', fakeBot, {});
-  assert.match(resSectionText.text, /أولاً: هل هو نظري أم عملي؟/);
+  assert.match(resSectionText.text, /اختر نوع القسم الجديد:/);
 
-  // 6. Select 'practical' (عملي)
-  const resBranch = await handleDualUploadCallback(mockCtx, `du_branch:${wiz.sessionId}:practical`, fakeBot, {});
-  assert.match(resBranch.text, /ثانياً: اختيار نوع الداتا/);
+  // 6. Select node type: 'summaries' (ملخصات)
+  const resFtype = await handleDualUploadCallback(mockCtx, `du_ftype:${wiz.sessionId}:3:summaries`, fakeBot, {});
+  assert.match(resFtype.text, /تحديد عظام الأطراف/);
+  const sAfterFtype = await getUploadSession(mockDb, wiz.sessionId);
+  assert.equal(sAfterFtype.step, 'pick_folder');
+  assert.ok(sAfterFtype.browseFolderId > 0);
 
-  // 7. Select data type: 'summaries' (ملخصات)
-  const resDtype = await handleDualUploadCallback(mockCtx, `du_dtype:${wiz.sessionId}:summaries`, fakeBot, {});
-  assert.match(resDtype.text, /تأكيد تفاصيل الرفع الشامل/);
-  const sAfterDtype = await getUploadSession(mockDb, wiz.sessionId);
-  assert.equal(sAfterDtype.step, 'confirm_send');
-  assert.equal(sAfterDtype.selectedBranch, 'practical');
-  assert.equal(sAfterDtype.selectedNodeType, 'summaries');
-  assert.ok(sAfterDtype.selectedFolderId > 0);
+  // 7. Click 'du_select_f' to confirm placing file in this section
+  const resSelect = await handleDualUploadCallback(mockCtx, `du_select_f:${wiz.sessionId}:${sAfterFtype.browseFolderId}`, fakeBot, {});
+  assert.match(resSelect.text, /جاهز للإرسال/);
+  const sAfterSelect = await getUploadSession(mockDb, wiz.sessionId);
+  assert.equal(sAfterSelect.step, 'confirm_send');
+  assert.equal(sAfterSelect.selectedFolderId, sAfterFtype.browseFolderId);
 
   // 8. Submit upload: execute across all destinations
   const resSubmit = await handleDualUploadCallback(mockCtx, `du_submit:${wiz.sessionId}`, fakeBot, {});
@@ -744,36 +745,32 @@ test('dualUploadInteractive supports Admin creation of Level, Block, Subject, an
   await handleDualUploadCallback(mockCtx, `du_dest:${wiz.sessionId}:bot`, fakeBot, {});
   await handleDualUploadCallback(mockCtx, `du_name_ok:${wiz.sessionId}`, fakeBot, {});
 
-  // 1. Create a Block inside Level 1: `du_newnode:sessionId:1:block`
-  const resBlockPrompt = await handleDualUploadCallback(mockCtx, `du_newnode:${wiz.sessionId}:1:block`, fakeBot, {});
-  assert.match(resBlockPrompt.text, /البلوك الأكاديمي/);
+  // 1. Create a Subfolder / Block inside Level 1: `du_fnew:sessionId:1`
+  const resBlockPrompt = await handleDualUploadCallback(mockCtx, `du_fnew:${wiz.sessionId}:1`, fakeBot, {});
+  assert.match(resBlockPrompt.text, /إنشاء قسم فرعي جديد/);
 
-  const resBlockCreated = await handleDualUploadNewFolderText(mockCtx, 'بلوك القلب والأوعية CVS', fakeBot, {});
-  assert.equal(resBlockCreated.ok, true);
+  const resBlockTypeName = await handleDualUploadNewFolderText(mockCtx, 'بلوك القلب والأوعية CVS', fakeBot, {});
+  assert.match(resBlockTypeName.text, /اختر نوع القسم الجديد:/);
+
+  await handleDualUploadCallback(mockCtx, `du_ftype:${wiz.sessionId}:1:general`, fakeBot, {});
   const blockFolder = foldersTable.find((f) => f.name === 'بلوك القلب والأوعية CVS');
   assert.ok(blockFolder);
   assert.equal(blockFolder.parent_id, 1);
-  assert.equal(blockFolder.node_type, 'block');
 
-  // 2. Rename folder: `du_renf:sessionId:1`
-  const resRenamePrompt = await handleDualUploadCallback(mockCtx, `du_renf:${wiz.sessionId}:1`, fakeBot, {});
-  assert.match(resRenamePrompt.text, /تعديل اسم القسم \/ المادة/);
+  // 2. Rename folder: `du_frename:sessionId:1`
+  const resRenamePrompt = await handleDualUploadCallback(mockCtx, `du_frename:${wiz.sessionId}:1`, fakeBot, {});
+  assert.match(resRenamePrompt.text, /إعادة تسمية القسم/);
 
   const resRenameDone = await handleDualUploadNewFolderText(mockCtx, 'السنة الأولى (الطب البشري)', fakeBot, {});
   assert.equal(resRenameDone.ok, true);
   const levelFolder = foldersTable.find((f) => f.id === 1);
   assert.equal(levelFolder.name, 'السنة الأولى (الطب البشري)');
 
-  // 3. Create a Subject under the Block: `du_newnode:sessionId:blockId:subject`
-  await handleDualUploadCallback(mockCtx, `du_newnode:${wiz.sessionId}:${blockFolder.id}:subject`, fakeBot, {});
-  const resSubjName = await handleDualUploadNewFolderText(mockCtx, 'علم الأدوية Pharmacology', fakeBot, {});
-  assert.match(resSubjName.text, /أولاً: هل هو نظري أم عملي؟/);
+  // 3. Select folder to place the file
+  const resSelect = await handleDualUploadCallback(mockCtx, `du_select_f:${wiz.sessionId}:${blockFolder.id}`, fakeBot, {});
+  assert.match(resSelect.text, /جاهز للإرسال/);
 
-  // 4. Test direct save without branch subdivision: `du_direct_save`
-  const resDirectSave = await handleDualUploadCallback(mockCtx, `du_direct_save:${wiz.sessionId}`, fakeBot, {});
-  assert.match(resDirectSave.text, /جاهز للإرسال/);
-
-  // 5. Submit upload
+  // 4. Submit upload
   await handleDualUploadCallback(mockCtx, `du_submit:${wiz.sessionId}`, fakeBot, {});
   const sFinal = await getUploadSession(mockDb, wiz.sessionId);
   assert.equal(sFinal.step, 'executing');

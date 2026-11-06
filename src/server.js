@@ -293,6 +293,7 @@ async function handleApiRequest(request, response, pathname) {
         channelMessageId: body.channelMessageId ?? null,
         userChatId: body.userChatId ?? null,
         userMessageId: body.userMessageId ?? null,
+        actorUserId: body.actorUserId ?? null,
         statusChatId: body.statusChatId ?? null,
         statusMessageId: body.statusMessageId ?? null,
         filename: String(body.filename || 'large-file.mp4'),
