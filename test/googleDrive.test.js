@@ -107,7 +107,7 @@ test('dualUploadMediaMessage uploads to both Telegram channel and Google Drive',
   assert.equal(channelCalls[0].chatId, '@medbot_channel');
   assert.equal(fetchCalls.length, 2);
   assert.match(result.summaryText, /تم النشر والأرشفة في قناة البوت/);
-  assert.match(result.summaryText, /تم الرفع الكامل إلى Google Drive/);
+  assert.doesNotMatch(result.summaryText, /Google Drive/);
   assert.match(result.summaryText, /مستند PDF \/ مقرر أو ملخص دراسي/);
 
   // Sending the same file a second time must NOT duplicate the post in the channel
@@ -395,10 +395,10 @@ test('never uploads 12.4 KB JPEG thumbnail when Telegram embed says media is too
   assert.equal(jobs[0].statusMessageId, 555);
   assert.equal(jobs[0].sessionId, outcome.sessionId);
 
-  // 3. Sent message must include detected media type, progress bar, and cancel/delete button
+  // 3. Sent message must include detected media type, omit Google Drive UI, and include cancel/delete button
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0].text, /مقطع فيديو \/ محاضرة مسجلة/);
-  assert.match(sentMessages[0].text, /░░░░░░░░░░ 0%/);
+  assert.doesNotMatch(sentMessages[0].text, /Google Drive/);
   const flatCallbacks = sentMessages[0].extra.reply_markup.inline_keyboard
     .flat()
     .map((b) => b.callback_data)
@@ -541,10 +541,10 @@ test('startInteractiveUploadWizard displays destination picker and transitions t
   assert.equal(wiz.session.step, 'choose_dest');
   assert.match(wiz.summaryText, /تحديد وجهات الرفع أولاً/);
 
-  // Check buttons contain: All, Google Drive, Archive Channel, Bot
+  // Check buttons contain: All (Bot + Channel), Archive Channel, Bot — and NO Google Drive button
   const buttons1 = wiz.replyMarkup.inline_keyboard.flat().map((b) => b.callback_data);
   assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:all`));
-  assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:drive`));
+  assert.ok(!buttons1.includes(`du_dest:${wiz.sessionId}:drive`));
   assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:channel`));
   assert.ok(buttons1.includes(`du_dest:${wiz.sessionId}:bot`));
 
@@ -596,9 +596,10 @@ test('startInteractiveUploadWizard displays destination picker and transitions t
   assert.equal(sAfterSelect.step, 'confirm_send');
   assert.equal(sAfterSelect.selectedFolderId, sAfterFtype.browseFolderId);
 
-  // 8. Submit upload: execute across all destinations
+  // 8. Submit upload: execute across Bot + Archive Channel
   const resSubmit = await handleDualUploadCallback(mockCtx, `du_submit:${wiz.sessionId}`, fakeBot, {});
-  assert.match(resSubmit.text, /تقرير الرفع/);
+  assert.match(resSubmit.text, /تقرير رفع الداتا/);
+  assert.doesNotMatch(resSubmit.text, /Google Drive/);
   const sFinal = await getUploadSession(mockDb, wiz.sessionId);
   assert.equal(sFinal.step, 'executing');
   assert.ok(sFinal.contentId > 0);
@@ -778,6 +779,61 @@ test('dualUploadInteractive supports Admin creation of Level, Block, Subject, an
   assert.equal(contentTable.length, 1);
   assert.equal(contentTable[0].file_type, 'video');
 });
+
+test('Admin panel excludes Google Drive settings, keeps Archive Channel & Folders, and blocks regular users', async () => {
+  const { buildWorkerAdmin } = await import('../src/telegram/workerAdmin.js');
+  const mockDb = {
+    prepare(sql) {
+      return {
+        bind(...args) {
+          return {
+            async raw() {
+              if (sql.includes('FROM admins')) {
+                return Number(args[0]) === 1 ? [['owner', '']] : [];
+              }
+              return [[0]];
+            },
+            async first() {
+              if (sql.includes('FROM admins')) {
+                return Number(args[0]) === 1 ? { role: 'owner', permissions: '' } : null;
+              }
+              return { count: 0 };
+            },
+            async all() {
+              return { results: [] };
+            },
+          };
+        },
+        async raw() {
+          return [[0]];
+        },
+        async first() {
+          return { count: 0 };
+        },
+        async all() {
+          return { results: [] };
+        },
+      };
+    },
+  };
+
+  // 1. Authorized admin/owner sees Folders & Archive Channel, and NO Google Drive button
+  const adminPanel = await buildWorkerAdmin(mockDb, { id: 1 });
+  const callbacks = adminPanel.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+  const labels = adminPanel.reply_markup.inline_keyboard.flat().map((b) => b.text);
+  assert.ok(!callbacks.includes('drive_menu'));
+  assert.ok(!labels.some((l) => l.includes('Google Drive')));
+  assert.ok(callbacks.includes('admin_folders'));
+  assert.ok(callbacks.includes('admin_archive'));
+
+  // 2. Regular student user is strictly blocked from admin panel
+  const studentAttempt = await buildWorkerAdmin(mockDb, { id: 99999 });
+  assert.match(studentAttempt.text, /مخصصة للمشرفين المعتمدين فقط/);
+  const studentCallbacks = studentAttempt.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+  assert.deepEqual(studentCallbacks, ['home']);
+});
+
+
 
 
 

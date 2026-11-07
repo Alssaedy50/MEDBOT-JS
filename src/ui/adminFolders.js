@@ -113,7 +113,6 @@ export async function showAdminPanel(ctx) {
   }
   if (has(userId, 'can_archive')) {
     capabilityButtons.push(btn('🗄 أرشيف الطوارئ', 'admin_archive'));
-    capabilityButtons.push(btn('☁️ ربط Google Drive', 'drive_menu'));
   }
   if (has(userId, 'can_settings')) {
     capabilityButtons.push(btn('⚙️ إعدادات المنصة', 'admin_settings'));

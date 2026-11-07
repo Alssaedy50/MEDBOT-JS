@@ -44,7 +44,7 @@ import {
 import { recordNotification, getNotifications } from '../db/d1/notifications.js';
 import { aiUsageStats, aiRegistryGetAll } from '../db/d1/aiRegistry.js';
 import { adminHasScopes, folderInAdminScope } from '../db/d1/scopes.js';
-import { isDriveConfigured, markChannelPostPublished, uploadTelegramFileToGoogleDrive } from '../storage/googleDrive.js';
+import { markChannelPostPublished } from '../storage/googleDrive.js';
 import {
   FEATURES,
   FEATURE_LABELS,
@@ -108,7 +108,6 @@ export async function buildWorkerAdmin(db, user) {
   }
   if (await hasPermission(db, id, 'can_archive')) {
     items.push(btn('🗄 أرشيف القناة', 'admin_archive'));
-    items.push(btn('☁️ ربط Google Drive', 'drive_menu'));
   }
   if (await hasPermission(db, id, 'can_settings')) {
     items.push(btn('⚙️ إعدادات المنصة', 'admin_settings'));
@@ -331,33 +330,13 @@ export async function uploadWorkerAdminMedia(db, user, message, folderId, bot = 
     archived = false;
   }
 
-  let driveLink = null;
-  if (isDriveConfigured(env) && bot) {
-    try {
-      const dRes = await uploadTelegramFileToGoogleDrive({
-        bot,
-        fileId,
-        title,
-        description: title,
-        message,
-        db,
-        env,
-      });
-      if (dRes?.ok) driveLink = dRes.webViewLink;
-    } catch {
-      driveLink = null;
-    }
-  }
-
   return {
     ok: true,
     contentId,
     folderId: fid,
-    driveLink,
     text:
       `✅ <b>تم رفع ونشر المورد للطلاب بنجاح!</b>\n\n📄 <b>${esc(title)}</b>` +
       (archived ? '\n🗄 تم أرشفته وتحديث نسخة الاسترداد في قناة الأرشيف تلقائياً.' : '') +
-      (driveLink ? `\n☁️ تم حفظ نسخة في حسابك على Google Drive (<a href="${esc(driveLink)}">فتح في Drive</a>).` : '') +
       '\n\nيمكنك إرسال ملف آخر لنفس القسم الآن، أو العودة للقسم:',
     reply_markup: kb([
       [btn('⬅️ عرض القسم', `admin_folder:${fid}`), btn('🏠 الرئيسية', 'home')],

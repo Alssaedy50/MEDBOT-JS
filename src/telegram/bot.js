@@ -25,7 +25,7 @@ import * as workflowModule from '../workflow.js';
 import * as backup from './adminBackup.js';
 import * as secrets from './adminSecrets.js';
 import { buildFullBotBundle } from '../backup/fullBundle.js';
-import { loadRuntimeSecrets, setRuntimeSecret } from '../security/secretVault.js';
+import { loadRuntimeSecrets } from '../security/secretVault.js';
 import { restoreRemoteSnapshotIfEmpty } from '../db/backup.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
 import { readFile, rm } from 'node:fs/promises';
@@ -42,15 +42,62 @@ import {
 } from './router.js';
 import { pollUpdates } from './adapter.js';
 import {
-  dualUploadMediaMessage,
-  ensureDriveFolder,
-  extractDriveFolderId,
-  getDriveStatus,
-  isDriveConfigured,
-  isForwardedMessage,
-  resolveDriveAccessToken,
-  setRuntimeDriveSession,
-} from '../storage/googleDrive.js';
+  handleDualUploadCallback,
+  handleDualUploadNewFolderText,
+  hasActiveDualUploadTextPrompt,
+  saveUploadSession,
+  startInteractiveUploadWizard,
+} from '../storage/dualUploadInteractive.js';
+
+function getSqliteD1Adapter() {
+  return {
+    prepare(sql) {
+      const normalizedSql = String(sql).replace(/\?(\d+)/g, '?');
+      const runWithParams = (params = []) => {
+        const cleanParams = params.map((p) => (p === undefined ? null : p));
+        return {
+          async raw() {
+            const conn = db.getConnection();
+            const stmt = conn.prepare(normalizedSql);
+            if (typeof stmt.setReturnArrays === 'function') {
+              stmt.setReturnArrays(true);
+              return stmt.all(...cleanParams);
+            }
+            return stmt.all(...cleanParams).map((row) => Object.values(row));
+          },
+          async all() {
+            const conn = db.getConnection();
+            const stmt = conn.prepare(normalizedSql);
+            return { results: stmt.all(...cleanParams) };
+          },
+          async first() {
+            const conn = db.getConnection();
+            const stmt = conn.prepare(normalizedSql);
+            return stmt.get(...cleanParams) ?? null;
+          },
+          async run() {
+            const conn = db.getConnection();
+            const stmt = conn.prepare(normalizedSql);
+            const res = stmt.run(...cleanParams);
+            return {
+              success: true,
+              meta: {
+                changes: Number(res?.changes ?? 0),
+                last_row_id: Number(res?.lastInsertRowid ?? 0),
+              },
+            };
+          },
+        };
+      };
+      return {
+        bind(...params) {
+          return runWithParams(params);
+        },
+        ...runWithParams([]),
+      };
+    },
+  };
+}
 
 /**
  * Register every callback route, text handler and command.
@@ -117,19 +164,7 @@ export function registerHandlers() {
   registerRoute({ name: 'account', prefixes: ['account'], handler: accountRoute });
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
   registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
-  registerRoute({
-    name: 'drive',
-    prefixes: [
-      'drive_menu',
-      'drive_toggle_dual',
-      'drive_set_script',
-      'drive_set_token',
-      'drive_set_refresh',
-      'drive_set_folder',
-      'drive_test',
-    ],
-    handler: driveRoute,
-  });
+  registerRoute({ name: 'dualUpload', prefixes: ['du_'], handler: dualUploadCallbackRoute });
   registerRoute({ name: 'secrets', prefixes: secrets.ADMIN_SECRET_PREFIXES, handler: secrets.handleSecretCallback });
   registerRoute({ name: 'bundle', prefixes: ['bundle_confirm'], handler: bundleRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
@@ -144,6 +179,7 @@ export function registerHandlers() {
   // ---- Text handlers (workflow state consumers) -------------------
   // Order matters: the most specific armed workflow first, so a typed title is
   // never consumed by a broader flow.
+  registerTextHandler('dualUploadWizard', handleDualUploadWizardText);
   registerTextHandler('news', news.handleNewsText);
   registerTextHandler('adminUploadCustomTitle', adminFolders.handleUploadCustomTitleText);
   registerTextHandler('adminFileRename', adminFolders.handleFileRenameText);
@@ -157,7 +193,6 @@ export function registerHandlers() {
   registerTextHandler('adminAdd', adminManagement.handleAddAdminText);
   registerTextHandler('settings', adminSettings.handleSettingText);
   registerTextHandler('secrets', secrets.handleSecretText);
-  registerTextHandler('driveSetup', handleDriveSetupText);
   registerTextHandler('topicsCreate', topics.handleTopicsText);
   registerTextHandler('notifications', adminSettings.handleNotificationText);
   registerTextHandler('assistant', assistant.handleAssistantText);
@@ -168,7 +203,9 @@ export function registerHandlers() {
     if (ctx.message?.is_automatic_forward) return;
     if (ctx.message?.chat?.type && ctx.message.chat.type !== 'private') return;
     if (ctx.userData?.restore_waiting && ctx.message?.document?.file_id) {
-      await backup.restoreFromUploadedFile(ctx, ctx.message.document.file_id);
+      if (backup.isOwnerForCommand(ctx.from.id)) {
+        await backup.restoreFromUploadedFile(ctx, ctx.message.document.file_id);
+      }
       delete ctx.userData.restore_waiting;
       return;
     }
@@ -176,30 +213,37 @@ export function registerHandlers() {
     if (await contributions.handleContributionMedia(ctx)) return;
     if (await contributions.handleResubmitMedia(ctx)) return;
 
-    // Dual-upload any file forwarded to the bot (or sent when dual-upload/channel/Drive is configured)
-    const shouldDualUpload =
-      isForwardedMessage(ctx.message) ||
-      Boolean(ctx.userData?.dual_upload_mode) ||
-      archive.isConfigured() ||
-      isDriveConfigured();
+    // Owner/Admins only: direct-forward or direct-send file upload to Bot & Archive Channel
+    let isAdminCaller = false;
+    try {
+      isAdminCaller = db.isUserAdmin(ctx.from.id);
+    } catch {
+      isAdminCaller = false;
+    }
 
-    if (shouldDualUpload) {
-      const outcome = await dualUploadMediaMessage({
+    if (isAdminCaller) {
+      const d1Adapter = getSqliteD1Adapter();
+      const wiz = await startInteractiveUploadWizard({
         bot: ctx.bot,
         message: ctx.message,
         channelTarget: archive.channelForSend(),
+        db: d1Adapter,
+        env: process.env,
       });
-      if (outcome.reason !== 'no_media') {
-        if (outcome.alreadyReplied) return;
-        await ctx.reply(outcome.summaryText, {
+      if (wiz.ok) {
+        const sent = await ctx.reply(wiz.summaryText, {
           parse_mode: 'HTML',
-          reply_markup: outcome.replyMarkup,
+          reply_markup: wiz.replyMarkup,
         });
+        if (sent?.message_id && wiz.session) {
+          wiz.session.statusMessageId = sent.message_id;
+          await saveUploadSession(d1Adapter, wiz.session);
+        }
         return;
       }
     }
 
-    await ctx.reply('ℹ️ لا توجد عملية رفع جارية. ابدأ من 📤 مساهمات الطلاب أو 🛠 إدارة المنصة.');
+    await ctx.reply('ℹ️ لا توجد عملية رفع جارية. ابدأ من 📤 مساهمات الطلاب.');
   });
 
   // ---- Commands ---------------------------------------------------
@@ -214,8 +258,6 @@ export function registerHandlers() {
   registerCommand('restore', restoreCommand);
   registerCommand('secrets', secretsCommand);
   registerCommand('bundle', bundleCommand);
-  registerCommand('drive', driveCommand);
-  registerCommand('dual', driveCommand);
   registerCommand('cancel', cancelCommand);
   registerCommand('text', unhandledText);
 }
@@ -257,322 +299,50 @@ async function backupRoute(ctx) {
   if (data === 'backup_channel') return backup.sendDatabaseBackup(ctx, { toChannel: true });
 }
 
-function buildDualUploadScreen(ctx) {
-  const ch = archive.resolveChannel();
-  const drive = getDriveStatus();
-  const dualActive = Boolean(ctx.userData?.dual_upload_mode);
-  const text = [
-    '☁️ <b>إعدادات ربط Google Drive والرفع المزدوج (من داخل البوت)</b>',
-    '━━━━━━━━━━━━━━━━━━',
-    'أي ملف تقوم بتوجيهه (Forward) إلى البوت يتم رفعه تلقائياً إلى مكانين في نفس اللحظة:',
-    '',
-    `1️⃣ <b>قناة البوت:</b> ${ch ? `✅ متصلة وتعمل (<code>${ch}</code>)` : '⚪️ غير مضبوطة (MEDBOT_ARCHIVE_CHANNEL)'}`,
-    `2️⃣ <b>حساب Google Drive:</b> ${
-      drive.configured
-        ? `✅ مربوط وجاهز${drive.userEmail ? ` (${drive.userEmail})` : ''}`
-        : '⚪️ غير مربوط بعد — اختر طريقة الربط بالأسفل 👇'
-    }`,
-    `📁 <b>مجلد الحفظ في Drive:</b> <code>${drive.folderId || drive.folderName}</code>`,
-    `🔄 <b>وضع استقبال الملفات:</b> ${dualActive ? '🟢 مفعل لأي ملف مباشر أو موجه' : '🟢 مفعل تلقائياً عند توجيه أي ملف (Forward)'}`,
-    '',
-    '💡 <b>طرق الربط المباشر من داخل البوت:</b>',
-    '• اضغط <b>«🔑 ربط توكن Google Drive»</b> لإرسال التوكن مباشرة في المحادثة.',
-    '• أو اضغط <b>«🔄 ربط دائم (Refresh Token)»</b> لربط لا ينتهي ويتجدد تلقائياً.',
-    '• أو اضغط <b>«📁 تحديد مجلد Drive»</b> لاختيار مجلد معين في حسابك.',
-  ].join('\n');
-
-  const markup = keyboard([
-    [btn('⚡ ربط دائم سريع (Google Script — الأسهل)', 'drive_set_script')],
-    [
-      btn('🔑 ربط توكن Google Drive', 'drive_set_token'),
-      btn('🔄 ربط دائم (Refresh)', 'drive_set_refresh'),
-    ],
-    [
-      btn('📁 تحديد مجلد Drive', 'drive_set_folder'),
-      btn('🧪 فحص الاتصال الآن', 'drive_test'),
-    ],
-    [
-      btn(
-        dualActive ? '🔔 الرفع المباشر بدون توجيه: مفعل' : '🔘 تفعيل الرفع لأي ملف حتى بدون توجيه',
-        'drive_toggle_dual',
-      ),
-    ],
-    [btn('⬅️ إدارة المنصة', 'admin'), btn('🏠 الرئيسية', 'home')],
-  ]);
-  return { text, markup };
-}
-
-async function driveRoute(ctx) {
-  await ctx.answer();
-  delete ctx.userData.drive_wait_script;
-  delete ctx.userData.drive_wait_token;
-  delete ctx.userData.drive_wait_refresh;
-  delete ctx.userData.drive_wait_folder;
-
-  if (ctx.data === 'drive_toggle_dual') {
-    ctx.userData.dual_upload_mode = !ctx.userData?.dual_upload_mode;
-  } else if (ctx.data === 'drive_set_script') {
-    ctx.userData.drive_wait_script = true;
-    await ctx.editMessageText(
-      [
-        '⚡ <b>الربط الدائم الأسهل بحساب Google Drive (بدون أقواس متداخلة لمنع خطأ السطر 7)</b>',
-        '',
-        '1️⃣ افتح <a href="https://script.google.com">script.google.com</a> وامسح كل الكود الموجود في الصفحة بالكامل (حتى تصبح الصفحة فارغة تماماً بدون أي قوس <code>}</code> في الأسفل).',
-        '2️⃣ الصق هذه الأسطر الأربعة فقط:',
-        '<pre>function doGet() {\n  if (false) DriveApp.createFile("", "");\n  return ContentService.createTextOutput(ScriptApp.getOAuthToken());\n}</pre>',
-        '⚠️ <b>تأكد من عدم وجود قوس <code>}</code> إضافي في السطر الخامس تحت الكود!</b>',
-        '3️⃣ اضغط أيقونة الحفظ 💾، ثم اضغط <b>نشر (Deploy)</b> ← <b>نشر جديد (New deployment)</b> ← اختر <b>تطبيق ويب (Web app)</b> واجعل الوصول <b>أي شخص (Anyone)</b> ثم اضغط نشر ووافق على الصلاحيات.',
-        '4️⃣ انسخ الرابط الجديد الذي ينتهي بـ <code>/exec</code> وأرسله هنا في المحادثة مباشرةً!',
-      ].join('\n'),
-      {
-        parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
-      },
-    );
-    return;
-  } else if (ctx.data === 'drive_set_token') {
-    ctx.userData.drive_wait_token = true;
-    await ctx.editMessageText(
-      [
-        '🔑 <b>ربط حساب Google Drive مباشرة من البوت</b>',
-        '',
-        'أرسل الآن رمز الوصول (<b>Access Token</b>) الخاص بحسابك في Google Drive في رسالة نصية هنا.',
-        '',
-        '💡 <i>سيقوم البوت بحفظه مشفّراً وتفعيله فوراً وحذف رسالتك تلقائياً للحفاظ على الخصوصية.</i>',
-      ].join('\n'),
-      {
-        parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
-      },
-    );
-    return;
-  } else if (ctx.data === 'drive_set_refresh') {
-    ctx.userData.drive_wait_refresh = true;
-    await ctx.editMessageText(
-      [
-        '🔄 <b>الربط الدائم التلقائي لحساب Google Drive (عبر OAuth)</b>',
-        '',
-        '<b>من أين تحصل عليها؟</b>',
-        '1️⃣ من <a href="https://console.cloud.google.com/apis/credentials">Google Cloud Credentials</a> أنشئ <b>OAuth client ID</b> (نوع Web application) وأضف الرابط <code>https://developers.google.com/oauthplayground</code> في Authorized redirect URIs لتحصل على <code>CLIENT_ID</code> و <code>CLIENT_SECRET</code>.',
-        '2️⃣ افتح <a href="https://developers.google.com/oauthplayground">OAuth 2.0 Playground</a>، ومن أيقونة الإعدادات ⚙️ (أعلى اليمين) فعّل <i>Use your own OAuth credentials</i> وأدخل الـ ID والـ Secret، ثم اختر صلاحية <code>https://www.googleapis.com/auth/drive.file</code> واضغط Authorize ثم <b>Exchange authorization code for tokens</b> لتحصل على <code>REFRESH_TOKEN</code>.',
-        '',
-        'أرسل القيم الثلاث في رسالة واحدة (كل قيمة في سطر مستقل أو مفصولة بـ <code>|</code>):',
-        '<code>CLIENT_ID</code>',
-        '<code>CLIENT_SECRET</code>',
-        '<code>REFRESH_TOKEN</code>',
-        '',
-        '💡 <i>أو استخدم زر «⚡ ربط دائم سريع (Google Script)» للربط الدائم في دقيقة واحدة بدون الحاجة لـ Client ID!</i>',
-      ].join('\n'),
-      {
-        parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('⚡ استخدام Google Script الأسهل', 'drive_set_script')], [btn('❌ إلغاء والعودة', 'drive_menu')]]),
-      },
-    );
-    return;
-  } else if (ctx.data === 'drive_set_folder') {
-    ctx.userData.drive_wait_folder = true;
-    await ctx.editMessageText(
-      [
-        '📁 <b>تحديد مجلد الحفظ في Google Drive</b>',
-        '',
-        'أرسل الآن <b>رابط المجلد</b> من Google Drive (مثل <code>https://drive.google.com/drive/folders/...</code>) أو <b>معرّف المجلد (Folder ID)</b> مباشرة:',
-      ].join('\n'),
-      {
-        parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('❌ إلغاء والعودة', 'drive_menu')]]),
-      },
-    );
-    return;
-  } else if (ctx.data === 'drive_test') {
-    try {
-      const token = await resolveDriveAccessToken(undefined, { forceRefresh: true });
-      if (!token) {
-        await ctx.editMessageText(
-          '⚠️ <b>حساب Google Drive غير مربوط بعد.</b>\n\nاضغط على <b>«⚡ ربط دائم سريع (Google Script)»</b> أولاً.',
-          {
-            parse_mode: 'HTML',
-            reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
-          },
-        );
-        return;
-      }
-      const folderId = await ensureDriveFolder({ accessToken: token, strict: true });
-      const folderLink = folderId ? `https://drive.google.com/drive/folders/${folderId}` : 'https://drive.google.com';
-      await ctx.editMessageText(
-        [
-          '✅ <b>الاتصال وصلاحية الرفع في Google Drive ناجحة وتعمل 100%!</b>',
-          '',
-          `📁 <b>مجلد الأرشيف الجاهز:</b> <code>${folderId || 'MEDBOT Archive'}</code>`,
-          `🔗 <a href="${folderLink}">فتح مجلد البوت في Google Drive</a>`,
-          '',
-          'الآن أي ملف توجهه (Forward) إلى البوت سيتم رفعه تلقائياً إلى قناة البوت وإلى هذا المجلد في Google Drive.',
-        ].join('\n'),
-        {
-          parse_mode: 'HTML',
-          reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu'), btn('🏠 الرئيسية', 'home')]]),
-        },
-      );
-      return;
-    } catch (err) {
-      await ctx.editMessageText(
-        `❌ <b>فشل اختبار صلاحية الرفع إلى Google Drive:</b>\n<code>${String(err?.message || err).slice(0, 260)}</code>`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: keyboard([
-            [btn('⚡ عرض الكود الصحيح لـ Google Script', 'drive_set_script')],
-            [btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')],
-          ]),
-        },
-      );
-      return;
-    }
+async function dualUploadCallbackRoute(ctx) {
+  let isAdminCaller = false;
+  try {
+    isAdminCaller = db.isUserAdmin(ctx.from.id);
+  } catch {
+    isAdminCaller = false;
   }
-
-  const screen = buildDualUploadScreen(ctx);
-  await ctx.editMessageText(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+  if (!isAdminCaller) {
+    await ctx.answer();
+    await ctx.editMessageText('🔒 هذه الأداة مخصصة للمالك والمشرفين المعتمدين فقط.', {
+      reply_markup: homeUi.homeKeyboard(),
+    });
+    return;
+  }
+  const d1Adapter = getSqliteD1Adapter();
+  const wrappedCtx = Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
+    db: d1Adapter,
+    chatId: ctx.chatId ?? ctx.from?.id,
+  });
+  await handleDualUploadCallback(wrappedCtx, ctx.data, ctx.bot, process.env);
 }
 
-async function handleDriveSetupText(ctx) {
+async function handleDualUploadWizardText(ctx) {
   if (ctx.kind !== 'message') return false;
-  const raw = String(ctx.text ?? '').trim();
-  if (!raw) return false;
-
-  const autoScriptMatch = /https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/i.exec(raw);
-  if (ctx.userData?.drive_wait_script || autoScriptMatch) {
-    delete ctx.userData.drive_wait_script;
-    if (raw === '/cancel') {
-      const screen = buildDualUploadScreen(ctx);
-      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
-      return true;
-    }
-    const scriptUrl = autoScriptMatch ? autoScriptMatch[0].trim() : raw;
-    if (!/^https:\/\/script\.google\.com\/macros\/s\//i.test(scriptUrl)) {
-      await ctx.reply('⚠️ يرجى إرسال رابط Google Apps Script Web App الصحيح (يبدأ بـ <code>https://script.google.com/macros/s/</code> وينتهي بـ <code>/exec</code>).', {
-        parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
-      });
-      return true;
-    }
-    try {
-      setRuntimeSecret('GOOGLE_DRIVE_SCRIPT_URL', scriptUrl);
-    } catch {
-      // Ignore vault errors
-    }
-    process.env.GOOGLE_DRIVE_SCRIPT_URL = scriptUrl;
-    setRuntimeDriveSession({ scriptUrl });
-    if (ctx.message?.message_id) {
-      await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(() => {});
-    }
-    const screen = buildDualUploadScreen(ctx);
-    await ctx.reply(`✅ <b>تم حفظ وتفعيل الربط الدائم عبر Google Script بنجاح!</b>\n\n${screen.text}`, {
-      parse_mode: 'HTML',
-      reply_markup: screen.markup,
-    });
-    return true;
+  const text = String(ctx.text ?? '').trim();
+  if (!text || text.startsWith('/')) return false;
+  let isAdminCaller = false;
+  try {
+    isAdminCaller = db.isUserAdmin(ctx.from.id);
+  } catch {
+    isAdminCaller = false;
   }
-
-  if (ctx.userData?.drive_wait_token) {
-    delete ctx.userData.drive_wait_token;
-    if (raw === '/cancel') {
-      const screen = buildDualUploadScreen(ctx);
-      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
-      return true;
-    }
-    const cleanToken = raw.replace(/^GOOGLE_DRIVE_ACCESS_TOKEN\s*=\s*/i, '').trim();
-    try {
-      setRuntimeSecret('GOOGLE_DRIVE_ACCESS_TOKEN', cleanToken);
-    } catch {
-      // Ignore if secret vault is read-only in test env
-    }
-    process.env.GOOGLE_DRIVE_ACCESS_TOKEN = cleanToken;
-    setRuntimeDriveSession({ accessToken: cleanToken });
-    if (ctx.message?.message_id) {
-      await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(() => {});
-    }
-    const screen = buildDualUploadScreen(ctx);
-    await ctx.reply(`✅ <b>تم ربط وتفعيل حساب Google Drive من داخل البوت بنجاح!</b>\n\n${screen.text}`, {
-      parse_mode: 'HTML',
-      reply_markup: screen.markup,
-    });
-    return true;
+  if (!isAdminCaller) return false;
+  const d1Adapter = getSqliteD1Adapter();
+  const chatId = ctx.chatId ?? ctx.from?.id;
+  if (!(await hasActiveDualUploadTextPrompt(d1Adapter, chatId, ctx.userData))) {
+    return false;
   }
-
-  if (ctx.userData?.drive_wait_refresh) {
-    delete ctx.userData.drive_wait_refresh;
-    if (raw === '/cancel') {
-      const screen = buildDualUploadScreen(ctx);
-      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
-      return true;
-    }
-    const parts = raw.includes('|')
-      ? raw.split('|').map((s) => s.trim()).filter(Boolean)
-      : raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    if (parts.length < 3) {
-      await ctx.reply('⚠️ يرجى إرسال القيم الثلاث (CLIENT_ID ثم CLIENT_SECRET ثم REFRESH_TOKEN) في 3 أسطر أو مفصولة بـ |.', {
-        parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
-      });
-      return true;
-    }
-    const [clientId, clientSecret, refreshToken] = parts;
-    try {
-      setRuntimeSecret('GOOGLE_CLIENT_ID', clientId);
-      setRuntimeSecret('GOOGLE_CLIENT_SECRET', clientSecret);
-      setRuntimeSecret('GOOGLE_REFRESH_TOKEN', refreshToken);
-    } catch {
-      // Ignore vault errors if any
-    }
-    process.env.GOOGLE_CLIENT_ID = clientId;
-    process.env.GOOGLE_CLIENT_SECRET = clientSecret;
-    process.env.GOOGLE_REFRESH_TOKEN = refreshToken;
-    if (ctx.message?.message_id) {
-      await ctx.bot.deleteMessage(ctx.from.id, ctx.message.message_id).catch(() => {});
-    }
-    const screen = buildDualUploadScreen(ctx);
-    await ctx.reply(`✅ <b>تم حفظ الربط الدائم (Refresh Token) لحساب Google Drive بنجاح!</b>\n\n${screen.text}`, {
-      parse_mode: 'HTML',
-      reply_markup: screen.markup,
-    });
-    return true;
-  }
-
-  if (ctx.userData?.drive_wait_folder) {
-    delete ctx.userData.drive_wait_folder;
-    if (raw === '/cancel') {
-      const screen = buildDualUploadScreen(ctx);
-      await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
-      return true;
-    }
-    const folderId = extractDriveFolderId(raw);
-    if (!folderId) {
-      await ctx.reply('⚠️ رابط أو معرّف المجلد غير صالح. أرسل رابط مجلد Google Drive أو المعرّف الصحيح.', {
-        parse_mode: 'HTML',
-        reply_markup: keyboard([[btn('⬅️ رجوع لإعدادات Drive', 'drive_menu')]]),
-      });
-      return true;
-    }
-    try {
-      setRuntimeSecret('GOOGLE_DRIVE_FOLDER_ID', folderId);
-    } catch {
-      // Ignore vault errors
-    }
-    process.env.GOOGLE_DRIVE_FOLDER_ID = folderId;
-    setRuntimeDriveSession({ folderId });
-    const screen = buildDualUploadScreen(ctx);
-    await ctx.reply(`✅ <b>تم تحديد مجلد Google Drive (<code>${folderId}</code>) بنجاح!</b>\n\n${screen.text}`, {
-      parse_mode: 'HTML',
-      reply_markup: screen.markup,
-    });
-    return true;
-  }
-
-  return false;
-}
-
-async function driveCommand(ctx) {
-  ctx.userData.dual_upload_mode = true;
-  const screen = buildDualUploadScreen(ctx);
-  await ctx.reply(screen.text, { parse_mode: 'HTML', reply_markup: screen.markup });
+  const wrappedCtx = Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
+    db: d1Adapter,
+    chatId,
+  });
+  await handleDualUploadNewFolderText(wrappedCtx, text, ctx.bot, process.env);
+  return true;
 }
 
 async function bundleRoute(ctx) {

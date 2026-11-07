@@ -34,15 +34,10 @@ import {
   getFolderHierarchyChain,
 } from '../telegram/workerAdmin.js';
 import {
-  deleteDriveFile,
   inferMediaFilenameAndMime,
-  isDriveConfigured,
   markChannelPostPublished,
   recordDualUploadEvent,
-  resolveDriveAccessToken,
   unmarkChannelPostPublished,
-  uploadBytesToGoogleDrive,
-  uploadTelegramFileToGoogleDrive,
 } from './googleDrive.js';
 
 const memorySessions = new Map();
@@ -405,25 +400,22 @@ function nodeIcon(nodeType) {
 
 function describeDestinations(session) {
   if (session.destChoice === 'all') {
-    return '🌟 الكل (البوت + قناة الأرشيف + Google Drive)';
+    return '🌟 الكل (البوت + قناة الأرشيف)';
   }
   const parts = [];
   if (session.destBot) parts.push('🤖 داتا البوت');
   if (session.destChannel) parts.push('🗄 قناة الأرشيف');
-  if (session.destDrive) parts.push('☁️ Google Drive');
   return parts.length ? parts.join(' + ') : 'لم يتم التحديد بعد';
 }
 
 /**
  * Render the interactive wizard message or execution status message for any `session.step`:
- *   - `choose_dest`: Step 1 — Select upload destination(s) (`Google Drive`, `قناة الأرشيف`, `البوت`, `الكل`).
+ *   - `choose_dest`: Step 1 — Select upload destination(s) (`قناة الأرشيف`, `البوت`, `الكل`).
  *   - `edit_name`: Step 2 — Confirm or edit the resource Name (`الاسم`).
- *   - `pick_folder`: Step 3 — Choose `المستوى ⬅️ البلوك ⬅️ المادة ⬅️ القسم` or create new section/subject.
- *   - `new_folder_name`: Step 4A — Waiting for new subject/section name text.
- *   - `choose_branch`: Step 4B — Choose `📖 نظري` or `🔬 عملي` (or `📁 عام`).
- *   - `choose_datatype`: Step 4C — Choose data type (`📚 كتب`, `🎥 فيديو`, `🎧 صوتيات`, `📑 ملخصات`, `📝 MCQ`, `📁 عام`).
+ *   - `pick_folder`: Step 3 — Admin `الأقسام والمحتوى` navigation & management.
+ *   - `admin_fnew` / `admin_ftype` / `admin_frename`: Standard Admin folder creation & renaming.
  *   - `confirm_send`: Step 5 — Final review + `🚀 إرسال وتنفيذ الرفع الآن`.
- *   - `executing` (or default): Live progress bar (`▓▓▓▓░░░░░░ %`) + post-upload management.
+ *   - `executing` (or default): Status report + post-upload management & unified delete.
  */
 export async function renderDualUploadSessionMessage(db, session) {
   const step = String(session.step || 'executing');
@@ -437,28 +429,26 @@ export async function renderDualUploadSessionMessage(db, session) {
   // ---------------------------------------------------------------------------
   if (step === 'choose_dest') {
     const text = [
-      '🧭 <b>مركز الرفع الذكي — تحديد وجهات الرفع أولاً</b>',
+      '🧭 <b>توجيه ورفع الداتا — تحديد وجهات الرفع أولاً</b>',
       '━━━━━━━━━━━━━━━━━━',
       `📄 <b>الاسم المكتشف:</b> ${esc(session.title || session.filename)}`,
       metaLine,
       '',
       '1️⃣ <b>اختر وجهة الرفع المطلوبة لهذه الداتا:</b>',
-      '• <b>☁️ Google Drive:</b> رفع مباشر لحسابك مع شريط تقدم حي.',
+      '• <b>🤖 البوت (الأقسام والمحتوى):</b> تصنيف ودمج في مكتبة الطلاب حسب هيكل الأقسام والمحتوى.',
       '• <b>🗄 قناة الأرشيف:</b> نشر وأرشفة في قناة البوت مع منع التكرار.',
-      '• <b>🤖 البوت:</b> تصنيف ودمج في مكتبة الطلاب (المستوى ⬅️ المادة ⬅️ القسم).',
-      '• <b>🌟 الكل:</b> فتح تفاصيل الرفع بدءاً من الاسم ثم التصنيف الأكاديمي والرفع للوجهات الثلاث معاً.',
+      '• <b>🌟 الكل:</b> تحديد الاسم والقسم من «الأقسام والمحتوى» والرفع إلى البوت وقناة الأرشيف معاً.',
     ].join('\n');
 
     return {
       text,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🌟 الكل (البوت + قناة الأرشيف + Google Drive)', callback_data: `du_dest:${session.id}:all` }],
+          [{ text: '🌟 الكل (البوت + قناة الأرشيف)', callback_data: `du_dest:${session.id}:all` }],
           [
-            { text: '☁️ جوجل درايف', callback_data: `du_dest:${session.id}:drive` },
+            { text: '🤖 البوت (الأقسام والمحتوى)', callback_data: `du_dest:${session.id}:bot` },
             { text: '🗄 قناة الأرشيف', callback_data: `du_dest:${session.id}:channel` },
           ],
-          [{ text: '🤖 البوت (مكتبة الطلاب)', callback_data: `du_dest:${session.id}:bot` }],
           [{ text: '🛑 إلغاء العملية', callback_data: `du_cancel:${session.id}` }],
         ],
       },
@@ -744,10 +734,9 @@ export async function renderDualUploadSessionMessage(db, session) {
   }
 
   // ---------------------------------------------------------------------------
-  // STEP 6 / DEFAULT: Executing & Post-Upload Live Status (`executing`)
+  // STEP 6 / DEFAULT: Executing & Post-Upload Status (`executing`)
   // ---------------------------------------------------------------------------
   const showChannel = session.destChannel !== false;
-  const showDrive = session.destDrive !== false;
   const showBot = session.destBot !== false;
 
   // 1. Channel status line
@@ -764,29 +753,7 @@ export async function renderDualUploadSessionMessage(db, session) {
     channelLine = '⚪️ القناة غير مربوطة بعد';
   }
 
-  // 2. Google Drive status & live progress bar
-  let driveLine = '';
-  if (!showDrive) {
-    driveLine = '⚪️ لم يتم اختيار Google Drive في هذه العملية';
-  } else if (session.driveStatus === 'uploading') {
-    const pct = Number(session.progressPct || 0);
-    const doneMb = (Number(session.uploadedBytes || 0) / (1024 * 1024)).toFixed(1);
-    const totalMb = session.fileSize
-      ? (Number(session.fileSize) / (1024 * 1024)).toFixed(1)
-      : '?';
-    const bar = renderProgressBar(pct);
-    driveLine =
-      `⏳ <b>جاري الرفع المباشر إلى Google Drive...</b>\n` +
-      `📊 <b>التقدم:</b> <code>${bar}</code> (<code>${doneMb} / ${totalMb} MB</code>)`;
-  } else if ((session.driveStatus === 'done' || session.driveStatus === 'completed') && session.driveWebViewLink) {
-    driveLine = `✅ تم الرفع الكامل إلى Google Drive (<a href="${esc(session.driveWebViewLink)}">فتح الملف في Drive</a>)`;
-  } else if (session.driveStatus === 'failed') {
-    driveLine = `⚠️ تعذر الرفع إلى Google Drive: <code>${esc(String(session.driveError || '').slice(0, 160))}</code>`;
-  } else {
-    driveLine = '⚪️ حساب Google Drive غير مربوط بعد';
-  }
-
-  // 3. Bot Database integration status (Level -> Block -> Subject -> Section)
+  // 2. Bot Database integration status (الأقسام والمحتوى)
   let botDataLine = '';
   if (session.selectedFolderId && session.selectedFolderPath && session.contentId) {
     botDataLine =
@@ -845,10 +812,7 @@ export async function renderDualUploadSessionMessage(db, session) {
     }
   }
 
-  const headerTitle =
-    session.driveStatus === 'uploading'
-      ? '☁️ <b>جاري الرفع المباشر + تصنيف المورد في البوت</b>'
-      : '☁️ <b>تقرير الرفع المزدوج والتصنيف الأكاديمي (البوت + القناة + Drive)</b>';
+  const headerTitle = '✅ <b>تقرير رفع الداتا والتصنيف الأكاديمي (البوت + قناة الأرشيف)</b>';
 
   const text = [
     headerTitle,
@@ -858,16 +822,10 @@ export async function renderDualUploadSessionMessage(db, session) {
     '',
     `1️⃣ <b>قناة الأرشيف:</b>\n${channelLine}`,
     '',
-    `2️⃣ <b>حساب Google Drive:</b>\n${driveLine}`,
-    '',
-    `3️⃣ <b>داتا البوت (مكتبة الطلاب):</b>\n${botDataLine}${browseHeader}`,
+    `2️⃣ <b>داتا البوت (مكتبة الطلاب):</b>\n${botDataLine}${browseHeader}`,
   ].join('\n');
 
   const rows = [];
-
-  if ((session.driveStatus === 'done' || session.driveStatus === 'completed') && session.driveWebViewLink) {
-    rows.push([{ text: '📂 فتح الملف في Google Drive', url: session.driveWebViewLink }]);
-  }
 
   if (showInlineFolderBrowser) {
     if (browseId > 0 && currentFolder) {
@@ -910,29 +868,16 @@ export async function renderDualUploadSessionMessage(db, session) {
     ]);
   }
 
-  if (session.driveStatus === 'uploading') {
-    rows.push([
-      {
-        text: `🔄 تحديث التقدم (${Math.round(Number(session.progressPct || 0))}%)`,
-        callback_data: `du_refresh:${session.id}`,
-      },
-      {
-        text: '🛑 إلغاء الرفع وحذف الملف',
-        callback_data: `du_cancel:${session.id}`,
-      },
-    ]);
-  } else {
-    rows.push([
-      {
-        text: '🗑 حذف الملف (البوت + القناة + Drive)',
-        callback_data: `du_cancel:${session.id}`,
-      },
-      {
-        text: '🏠 الرئيسية',
-        callback_data: 'home',
-      },
-    ]);
-  }
+  rows.push([
+    {
+      text: '🗑 حذف الملف (البوت + القناة)',
+      callback_data: `du_cancel:${session.id}`,
+    },
+    {
+      text: '🏠 الرئيسية',
+      callback_data: 'home',
+    },
+  ]);
 
   return {
     text,
@@ -1074,7 +1019,8 @@ export async function startInteractiveUploadWizard({
     channelOk: Boolean(isDirectChannelPost),
     channelSkippedDuplicate: false,
     channelError: null,
-    driveStatus: isDriveConfigured(env) ? 'pending' : 'unconfigured',
+    executed: false,
+    driveStatus: 'disabled',
     driveFileId: null,
     driveWebViewLink: null,
     driveSessionUri: null,
@@ -1110,31 +1056,15 @@ export async function startInteractiveUploadWizard({
 
 
 /**
- * Execute the actual upload to the user's selected destinations (`destBot`, `destChannel`, `destDrive`).
+ * Execute the actual upload to the user's selected destinations (`destBot`, `destChannel`).
  */
-export async function executeWizardUpload(db, session, userId, bot, env, fetchImpl = fetch) {
+export async function executeWizardUpload(db, session, userId, bot, env) {
   session.step = 'executing';
+  session.executed = true;
   session.pickingFolder = false;
   if (userId) session.actorUserId = Number(userId);
 
-  if (session.destDrive) {
-    session.driveStatus = isDriveConfigured(env) ? 'uploading' : 'unconfigured';
-  }
-
   await saveUploadSession(db, session);
-
-  // Immediately push an 'uploading' status update to the interactive message so the user sees 0% right away
-  if (session.userChatId && session.statusMessageId && typeof bot?.editMessageText === 'function') {
-    const progressView = await renderDualUploadSessionMessage(db, session);
-    await bot
-      .editMessageText(progressView.text, {
-        chat_id: session.userChatId,
-        message_id: session.statusMessageId,
-        parse_mode: 'HTML',
-        reply_markup: progressView.reply_markup,
-      })
-      .catch(() => {});
-  }
 
   // ---------------------------------------------------------------------------
   // 1. Bot Database (`content` + `news`) if `destBot` is selected
@@ -1193,7 +1123,6 @@ export async function executeWizardUpload(db, session, userId, bot, env, fetchIm
             .join('\n');
 
     if (session.isDirectChannelPost && session.sourceMessageId) {
-      // The message is ALREADY inside the Archive Channel! Update its caption in-place instead of reposting
       session.channelMessageId = session.sourceMessageId;
       session.channelOk = true;
       session.channelSkippedDuplicate = false;
@@ -1205,7 +1134,6 @@ export async function executeWizardUpload(db, session, userId, bot, env, fetchIm
           .catch(() => {});
       }
     } else if (!session.channelMessageId) {
-      // Check deduplication first
       let existingMsgId = null;
       if (db && typeof db.prepare === 'function') {
         try {
@@ -1288,86 +1216,6 @@ export async function executeWizardUpload(db, session, userId, bot, env, fetchIm
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // 3. Google Drive (`destDrive`)
-  // ---------------------------------------------------------------------------
-  if (session.destDrive) {
-    if (!isDriveConfigured(env)) {
-      session.driveStatus = 'unconfigured';
-    } else if (session.fileType === 'link' || session.fileType === 'text') {
-      const contentStr =
-        session.fileType === 'link'
-          ? `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${esc(session.fileId)}"><title>${esc(session.title)}</title></head><body style="font-family:sans-serif;direction:rtl;padding:2rem;"><h2>🔗 ${esc(session.title)}</h2><p><a href="${esc(session.fileId)}">اضغط هنا لفتح الرابط: ${esc(session.fileId)}</a></p></body></html>`
-          : `${session.title}\n====================\n\n${session.captionRaw || session.fileId}`;
-      const bytes = new TextEncoder().encode(contentStr);
-      const driveRes = await uploadBytesToGoogleDrive({
-        filename: session.filename,
-        mimeType: session.mimeType,
-        bytes,
-        description: session.selectedFolderPath
-          ? `MEDBOT [${session.selectedFolderPath}] — ${session.title}`
-          : `MEDBOT — ${session.title}`,
-        env,
-        fetchImpl,
-      });
-      if (driveRes.ok) {
-        session.driveStatus = 'done';
-        session.driveFileId = driveRes.id || null;
-        session.driveWebViewLink = driveRes.webViewLink || null;
-        session.progressPct = 100;
-        session.uploadedBytes = bytes.byteLength;
-      } else {
-        session.driveStatus = 'failed';
-        session.driveError = driveRes.error || null;
-      }
-    } else {
-      const uploaded = await uploadTelegramFileToGoogleDrive({
-        bot,
-        fileId: session.fileId,
-        filename: session.filename,
-        mimeType: session.mimeType,
-        fileSize: session.fileSize,
-        title: session.title,
-        description: session.selectedFolderPath
-          ? `MEDBOT [${session.selectedFolderPath}] — ${session.title}`
-          : session.captionRaw || session.title,
-        message: session.sourceMessage || {
-          message_id: session.sourceMessageId,
-          chat: { id: session.sourceChatId },
-          from: { id: session.actorUserId },
-        },
-        actorUserId: session.actorUserId,
-        channelTarget: session.channelId,
-        channelMessageId: session.channelMessageId,
-        statusChatId: session.userChatId,
-        statusMessageId: session.statusMessageId,
-        sessionId: session.id,
-        db,
-        env,
-        fetchImpl,
-      });
-
-      if (uploaded.sessionUri) {
-        session.driveSessionUri = uploaded.sessionUri;
-      }
-      if (uploaded.jobPayload) {
-        session.jobPayload = uploaded.jobPayload;
-      }
-      if (uploaded.asyncTransfer) {
-        session.driveStatus = 'uploading';
-      } else if (uploaded.ok) {
-        session.driveStatus = 'done';
-        session.driveFileId = uploaded.id || null;
-        session.driveWebViewLink = uploaded.webViewLink || null;
-        session.progressPct = 100;
-        session.uploadedBytes = Number(session.fileSize || uploaded.size || 0);
-      } else {
-        session.driveStatus = 'failed';
-        session.driveError = uploaded.error || null;
-      }
-    }
-  }
-
   await saveUploadSession(db, session);
 
   recordDualUploadEvent({
@@ -1376,9 +1224,9 @@ export async function executeWizardUpload(db, session, userId, bot, env, fetchIm
     fileType: session.fileType,
     channelOk: session.channelOk,
     channelTarget: session.channelId || null,
-    driveOk: session.driveStatus === 'done',
-    driveFileId: session.driveFileId || null,
-    driveLink: session.driveWebViewLink || null,
+    driveOk: false,
+    driveFileId: null,
+    driveLink: null,
   });
 
   return session;
@@ -1386,10 +1234,9 @@ export async function executeWizardUpload(db, session, userId, bot, env, fetchIm
 
 /**
  * Integrate the session's file/link/text into `folderId` in the Bot Database (`content`),
- * update the Archive Channel post caption with the full academic hierarchy,
- * and update Google Drive file metadata.
+ * and update the Archive Channel post caption with the full academic hierarchy.
  */
-export async function integrateSessionFileIntoFolder(db, session, folderId, userId, bot, env) {
+export async function integrateSessionFileIntoFolder(db, session, folderId, userId, bot, _env) {
   const fid = Number(folderId);
   if (!fid || !db) return session;
 
@@ -1477,69 +1324,21 @@ export async function integrateSessionFileIntoFolder(db, session, folderId, user
     ).catch(() => {});
   }
 
-  if (session.driveFileId) {
-    try {
-      const token = await resolveDriveAccessToken(env);
-      if (token) {
-        await fetch(
-          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(session.driveFileId)}`,
-          {
-            method: 'PATCH',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json; charset=UTF-8',
-            },
-            body: JSON.stringify({
-              description: `MEDBOT [${fullPath}] — ${session.title || session.filename}`.slice(0, 1000),
-            }),
-          },
-        ).catch(() => {});
-      }
-    } catch {
-      // Non-fatal Drive metadata update
-    }
-  }
-
   await saveUploadSession(db, session);
   return session;
 }
 
 /**
- * Cancel an active upload or delete an already uploaded file across ALL 3 systems:
- *   1. Bot Database (`content`, `news`, `archive_sync`, `pending_large_drive_jobs`)
+ * Cancel an active upload or delete an already uploaded file across Bot DB and Archive Channel:
+ *   1. Bot Database (`content`, `news`, `archive_sync`)
  *   2. Bot Archive Channel (`deleteMessage`)
- *   3. Google Drive (`deleteDriveFile` + abort resumable `sessionUri`)
  */
-export async function cancelAndDeleteUploadSession(db, session, bot, env) {
+export async function cancelAndDeleteUploadSession(db, session, bot, _env) {
   session.cancelled = true;
-  session.driveStatus = 'cancelled';
   await saveUploadSession(db, session);
   await setChatTextWaiter(db, session.userChatId, null);
 
   if (db && typeof db.prepare === 'function') {
-    try {
-      const row = await get(
-        db,
-        "SELECT value FROM settings WHERE key = 'pending_large_drive_jobs' LIMIT 1",
-      ).catch(() => null);
-      const raw = row?.[0] ?? row?.value ?? null;
-      if (raw) {
-        const jobs = JSON.parse(String(raw));
-        if (Array.isArray(jobs)) {
-          const filtered = jobs.filter(
-            (j) => j && j.sessionId !== session.id && j.sessionUri !== session.driveSessionUri,
-          );
-          await run(
-            db,
-            "INSERT INTO settings(key,value) VALUES('pending_large_drive_jobs',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [JSON.stringify(filtered)],
-          ).catch(() => {});
-        }
-      }
-    } catch {
-      // Ignore queue cleanup error
-    }
-
     if (session.contentId) {
       await deleteFile(db, Number(session.contentId)).catch(() => {});
       await run(db, 'DELETE FROM news WHERE content_id = ?', [Number(session.contentId)]).catch(
@@ -1576,24 +1375,9 @@ export async function cancelAndDeleteUploadSession(db, session, bot, env) {
     }
   }
 
-  let driveDeleted = false;
-  try {
-    if (session.driveSessionUri) {
-      await fetch(session.driveSessionUri, { method: 'DELETE' }).catch(() => {});
-      driveDeleted = true;
-    }
-    if (session.driveFileId) {
-      const delRes = await deleteDriveFile({ fileId: session.driveFileId, env });
-      if (delRes?.ok) driveDeleted = true;
-    }
-  } catch {
-    // Non-fatal
-  }
-
   return {
     ok: true,
     channelDeleted,
-    driveDeleted,
     text: [
       '🗑 <b>تم إلغاء العملية وحذف الملف نهائياً</b>',
       '━━━━━━━━━━━━━━━━━━',
@@ -1602,7 +1386,6 @@ export async function cancelAndDeleteUploadSession(db, session, bot, env) {
       '✅ <b>تم إيقاف الرفع وإزالة الملف من الوجهات:</b>',
       `• <b>داتا البوت:</b> ${session.contentId ? `تم حذف المورد (#${session.contentId})` : 'تم إلغاء الدمج'}`,
       `• <b>قناة الأرشيف:</b> ${channelDeleted ? 'تم حذف المنشور من القناة' : 'تم إلغاء الأرشفة'}`,
-      `• <b>حساب Google Drive:</b> ${driveDeleted ? 'تم إيقاف الجلسة وحذف الملف من Drive' : 'تم الإلغاء'}`,
     ].join('\n'),
     reply_markup: {
       inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]],
@@ -1705,13 +1488,13 @@ export async function handleDualUploadCallback(ctx, data, bot, env) {
     });
   }
 
-  // Step 1 -> Destination chosen (`all`, `drive`, `channel`, `bot`)
+  // Step 1 -> Destination chosen (`all`, `channel`, `bot`)
   if (action === 'du_dest') {
     const choice = String(arg || 'all');
     session.destChoice = choice;
     session.destBot = choice === 'all' || choice === 'bot';
     session.destChannel = choice === 'all' || choice === 'channel';
-    session.destDrive = choice === 'all' || choice === 'drive';
+    session.destDrive = false;
 
     if (session.destBot) {
       // Enter full Core Bot sequence starting from the Name (`edit_name`)
@@ -1733,7 +1516,7 @@ export async function handleDualUploadCallback(ctx, data, bot, env) {
       });
     }
 
-    // `drive` only or `channel` only -> execute immediately!
+    // `channel` only -> execute immediately!
     await ctx.answer();
     await executeWizardUpload(ctx.db, session, ctx.from?.id, bot, env);
     const view = await renderDualUploadSessionMessage(ctx.db, session);
@@ -1813,10 +1596,11 @@ export async function handleDualUploadCallback(ctx, data, bot, env) {
   // Step 3 -> Select an existing folder in the wizard (`du_select_f`)
   if (action === 'du_select_f') {
     const fid = Number(arg || 0);
-    const alreadyExecuted =
-      session.driveStatus === 'uploading' ||
-      session.driveStatus === 'done' ||
-      (session.channelOk && !session.destChoice);
+    const alreadyExecuted = Boolean(
+      session.executed ||
+        session.contentId ||
+        (session.channelOk && !session.destChoice),
+    );
 
     if (alreadyExecuted && fid > 0) {
       session.destBot = true;
