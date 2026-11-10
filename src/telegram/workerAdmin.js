@@ -78,7 +78,7 @@ function nodeIcon(type) {
   }[String(type ?? '').toLowerCase()] ?? '📁');
 }
 
-export async function buildWorkerAdmin(db, user) {
+export async function buildWorkerAdmin(db, user, env = {}) {
   const id = Number(user.id);
   if (!(await isAdmin(db, id))) {
     return { text: '🔒 هذه المنطقة مخصصة للمشرفين المعتمدين فقط.', reply_markup: kb(home) };
@@ -121,8 +121,19 @@ export async function buildWorkerAdmin(db, user) {
   if (await hasPermission(db, id, 'can_admins')) {
     items.push(btn('👥 إدارة المشرفين', 'admin_admins'));
   }
+  if (await isOwner(db, id)) {
+    items.push(btn('🔑 مفاتيح الكلية والـ AI', 'cs_menu'));
+  }
 
   const rows = packButtons(items, 2);
+  const rawPlatformOwners = String(env?.PLATFORM_OWNER_ID || env?.ADMIN_ID || '');
+  const isPlatOwner = rawPlatformOwners
+    .split(',')
+    .map((x) => Number.parseInt(x.trim(), 10))
+    .includes(id);
+  if (isPlatOwner) {
+    rows.push([btn('🏛 إدارة كليات المنصة المركزية', 'pf_hub')]);
+  }
   rows.push([btn('📊 حالة التشغيل', 'admin_runtime'), btn('🏠 الرئيسية', 'home')]);
   return {
     text: '🛠 <b>إدارة المنصة</b>\n\nاختر القسم أو الأداة التي تريد إدارتها:',

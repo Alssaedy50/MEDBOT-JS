@@ -48,6 +48,17 @@ import {
   saveUploadSession,
   startInteractiveUploadWizard,
 } from '../storage/dualUploadInteractive.js';
+import {
+  COLLEGE_SETUP_PREFIXES,
+  PLATFORM_OWNER_PREFIXES,
+  buildCollegeSetupMenu,
+  buildPlatformOwnerHub,
+  handleCollegeSetupCallback,
+  handleCollegeSetupText,
+  handlePlatformOwnerCallback,
+  handlePlatformOwnerText,
+  verifyUserPlatformMembership,
+} from '../platform/index.js';
 
 function getSqliteD1Adapter() {
   return {
@@ -165,6 +176,9 @@ export function registerHandlers() {
   registerRoute({ name: 'about', prefixes: ['about'], handler: aboutRoute });
   registerRoute({ name: 'backup', prefixes: ['backup_menu', 'backup_chat', 'backup_channel'], handler: backupRoute });
   registerRoute({ name: 'dualUpload', prefixes: ['du_'], handler: dualUploadCallbackRoute });
+  registerRoute({ name: 'collegeSetup', prefixes: COLLEGE_SETUP_PREFIXES, handler: collegeSetupCallbackRoute });
+  registerRoute({ name: 'platformOwner', prefixes: PLATFORM_OWNER_PREFIXES, handler: platformOwnerCallbackRoute });
+  registerRoute({ name: 'platformMembership', prefixes: ['verify_platform_sub'], handler: platformMembershipCallbackRoute });
   registerRoute({ name: 'secrets', prefixes: secrets.ADMIN_SECRET_PREFIXES, handler: secrets.handleSecretCallback });
   registerRoute({ name: 'bundle', prefixes: ['bundle_confirm'], handler: bundleRoute });
   registerRoute({ name: 'noop', prefixes: ['noop'], handler: noopRoute });
@@ -179,6 +193,8 @@ export function registerHandlers() {
   // ---- Text handlers (workflow state consumers) -------------------
   // Order matters: the most specific armed workflow first, so a typed title is
   // never consumed by a broader flow.
+  registerTextHandler('platformOwnerWizard', handlePlatformOwnerWizardText);
+  registerTextHandler('collegeSetupWizard', handleCollegeSetupWizardText);
   registerTextHandler('dualUploadWizard', handleDualUploadWizardText);
   registerTextHandler('news', news.handleNewsText);
   registerTextHandler('adminUploadCustomTitle', adminFolders.handleUploadCustomTitleText);
@@ -258,6 +274,8 @@ export function registerHandlers() {
   registerCommand('restore', restoreCommand);
   registerCommand('secrets', secretsCommand);
   registerCommand('bundle', bundleCommand);
+  registerCommand('platform', platformCommand);
+  registerCommand('setup', setupCommand);
   registerCommand('cancel', cancelCommand);
   registerCommand('text', unhandledText);
 }
@@ -343,6 +361,80 @@ async function handleDualUploadWizardText(ctx) {
   });
   await handleDualUploadNewFolderText(wrappedCtx, text, ctx.bot, process.env);
   return true;
+}
+
+async function collegeSetupCallbackRoute(ctx) {
+  const d1Adapter = getSqliteD1Adapter();
+  const wrappedCtx = Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
+    db: d1Adapter,
+    chatId: ctx.chatId ?? ctx.from?.id,
+  });
+  await handleCollegeSetupCallback(wrappedCtx, ctx.bot, process.env);
+}
+
+async function platformOwnerCallbackRoute(ctx) {
+  const d1Adapter = getSqliteD1Adapter();
+  const wrappedCtx = Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
+    db: d1Adapter,
+    chatId: ctx.chatId ?? ctx.from?.id,
+  });
+  await handlePlatformOwnerCallback(wrappedCtx, ctx.bot, process.env);
+}
+
+async function platformMembershipCallbackRoute(ctx) {
+  const d1Adapter = getSqliteD1Adapter();
+  const check = await verifyUserPlatformMembership({
+    platformDb: d1Adapter,
+    userId: ctx.from?.id,
+    env: process.env,
+    collegeBot: ctx.bot,
+    forceRefresh: true,
+  });
+  await ctx.answer();
+  if (!check.allowed) {
+    await ctx.editMessageText(
+      `⚠️ <b>لم يتم العثور على اشتراكك في القناة المركزية بعد!</b>\nيرجى الانضمام للقناة أولاً ثم الضغط على زر التحقق مرة أخرى.\n\n${check.text}`,
+      { reply_markup: check.reply_markup, parse_mode: 'HTML' },
+    );
+    return;
+  }
+  await homeUi.showHome(ctx);
+}
+
+async function handlePlatformOwnerWizardText(ctx) {
+  if (ctx.kind !== 'message') return false;
+  const text = String(ctx.text ?? '').trim();
+  if (!text || text.startsWith('/')) return false;
+  const d1Adapter = getSqliteD1Adapter();
+  const wrappedCtx = Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
+    db: d1Adapter,
+    chatId: ctx.chatId ?? ctx.from?.id,
+  });
+  return handlePlatformOwnerText(wrappedCtx, ctx.bot, process.env);
+}
+
+async function handleCollegeSetupWizardText(ctx) {
+  if (ctx.kind !== 'message') return false;
+  const text = String(ctx.text ?? '').trim();
+  if (!text || text.startsWith('/')) return false;
+  const d1Adapter = getSqliteD1Adapter();
+  const wrappedCtx = Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
+    db: d1Adapter,
+    chatId: ctx.chatId ?? ctx.from?.id,
+  });
+  return handleCollegeSetupText(wrappedCtx, ctx.bot, process.env);
+}
+
+async function platformCommand(ctx) {
+  const d1Adapter = getSqliteD1Adapter();
+  const hub = await buildPlatformOwnerHub(d1Adapter, ctx.from, process.env);
+  await ctx.reply(hub.text, { reply_markup: hub.reply_markup, parse_mode: 'HTML' });
+}
+
+async function setupCommand(ctx) {
+  const d1Adapter = getSqliteD1Adapter();
+  const setupMenu = await buildCollegeSetupMenu(d1Adapter, d1Adapter, ctx.from, process.env);
+  await ctx.reply(setupMenu.text, { reply_markup: setupMenu.reply_markup, parse_mode: 'HTML' });
 }
 
 async function bundleRoute(ctx) {

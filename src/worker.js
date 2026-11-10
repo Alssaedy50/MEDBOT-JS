@@ -77,6 +77,25 @@ import {
   saveUploadSession,
   startInteractiveUploadWizard,
 } from './storage/dualUploadInteractive.js';
+import {
+  COLLEGE_STATUS,
+  buildCollegeRuntimeEnv,
+  buildCollegeSetupMenu,
+  buildPlatformOwnerHub,
+  clearPlatformWizardState,
+  ensureCollegeSchema,
+  ensurePlatformSchema,
+  getCollege,
+  getPlatformChannelConfig,
+  handleCollegeSetupCallback,
+  handleCollegeSetupText,
+  handlePlatformOwnerCallback,
+  handlePlatformOwnerText,
+  isAuthorizedCollegeManager,
+  isPlatformOwner,
+  listColleges,
+  verifyUserPlatformMembership,
+} from './platform/index.js';
 
 const initializedWebhookStores = new WeakSet();
 let lastWorkerError = null;
@@ -218,6 +237,9 @@ function clearPendingStates(userData) {
   userData.du_new_folder_parent = null;
   userData.du_wizard_session = null;
   userData.du_wizard_mode = null;
+  userData.cs_waiting_secret_name = null;
+  userData.cs_waiting_archive = false;
+  clearPlatformWizardState(userData);
 }
 
 async function isWorkerAdminOrOwner(db, userId, env = {}) {
@@ -336,12 +358,83 @@ async function dispatchTelegramUpdate(update, { env }) {
     }
   }
 
+  const platformDb = env.PLATFORM_DB || env.DB;
+
+  async function enforceCollegeAccessAndMembership(ctx, isCallback = false) {
+    const uid = ctx.from?.id;
+    if (!uid) return null;
+
+    // 1. Check if this college is suspended by the Platform Owner
+    if (env.COLLEGE_STATUS === COLLEGE_STATUS.SUSPENDED && !isPlatformOwner(uid, env)) {
+      const reason = env.COLLEGE_SUSPENSION_REASON || 'موقوف مؤقتاً من قِبل إدارة المنصة المركزية.';
+      const msg = `⛔ <b>بوت هذه الكلية متوقف مؤقتاً</b>\n\nالسبب: ${reason}`;
+      if (isCallback) {
+        await ctx.answer();
+        return ctx.editMessageText(msg, { parse_mode: 'HTML' });
+      }
+      return ctx.reply(msg, { parse_mode: 'HTML' });
+    }
+
+    // 2. If college is in `pending_setup`, only allow the College Manager or Platform Owner
+    if (
+      env.COLLEGE_STATUS === COLLEGE_STATUS.PENDING_SETUP &&
+      !isPlatformOwner(uid, env) &&
+      !(await isAuthorizedCollegeManager(ctx.db, uid, env))
+    ) {
+      const msg = '⏳ <b>بوت هذه الكلية قيد الإعداد والتجهيز حالياً</b>\n\nسيتم فتح البوت للطلاب فور استكمال الإعدادات من قِبل إدارة الكلية.';
+      if (isCallback) {
+        await ctx.answer();
+        return ctx.editMessageText(msg, { parse_mode: 'HTML' });
+      }
+      return ctx.reply(msg, { parse_mode: 'HTML' });
+    }
+
+    // 3. Enforce mandatory membership in the developer's central platform channel
+    const membership = await verifyUserPlatformMembership({
+      platformDb,
+      userId: uid,
+      env,
+      collegeBot: bot,
+      forceRefresh: false,
+    });
+    if (!membership.allowed) {
+      if (isCallback) {
+        await ctx.answer();
+        return ctx.editMessageText(membership.text, {
+          reply_markup: membership.reply_markup,
+          parse_mode: 'HTML',
+        });
+      }
+      return ctx.reply(membership.text, {
+        reply_markup: membership.reply_markup,
+        parse_mode: 'HTML',
+      });
+    }
+    return null;
+  }
+
   const handlers = {
     command: async (ctx) => {
       clearPendingStates(ctx.userData);
+      const gateResponse = await enforceCollegeAccessAndMembership(ctx, false);
+      if (gateResponse) return gateResponse;
+
       const command = String(ctx.text).trim().split(/\s+/, 1)[0].split('@', 1)[0].slice(1);
+      if (command === 'platform') {
+        const hub = await buildPlatformOwnerHub(platformDb, ctx.from, env);
+        return ctx.reply(hub.text, { reply_markup: hub.reply_markup, parse_mode: 'HTML' });
+      }
+      if (command === 'setup') {
+        await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null).catch(() => {});
+        const setupMenu = await buildCollegeSetupMenu(ctx.db, platformDb, ctx.from, env);
+        return ctx.reply(setupMenu.text, { reply_markup: setupMenu.reply_markup, parse_mode: 'HTML' });
+      }
       if (command === 'start') {
         await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null).catch(() => {});
+        if (env.PLATFORM_OWNER_BOT_ONLY && isPlatformOwner(ctx.from?.id, env)) {
+          const hub = await buildPlatformOwnerHub(platformDb, ctx.from, env);
+          return ctx.reply(hub.text, { reply_markup: hub.reply_markup, parse_mode: 'HTML' });
+        }
         const menu = await buildWorkerHome(ctx.db, ctx.from);
         return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
@@ -355,7 +448,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       }
       if (command === 'admin') {
         await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null).catch(() => {});
-        const menu = await buildWorkerAdmin(ctx.db, ctx.from);
+        const menu = await buildWorkerAdmin(ctx.db, ctx.from, env);
         return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
       if (command === 'ask') {
@@ -384,13 +477,49 @@ async function dispatchTelegramUpdate(update, { env }) {
     },
 
     callback: async (ctx) => {
+      // Handle mandatory platform channel verification callback first
+      if (ctx.data === 'verify_platform_sub') {
+        const check = await verifyUserPlatformMembership({
+          platformDb,
+          userId: ctx.from?.id,
+          env,
+          collegeBot: bot,
+          forceRefresh: true,
+        });
+        await ctx.answer();
+        if (!check.allowed) {
+          return ctx.editMessageText(
+            `⚠️ <b>لم يتم العثور على اشتراكك في القناة المركزية بعد!</b>\nيرجى الانضمام للقناة أولاً ثم الضغط على زر التحقق مرة أخرى.\n\n${check.text}`,
+            { reply_markup: check.reply_markup, parse_mode: 'HTML' },
+          );
+        }
+        const homeMenu = await buildWorkerHome(ctx.db, ctx.from);
+        return ctx.editMessageText(`✅ <b>تم التحقق من اشتراكك بنجاح! أهلاً بك في المنصة.</b>\n\n${homeMenu.text}`, {
+          reply_markup: homeMenu.reply_markup,
+          parse_mode: 'HTML',
+        });
+      }
+
+      const isChannelAction = ctx.message?.chat?.type === 'channel';
+      if (!isChannelAction) {
+        const gateResponse = await enforceCollegeAccessAndMembership(ctx, true);
+        if (gateResponse) return gateResponse;
+      }
+
       // Clear transient input flags on navigation unless selecting folder type
       if (!ctx.data.startsWith('admin_ftype:')) {
         clearPendingStates(ctx.userData);
       }
 
+      if (ctx.data.startsWith('pf_')) {
+        return handlePlatformOwnerCallback(ctx, bot, env, env.REQUEST_URL || null);
+      }
+
+      if (ctx.data.startsWith('cs_')) {
+        return handleCollegeSetupCallback(ctx, bot, env);
+      }
+
       if (ctx.data.startsWith('du_')) {
-        const isChannelAction = ctx.message?.chat?.type === 'channel';
         if (!isChannelAction && !(await isWorkerAdminOrOwner(ctx.db, ctx.from?.id, env))) {
           await ctx.answer();
           return ctx.editMessageText('🔒 هذه الأداة مخصصة للمالك والمشرفين المعتمدين فقط.', {
@@ -496,7 +625,7 @@ async function dispatchTelegramUpdate(update, { env }) {
         }
       }
       if (ctx.data === 'admin') {
-        const menu = await buildWorkerAdmin(ctx.db, ctx.from);
+        const menu = await buildWorkerAdmin(ctx.db, ctx.from, env);
         await ctx.answer();
         return ctx.editMessageText(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
@@ -973,6 +1102,16 @@ async function dispatchTelegramUpdate(update, { env }) {
   };
 
   handlers.message = async (ctx) => {
+    const gateResponse = await enforceCollegeAccessAndMembership(ctx, false);
+    if (gateResponse) return gateResponse;
+
+    if (await handlePlatformOwnerText(ctx, bot, env, env.REQUEST_URL || null)) {
+      return;
+    }
+    if (await handleCollegeSetupText(ctx, bot, env)) {
+      return;
+    }
+
     const isAdminCaller = await isWorkerAdminOrOwner(ctx.db, ctx.from?.id, env);
 
     if (isAdminCaller && (await hasActiveDualUploadTextPrompt(ctx.db, ctx.chatId, ctx.userData))) {
@@ -1093,6 +1232,13 @@ async function dispatchTelegramUpdate(update, { env }) {
     if (ctx.message?.is_automatic_forward) return null;
     if (ctx.message?.chat?.type && ctx.message.chat.type !== 'private') return null;
 
+    const gateResponse = await enforceCollegeAccessAndMembership(ctx, false);
+    if (gateResponse) return gateResponse;
+
+    if (ctx.userData?.cs_waiting_archive) {
+      if (await handleCollegeSetupText(ctx, bot, env)) return;
+    }
+
     if (ctx.userData?.contribution_folder) {
       const result = await handleWorkerContributionMedia(ctx.db, ctx.from, ctx.message, ctx.userData.contribution_folder);
       ctx.userData.contribution_folder = null;
@@ -1167,7 +1313,84 @@ async function webhookResponse(request, env) {
     return json({ ok: false, error: 'd1_schema_init_failed' }, 503);
   }
   const idempotency = createD1TelegramIdempotencyStore(env.DB);
-  return handleTelegramWebhook(request, { env, idempotency, dispatch: dispatchTelegramUpdate });
+  const runtimeEnv = {
+    ...env,
+    PLATFORM_DB: env.PLATFORM_DB || env.DB,
+    COLLEGE_ID: env.COLLEGE_ID || 'default',
+    REQUEST_URL: request.url,
+  };
+  return handleTelegramWebhook(request, { env: runtimeEnv, idempotency, dispatch: dispatchTelegramUpdate });
+}
+
+async function collegeWebhookResponse(request, env, rawCollegeId) {
+  const platformDb = env.PLATFORM_DB || env.DB;
+  if (!platformDb) return json({ ok: false, error: 'd1_not_configured' }, 503);
+
+  try {
+    await ensureWorkerSchema(env.DB);
+    await ensurePlatformSchema(platformDb);
+  } catch (err) {
+    lastWorkerError = `platform_schema_init_failed: ${err?.message || err}`;
+    return json({ ok: false, error: 'd1_schema_init_failed' }, 503);
+  }
+
+  let college;
+  try {
+    college = await getCollege(platformDb, rawCollegeId, env, { includeDecryptedToken: true });
+  } catch {
+    return json({ ok: false, error: 'invalid_college_id' }, 400);
+  }
+  if (!college || college.status === COLLEGE_STATUS.DECOMMISSIONED) {
+    return json({ ok: false, error: 'college_not_found' }, 404);
+  }
+
+  const collegeEnv = await buildCollegeRuntimeEnv(platformDb, env, college.college_id);
+  collegeEnv.COLLEGE_STATUS = college.status;
+  collegeEnv.COLLEGE_SUSPENSION_REASON = college.suspension_reason;
+  collegeEnv.REQUEST_URL = request.url;
+  collegeEnv.TELEGRAM_WEBHOOK_SECRET = college.webhook_secret || env.TELEGRAM_WEBHOOK_SECRET || '';
+
+  if (!collegeEnv.DB) {
+    return json({ ok: false, error: 'college_db_not_configured' }, 503);
+  }
+
+  await ensureCollegeSchema(collegeEnv.DB);
+  const idempotency = createD1TelegramIdempotencyStore(collegeEnv.DB);
+  return handleTelegramWebhook(request, {
+    env: collegeEnv,
+    idempotency,
+    dispatch: dispatchTelegramUpdate,
+  });
+}
+
+async function platformOwnerWebhookResponse(request, env) {
+  const platformDb = env.PLATFORM_DB || env.DB;
+  if (!platformDb) return json({ ok: false, error: 'd1_not_configured' }, 503);
+
+  try {
+    await ensureWorkerSchema(env.DB);
+    await ensurePlatformSchema(platformDb);
+  } catch (err) {
+    lastWorkerError = `platform_schema_init_failed: ${err?.message || err}`;
+    return json({ ok: false, error: 'd1_schema_init_failed' }, 503);
+  }
+
+  const platformBotEnv = {
+    ...env,
+    PLATFORM_DB: platformDb,
+    TELEGRAM_BOT_TOKEN: env.PLATFORM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN,
+    BOT_TOKEN: env.PLATFORM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN || env.BOT_TOKEN,
+    TELEGRAM_WEBHOOK_SECRET: env.PLATFORM_WEBHOOK_SECRET || env.TELEGRAM_WEBHOOK_SECRET,
+    PLATFORM_OWNER_BOT_ONLY: true,
+    REQUEST_URL: request.url,
+  };
+
+  const idempotency = createD1TelegramIdempotencyStore(platformDb);
+  return handleTelegramWebhook(request, {
+    env: platformBotEnv,
+    idempotency,
+    dispatch: dispatchTelegramUpdate,
+  });
 }
 
 export default {
@@ -1201,8 +1424,30 @@ export default {
         last_error: storedError,
       });
     }
+    if (request.method === 'GET' && url.pathname === '/platform/status') {
+      const platformDb = env.PLATFORM_DB || env.DB;
+      if (!platformDb) return json({ ok: false, error: 'd1_not_configured' }, 503);
+      await ensurePlatformSchema(platformDb);
+      const colleges = await listColleges(platformDb, env);
+      const chCfg = await getPlatformChannelConfig(platformDb, env);
+      return json({
+        ok: true,
+        platform: 'MEDBOT Multi-College Platform',
+        colleges_total: colleges.length,
+        colleges_active: colleges.filter((c) => c.status === COLLEGE_STATUS.ACTIVE).length,
+        colleges_pending: colleges.filter((c) => c.status === COLLEGE_STATUS.PENDING_SETUP).length,
+        colleges_suspended: colleges.filter((c) => c.status === COLLEGE_STATUS.SUSPENDED).length,
+        mandatory_channel_enabled: chCfg.enabled,
+        mandatory_channel_id: chCfg.channelId,
+      });
+    }
     if (url.pathname === '/backup/latest') return backupEndpoint(request, env);
     if (url.pathname === '/telegram/webhook') return webhookResponse(request, env);
+    if (url.pathname.startsWith('/telegram/webhook/')) {
+      const collegeSlug = decodeURIComponent(url.pathname.slice('/telegram/webhook/'.length)).replace(/\/+$/, '');
+      if (collegeSlug) return collegeWebhookResponse(request, env, collegeSlug);
+    }
+    if (url.pathname === '/platform/webhook') return platformOwnerWebhookResponse(request, env);
     if (url.pathname === '/storage/status') {
       return json({
         ok: Boolean(env.FILES),

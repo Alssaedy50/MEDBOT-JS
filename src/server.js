@@ -110,6 +110,29 @@ async function handleApiRequest(request, response, pathname) {
   const method = String(request.method || 'GET').toUpperCase();
   const bearerToken = extractBearerToken(request);
 
+  if (method === 'GET' && pathname === '/api/platform/overview') {
+    const channel = resolveChannel();
+    return sendJson(response, 200, {
+      ok: true,
+      platform: 'MEDBOT Multi-College Management Platform',
+      defaultCollege: {
+        id: 'default',
+        slug: 'default',
+        status: 'active',
+        botTokenConfigured: Boolean(String(process.env.BOT_TOKEN ?? '').trim()),
+        archiveChannel: channel || null,
+      },
+      centralChannel: {
+        channelId: String(process.env.PLATFORM_CHANNEL_ID ?? '').trim() || null,
+        inviteLink: String(process.env.PLATFORM_CHANNEL_URL ?? '').trim() || null,
+        title: String(process.env.PLATFORM_CHANNEL_TITLE ?? 'قناة المنصة المركزية').trim(),
+      },
+      platformOwnerBotConfigured: Boolean(
+        String(process.env.PLATFORM_BOT_TOKEN ?? process.env.BOT_TOKEN ?? '').trim(),
+      ),
+    });
+  }
+
   if (method === 'GET' && pathname === '/api/drive/status') {
     const channel = resolveChannel();
     const channelValid = validateChannelValue(channel);

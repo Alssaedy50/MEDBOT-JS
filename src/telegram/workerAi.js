@@ -3,6 +3,7 @@ import { aiRegistryEnsure, aiRegistryGetHealthy, aiRegistryMarkSuccess, aiRegist
 import { searchRelevantPubmed, stripSourceIdentifiers } from '../medicalSources.js';
 import { request, classifyError, discoverGeminiModels, discoverGroqModels, discoverOpenrouterModels, isModelSuitableForMedbot } from '../ai/providers.js';
 import { AI_DAILY_LIMIT } from '../constants.js';
+import { getCollegeSecretsMap } from '../platform/registry.js';
 
 const SYSTEM_AR='أنت MEDBOT، مساعد أكاديمي طبي. أجب تعليمياً وبوضوح. لا تشخّص ولا تصف علاجاً لحالة شخصية. لا تخترع مصادر أو أرقام PMID. استخدم المصادر التي يزوّدك بها النظام فقط.';
 const SYSTEM_EN='You are MEDBOT, an academic medical assistant. Answer clearly for education. Do not diagnose or prescribe for personal clinical cases. Never invent sources or PMIDs. Use only sources supplied by the system.';
@@ -22,18 +23,20 @@ function grounded(question,sources,lang){
  const block=sources.length?sources.map((s,i)=>'['+(i+1)+'] '+s.title+' (PMID '+s.pmid+')\n'+s.abstract).join('\n\n'):(lang==='en'?'No verified PubMed source is available. Do not cite a source.':'لا يوجد مصدر PubMed موثّق متاح. لا تذكر مصدراً.');
  return (lang==='en'?'Verified evidence':'الأدلة الموثّقة')+':\n'+block+'\n\n'+(lang==='en'?'Student question':'سؤال الطالب')+':\n'+question;
 }
-export async function answerWorkerAi(db,user,question,env){
+export async function answerWorkerAi(db,user,question,env={}){
  const prompt=String(question??'').trim(),uid=Number(user.id),lang=await getUserLanguage(db,uid);
  if(!prompt)return {text:lang==='en'?'Please write a clear question.':'يرجى كتابة سؤال واضح.'};
  const [allowed,remaining]=await checkAndIncrementQuota(db,uid,AI_DAILY_LIMIT);
  if(!allowed)return {text:lang==='en'?'Daily AI allowance reached.':'لقد استنفدت الحد اليومي للمساعد الذكي.',remaining:0};
+ const collegeSecrets=await getCollegeSecretsMap(db,env,env?.COLLEGE_ID||'default').catch(()=>({}));
+ const effectiveEnv={...env,...collegeSecrets};
  let sources=[];try{sources=await searchRelevantPubmed(prompt,3);}catch{sources=[];}
- const pool=await candidates(db,env);
+ const pool=await candidates(db,effectiveEnv);
  if(!pool.length)return {text:lang==='en'?'The AI service is temporarily unavailable.':'المساعد الذكي غير متاح مؤقتاً.',remaining};
  for(const item of pool){
   const started=Date.now();
   try{
-   const answer=await request({item,prompt:grounded(prompt,sources,lang),systemPrompt:lang==='en'?SYSTEM_EN:SYSTEM_AR,fetchImpl:fetch,env});
+   const answer=await request({item,prompt:grounded(prompt,sources,lang),systemPrompt:lang==='en'?SYSTEM_EN:SYSTEM_AR,fetchImpl:fetch,env:effectiveEnv});
    if(!String(answer).trim())throw new Error('empty_ai_response');
    const latency=Date.now()-started;
    if(item.id){await aiRegistryMarkSuccess(db,item.id,latency);await aiUsageRecord(db,item.id,{userId:uid,latencyMs:latency,success:true});}
