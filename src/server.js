@@ -22,6 +22,8 @@ import { getD1SchemaSql } from './db/d1/migrations.js';
 import { normalizeChannelValue, validateChannelValue } from './archive.js';
 import { dualUploadMediaMessage } from './storage/googleDrive.js';
 import {
+  createCloudflareRemoteD1,
+  discoverCloudflareD1Bridge,
   ensureDefaultCollegeRegistered,
   ensurePlatformSchema,
   handlePlatformWebApi,
@@ -29,6 +31,8 @@ import {
   setCollegeBotToken,
   updateCollegeManager,
 } from './platform/index.js';
+
+export { createCloudflareRemoteD1 };
 
 export const DEFAULT_PORT = 3000;
 export const HEALTH_TEXT = 'MEDBOT is active and running';
@@ -119,162 +123,16 @@ function createNodeSqliteD1() {
   };
 }
 
-/**
- * Create a Remote Cloudflare D1 adapter over the official Cloudflare REST API.
- * Allows the Web Portal to run on ANY external platform (Google Cloud Run, Render,
- * Hugging Face Spaces, Railway) when `*.workers.dev` is blocked in the user's region,
- * while reading/writing directly to the production Cloudflare D1 database!
- */
-export function createCloudflareRemoteD1({ apiToken, accountId, databaseId }) {
-  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
-
-  async function executeQuery(sql, params = []) {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        sql,
-        params: params.map((p) => (p === undefined ? null : p)),
-      }),
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok || !data?.success) {
-      const msg = data?.errors?.[0]?.message || `Cloudflare D1 HTTP ${res.status}`;
-      throw new Error(msg);
-    }
-    const firstResult = Array.isArray(data.result) ? data.result[0] : data.result;
-    return {
-      results: Array.isArray(firstResult?.results) ? firstResult.results : [],
-      meta: firstResult?.meta || { changes: 0, last_row_id: 0 },
-    };
-  }
-
-  function createPrepared(sql, boundParams = []) {
-    return {
-      bind(...params) {
-        return createPrepared(sql, params.map((p) => (p === undefined ? null : p)));
-      },
-      async raw() {
-        const { results } = await executeQuery(sql, boundParams);
-        return results.map((row) => Object.values(row));
-      },
-      async all() {
-        const { results } = await executeQuery(sql, boundParams);
-        return { results };
-      },
-      async first(colName) {
-        const { results } = await executeQuery(sql, boundParams);
-        const row = results[0] ?? null;
-        if (!row) return null;
-        return colName ? (row[colName] ?? null) : row;
-      },
-      async run() {
-        const { meta } = await executeQuery(sql, boundParams);
-        return {
-          success: true,
-          meta: {
-            changes: Number(meta.changes ?? 0),
-            last_row_id: Number(meta.last_row_id ?? 0),
-          },
-        };
-      },
-    };
-  }
-
-  return {
-    __isRemoteCloudflareD1: true,
-    prepare(sql) {
-      return createPrepared(sql);
-    },
-    async batch(statements) {
-      const out = [];
-      for (const stmt of statements) {
-        out.push(await stmt.run());
-      }
-      return out;
-    },
-    async exec(sql) {
-      await executeQuery(sql, []);
-      return { count: 1, duration: 0 };
-    },
-  };
-}
-
-/**
- * Auto-discover Cloudflare Account ID, D1 Database UUID (`medbot`), and Worker Subdomain
- * using just a `CLOUDFLARE_API_TOKEN`.
- */
-async function discoverCloudflareD1Bridge({
-  apiToken,
-  accountId: rawAccountId = '',
-  databaseId: rawDatabaseId = '',
-  workerUrl: rawWorkerUrl = '',
-}) {
-  const token = String(apiToken || '').trim();
-  if (!token) throw new Error('يرجى إدخال CLOUDFLARE_API_TOKEN.');
-
-  const cfFetch = async (ep) => {
-    const r = await fetch(`https://api.cloudflare.com/client/v4${ep}`, {
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    });
-    return r.json().catch(() => ({ success: false }));
-  };
-
-  let accountId = (String(rawAccountId || '').match(/([a-f0-9]{32})/i) || [])[1] || '';
-  if (!accountId) {
-    const accData = await cfFetch('/accounts?per_page=10');
-    if (accData?.success && Array.isArray(accData.result) && accData.result[0]?.id) {
-      accountId = accData.result[0].id;
-    }
-  }
-  if (!accountId) {
-    throw new Error('تعذّر اكتشاف Cloudflare Account ID من هذا التوكن. تأكد من صلاحيات التوكن.');
-  }
-
-  let databaseId =
-    (String(rawDatabaseId || '').match(
-      /([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i,
-    ) || [])[1] || '';
-  let databaseName = 'medbot';
-  if (!databaseId) {
-    const d1List = await cfFetch(`/accounts/${accountId}/d1/database`);
-    if (d1List?.success && Array.isArray(d1List.result) && d1List.result.length > 0) {
-      const found = d1List.result.find((d) => d.name === 'medbot') || d1List.result[0];
-      databaseId = found.uuid;
-      databaseName = found.name || 'medbot';
-    }
-  }
-  if (!databaseId) {
-    throw new Error('لم يتم العثور على قاعدة بيانات D1 في حساب Cloudflare هذا.');
-  }
-
-  let workerUrl = String(rawWorkerUrl || process.env.CLOUDFLARE_WORKER_URL || '').trim();
-  if (!workerUrl) {
-    const subData = await cfFetch(`/accounts/${accountId}/workers/subdomain`);
-    if (subData?.success && subData.result?.subdomain) {
-      workerUrl = `https://medbot-js.${subData.result.subdomain}.workers.dev`;
-    }
-  }
-
-  const remoteD1 = createCloudflareRemoteD1({ apiToken: token, accountId, databaseId });
-  await ensurePlatformSchema(remoteD1);
-  await ensureDefaultCollegeRegistered(remoteD1, process.env);
-
-  sharedControlD1 = remoteD1;
+async function connectAndCacheCloudflareBridge(opts) {
+  const { db, info } = await discoverCloudflareD1Bridge(opts);
+  await ensurePlatformSchema(db);
+  await ensureDefaultCollegeRegistered(db, process.env);
+  sharedControlD1 = db;
   sharedInitPromise = Promise.resolve();
-  if (workerUrl) {
-    process.env.CLOUDFLARE_WORKER_URL = workerUrl;
+  if (info.workerUrl) {
+    process.env.CLOUDFLARE_WORKER_URL = info.workerUrl;
   }
-  activeCloudflareBridgeInfo = {
-    connected: true,
-    accountId,
-    databaseId,
-    databaseName,
-    workerUrl: workerUrl || null,
-  };
+  activeCloudflareBridgeInfo = info;
   return activeCloudflareBridgeInfo;
 }
 
@@ -283,7 +141,7 @@ async function getControlD1() {
     const envToken = String(process.env.CLOUDFLARE_API_TOKEN || '').trim();
     if (envToken) {
       try {
-        await discoverCloudflareD1Bridge({
+        await connectAndCacheCloudflareBridge({
           apiToken: envToken,
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
           databaseId: process.env.CF_D1_DATABASE_ID,
@@ -316,7 +174,7 @@ function sendJson(response, statusCode, payload) {
 
 async function connectRuntimeBotHandler(body, platformDb, webhookBaseUrl) {
   if (body.cloudflareApiToken) {
-    const bridge = await discoverCloudflareD1Bridge({
+    const bridge = await connectAndCacheCloudflareBridge({
       apiToken: body.cloudflareApiToken,
       accountId: body.cloudflareAccountId,
       databaseId: body.cloudflareDatabaseId,

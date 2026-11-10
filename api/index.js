@@ -2,76 +2,178 @@
 /**
  * Vercel Serverless Entrypoint (`/api/index.js`).
  *
- * Allows deploying the MEDBOT Web Developer Portal AND/OR the Multi-College
- * Telegram Bot Webhooks directly on Vercel (Free Hobby Tier):
- *   - Connects automatically to Cloudflare D1 via `CLOUDFLARE_API_TOKEN`
- *     (or falls back to in-memory SQLite for preview testing).
- *   - Serves the Developer Web Portal on `/` and `/dashboard`.
- *   - Serves `/api/platform/*` for creating & managing college bots.
- *   - Serves `/telegram/webhook` and `/telegram/webhook/:collegeId` so bots
- *     can also run directly on Vercel if desired.
+ * Zero `node:sqlite` or native C++ dependencies so it runs cleanly on
+ * Vercel's Serverless Node runtime (Node 18 / 20 / 22) without
+ * `500 FUNCTION_INVOCATION_FAILED`.
+ *
+ * Capabilities on Vercel (Free Hobby Tier):
+ *   1. Connects automatically to Cloudflare D1 via `CLOUDFLARE_API_TOKEN`
+ *      (or via Section 04 of the Web Portal UI) and falls back to a pure-JS
+ *      in-memory store before `CLOUDFLARE_API_TOKEN` is configured.
+ *   2. Serves the Developer Web Portal on `/` and `/dashboard`.
+ *   3. Serves `/api/platform/*` for creating & managing college bots.
+ *   4. Serves `/telegram/webhook` and `/telegram/webhook/:collegeId` so bots
+ *      can also run directly on Vercel if desired.
  */
 
 import worker from '../src/worker.js';
-import { createCloudflareRemoteD1 } from '../src/server.js';
 import {
+  createPureJsMemoryD1,
+  discoverCloudflareD1Bridge,
   ensureDefaultCollegeRegistered,
   ensurePlatformSchema,
   handlePlatformWebApi,
   renderPlatformWebPortalHtml,
+  setCollegeBotToken,
+  updateCollegeManager,
 } from '../src/platform/index.js';
 
+function normalizeArchiveChannelInput(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  s = s.replace(/^https?:\/\/(?:www\.)?(?:t\.me|telegram\.me)\//i, '@');
+  return s;
+}
+
 let cachedRemoteD1 = null;
-let cachedWorkerUrl = null;
+let cachedFallbackD1 = null;
+let cachedBridgeInfo = null;
 
 async function resolveVercelD1() {
-  if (cachedRemoteD1) return { db: cachedRemoteD1, workerUrl: cachedWorkerUrl };
+  if (cachedRemoteD1) {
+    return {
+      db: cachedRemoteD1,
+      workerUrl: cachedBridgeInfo?.workerUrl || process.env.CLOUDFLARE_WORKER_URL || null,
+      bridgeInfo: cachedBridgeInfo,
+    };
+  }
 
   const token = String(process.env.CLOUDFLARE_API_TOKEN || '').trim();
-  if (!token) return { db: null, workerUrl: null };
+  if (token) {
+    try {
+      const { db, info } = await discoverCloudflareD1Bridge({
+        apiToken: token,
+        accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+        databaseId: process.env.CF_D1_DATABASE_ID,
+        workerUrl: process.env.CLOUDFLARE_WORKER_URL,
+      });
+      await ensurePlatformSchema(db);
+      await ensureDefaultCollegeRegistered(db, process.env);
+      cachedRemoteD1 = db;
+      cachedBridgeInfo = info;
+      if (info.workerUrl) {
+        process.env.CLOUDFLARE_WORKER_URL = info.workerUrl;
+      }
+      return {
+        db: cachedRemoteD1,
+        workerUrl: info.workerUrl,
+        bridgeInfo: cachedBridgeInfo,
+      };
+    } catch (err) {
+      console.warn('[MEDBOT Vercel] Cloudflare D1 auto-discovery warning:', err?.message || err);
+    }
+  }
 
-  const cfFetch = async (ep) => {
-    const r = await fetch(`https://api.cloudflare.com/client/v4${ep}`, {
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    });
-    return r.json().catch(() => ({ success: false }));
+  if (!cachedFallbackD1) {
+    cachedFallbackD1 = createPureJsMemoryD1();
+    await ensurePlatformSchema(cachedFallbackD1);
+    await ensureDefaultCollegeRegistered(cachedFallbackD1, process.env);
+  }
+  return {
+    db: cachedFallbackD1,
+    workerUrl: process.env.CLOUDFLARE_WORKER_URL || null,
+    bridgeInfo: null,
   };
+}
 
-  let accountId = (String(process.env.CLOUDFLARE_ACCOUNT_ID || '').match(/([a-f0-9]{32})/i) || [])[1] || '';
-  if (!accountId) {
-    const accData = await cfFetch('/accounts?per_page=10');
-    if (accData?.success && Array.isArray(accData.result) && accData.result[0]?.id) {
-      accountId = accData.result[0].id;
+async function connectVercelRuntimeHandler(body, platformDb, webhookBaseUrl) {
+  if (body.cloudflareApiToken) {
+    const { db, info } = await discoverCloudflareD1Bridge({
+      apiToken: body.cloudflareApiToken,
+      accountId: body.cloudflareAccountId,
+      databaseId: body.cloudflareDatabaseId,
+      workerUrl: body.cloudflareWorkerUrl,
+    });
+    await ensurePlatformSchema(db);
+    await ensureDefaultCollegeRegistered(db, process.env);
+    cachedRemoteD1 = db;
+    cachedBridgeInfo = info;
+    process.env.CLOUDFLARE_API_TOKEN = String(body.cloudflareApiToken).trim();
+    if (info.workerUrl) {
+      process.env.CLOUDFLARE_WORKER_URL = info.workerUrl;
     }
-  }
-  if (!accountId) return { db: null, workerUrl: null };
-
-  let databaseId =
-    (String(process.env.CF_D1_DATABASE_ID || '').match(
-      /([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i,
-    ) || [])[1] || '';
-  if (!databaseId) {
-    const d1List = await cfFetch(`/accounts/${accountId}/d1/database`);
-    if (d1List?.success && Array.isArray(d1List.result) && d1List.result.length > 0) {
-      const found = d1List.result.find((d) => d.name === 'medbot') || d1List.result[0];
-      databaseId = found.uuid;
-    }
-  }
-  if (!databaseId) return { db: null, workerUrl: null };
-
-  let workerUrl = String(process.env.CLOUDFLARE_WORKER_URL || '').trim();
-  if (!workerUrl) {
-    const subData = await cfFetch(`/accounts/${accountId}/workers/subdomain`);
-    if (subData?.success && subData.result?.subdomain) {
-      workerUrl = `https://medbot-js.${subData.result.subdomain}.workers.dev`;
-    }
+    return {
+      ok: true,
+      cloudflareBridge: info,
+    };
   }
 
-  cachedRemoteD1 = createCloudflareRemoteD1({ apiToken: token, accountId, databaseId });
-  cachedWorkerUrl = workerUrl || null;
-  await ensurePlatformSchema(cachedRemoteD1);
-  await ensureDefaultCollegeRegistered(cachedRemoteD1, process.env);
-  return { db: cachedRemoteD1, workerUrl: cachedWorkerUrl };
+  const botToken = String(body.botToken || '').trim();
+  const adminId = String(body.adminId || '').trim();
+  const archiveChannel = String(body.archiveChannel || '').trim();
+  if (!botToken || !/^\d{6,14}:[A-Za-z0-9_-]{30,64}$/.test(botToken)) {
+    return {
+      ok: false,
+      error: 'صيغة توكن البوت غير صالحة. يجب أن تكون على الشكل 123456789:AAH...',
+    };
+  }
+
+  const meRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+  const meJson = await meRes.json().catch(() => null);
+  if (!meRes.ok || !meJson?.ok) {
+    return {
+      ok: false,
+      error: meJson?.description || 'رفض تيليجرام هذا التوكن (Unauthorized).',
+    };
+  }
+
+  process.env.BOT_TOKEN = botToken;
+  process.env.TELEGRAM_BOT_TOKEN = botToken;
+  const activeDb = cachedRemoteD1 || platformDb;
+  if (adminId && /^\d+$/.test(adminId)) {
+    process.env.ADMIN_ID = adminId;
+    process.env.PLATFORM_OWNER_ID = adminId;
+    await updateCollegeManager(activeDb, process.env, 'default', Number(adminId), null, 1).catch(
+      () => {},
+    );
+  }
+  if (archiveChannel) {
+    const normalized = normalizeArchiveChannelInput(archiveChannel);
+    if (/^(-100\d{5,}|@[A-Za-z][A-Za-z0-9_]{3,31})$/.test(normalized)) {
+      process.env.MEDBOT_ARCHIVE_CHANNEL = normalized;
+    }
+  }
+
+  const updatedCollege = await setCollegeBotToken(activeDb, process.env, 'default', botToken, 1, {
+    webhookBaseUrl,
+  });
+
+  await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      commands: [
+        { command: 'start', description: '🏠 القائمة الرئيسية للمنصة' },
+        { command: 'setup', description: '⚙️ إعدادات البوت والقناة ومفاتيح الذكاء الاصطناعي' },
+        { command: 'admin', description: '🛠 لوحة إدارة الكلية والمحتوى' },
+        { command: 'search', description: '🔎 البحث الذكي في المقررات والمراجع' },
+        { command: 'ask', description: '🤖 المساعد الطبي الذكي' },
+        { command: 'contribute', description: '📤 إرسال مساهمة طلابية' },
+      ],
+    }),
+  }).catch(() => null);
+
+  return {
+    ok: true,
+    bot: {
+      id: meJson.result.id,
+      username: meJson.result.username,
+      firstName: meJson.result.first_name,
+      mode: 'webhook',
+      webhookUrl: updatedCollege?.webhookUrl || `${webhookBaseUrl}/telegram/webhook/default`,
+    },
+    cloudflareBridge: cachedBridgeInfo,
+  };
 }
 
 export default async function handler(req, res) {
@@ -79,7 +181,10 @@ export default async function handler(req, res) {
     const pathname = String(req.url || '/').split('?')[0];
     const accept = String(req.headers?.accept || '');
 
-    if (req.method === 'GET' && (pathname === '/dashboard' || (pathname === '/' && accept.includes('text/html')))) {
+    if (
+      req.method === 'GET' &&
+      (pathname === '/dashboard' || (pathname === '/' && accept.includes('text/html')))
+    ) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store');
       res.status(200).send(renderPlatformWebPortalHtml());
@@ -101,6 +206,8 @@ export default async function handler(req, res) {
     if (!['GET', 'HEAD'].includes(String(req.method || 'GET').toUpperCase())) {
       if (typeof req.body === 'string') {
         rawBody = req.body;
+      } else if (Buffer.isBuffer(req.body)) {
+        rawBody = req.body.toString('utf8');
       } else if (req.body && typeof req.body === 'object') {
         rawBody = JSON.stringify(req.body);
       }
@@ -116,13 +223,18 @@ export default async function handler(req, res) {
       ...process.env,
       DB: db,
       PLATFORM_DB: db,
-      CLOUDFLARE_WORKER_URL: workerUrl || process.env.CLOUDFLARE_WORKER_URL || `${protocol}://${host}`,
+      CLOUDFLARE_WORKER_URL:
+        workerUrl || process.env.CLOUDFLARE_WORKER_URL || `${protocol}://${host}`,
     };
 
     const webRes = pathname.startsWith('/api/platform/')
-      ? await handlePlatformWebApi(webReq, env)
+      ? await handlePlatformWebApi(webReq, env, {
+          onConnectRuntimeBot: (body, activeDb, baseUrl) =>
+            connectVercelRuntimeHandler(body, activeDb, baseUrl),
+        })
       : await worker.fetch(webReq, env);
 
+    // If connect-bot just connected Cloudflare D1, ensure subsequent calls use cachedRemoteD1
     webRes.headers.forEach((val, key) => {
       res.setHeader(key, val);
     });

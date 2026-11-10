@@ -752,3 +752,65 @@ test('7. External Web Developer Control Plane (/dashboard & /api/platform/*) + I
   }
 });
 
+test('8. Vercel Serverless Entrypoint (/api/index.js) serves Web Portal and API without node:sqlite', async () => {
+  const tgMock = createTelegramMock();
+  tgMock.install();
+  try {
+    const { default: vercelHandler } = await import('../api/index.js');
+
+    function createMockRes() {
+      const headers = {};
+      return {
+        statusCode: 200,
+        headers,
+        body: '',
+        setHeader(k, v) {
+          headers[k.toLowerCase()] = v;
+        },
+        status(code) {
+          this.statusCode = code;
+          return this;
+        },
+        send(payload) {
+          this.body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+          return this;
+        },
+        json(payload) {
+          this.body = JSON.stringify(payload);
+          return this;
+        },
+      };
+    }
+
+    // 1. Browser visit to GET / on Vercel
+    const resRoot = createMockRes();
+    await vercelHandler(
+      {
+        method: 'GET',
+        url: '/',
+        headers: { accept: 'text/html,application/xhtml+xml', host: 'medbot-js-lur9.vercel.app' },
+      },
+      resRoot,
+    );
+    assert.equal(resRoot.statusCode, 200);
+    assert.match(resRoot.body, /MEDBOT Control Plane/);
+
+    // 2. GET /api/platform/overview on Vercel (pure-JS fallback when CLOUDFLARE_API_TOKEN is not set yet)
+    const resOverview = createMockRes();
+    await vercelHandler(
+      {
+        method: 'GET',
+        url: '/api/platform/overview',
+        headers: { accept: 'application/json', host: 'medbot-js-lur9.vercel.app' },
+      },
+      resOverview,
+    );
+    assert.equal(resOverview.statusCode, 200);
+    const overviewJson = JSON.parse(resOverview.body);
+    assert.equal(overviewJson.ok, true);
+    assert.ok(Array.isArray(overviewJson.colleges));
+    assert.ok(overviewJson.colleges.some((c) => c.college_id === 'default'));
+  } finally {
+    tgMock.restore();
+  }
+});

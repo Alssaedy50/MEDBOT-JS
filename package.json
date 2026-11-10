@@ -5,7 +5,7 @@
   "description": "MEDBOT — Telegram medical-education LMS. JavaScript/Node.js implementation of the MEDBOT platform.",
   "type": "module",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=20.0.0"
   },
   "main": "src/index.js",
   "scripts": {

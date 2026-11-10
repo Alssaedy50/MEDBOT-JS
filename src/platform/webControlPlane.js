@@ -102,6 +102,7 @@ export async function handlePlatformWebApi(request, env = {}, { onConnectRuntime
           : `/telegram/webhook/${encodeURIComponent(col.college_id)}`;
       colleges.push({
         id: col.college_id,
+        college_id: col.college_id,
         slug: col.college_id,
         name: col.name_ar,
         nameEn: col.name_en,
