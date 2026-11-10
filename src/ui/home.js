@@ -59,19 +59,12 @@ export function buildMenu(userId, language = i18n.DEFAULT_LANGUAGE) {
   }
 
   let isAdmin = false;
-  let isOwner = false;
   try {
     isAdmin = db.isUserAdmin(userId);
-    isOwner = db.isOwner(userId);
   } catch {
     isAdmin = false;
-    isOwner = false;
   }
   if (isAdmin) rows.push([btn(i18n.t('menu_admin', language), 'admin')]);
-  if (isOwner) {
-    rows.push([btn('🔑 إعدادات الكلية والـ AI', 'cs_menu')]);
-    rows.push([btn('🏛 إدارة كليات المنصة المركزية', 'pf_hub')]);
-  }
 
   return keyboard(rows);
 }

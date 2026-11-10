@@ -670,3 +670,85 @@ test('6. Central Platform Owner Bot & Multi-College Webhook Routing (/telegram/w
     tgMock.restore();
   }
 });
+
+test('7. External Web Developer Control Plane (/dashboard & /api/platform/*) + In-Bot Settings Separation', async () => {
+  const tgMock = createTelegramMock();
+  tgMock.install();
+  try {
+    const db = createSqliteD1();
+    await ensurePlatformSchema(db);
+    const env = {
+      DB: db,
+      PLATFORM_DB: db,
+      PLATFORM_OWNER_ID: '1001',
+      ADMIN_ID: '1001',
+      TELEGRAM_BOT_TOKEN: '111111111:AAH_DEFAULT_BOT_TOKEN_12345678901234',
+      BOT_TOKEN: '111111111:AAH_DEFAULT_BOT_TOKEN_12345678901234',
+      TELEGRAM_WEBHOOK_SECRET: 'default-secret-123',
+      PLATFORM_MASTER_KEY: 'test-master-key-for-web-portal',
+    };
+
+    // 1. Verify GET /dashboard returns the external developer web portal HTML
+    const dashReq = new Request('https://medbot.example.workers.dev/dashboard', {
+      method: 'GET',
+      headers: { Accept: 'text/html' },
+    });
+    const dashRes = await worker.fetch(dashReq, env);
+    assert.equal(dashRes.status, 200);
+    const dashHtml = await dashRes.text();
+    assert.match(dashHtml, /MEDBOT Control Plane/);
+    assert.match(dashHtml, /إنشاء وتجهيز بوت كلية جديد/);
+
+    // 2. Provision a new college via POST /api/platform/colleges from the Web Portal
+    const createReq = new Request('https://medbot.example.workers.dev/api/platform/colleges', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slug: 'dentistry_ibb',
+        name: 'كلية طب الأسنان - جامعة إب',
+        managerId: 7701,
+        managerUsername: 'dent_dean',
+        botToken: '777777777:AAH_DENTISTRY_BOT_TOKEN_123456789012',
+        autoActivate: true,
+      }),
+    });
+    const createRes = await worker.fetch(createReq, env);
+    assert.equal(createRes.status, 200);
+    const createData = await createRes.json();
+    assert.equal(createData.ok, true);
+    assert.equal(createData.college.college_id, 'dentistry_ibb');
+    assert.equal(createData.college.status, 'active');
+
+    // 3. Verify GET /api/platform/overview lists default + dentistry_ibb
+    const overviewReq = new Request('https://medbot.example.workers.dev/api/platform/overview');
+    const overviewRes = await worker.fetch(overviewReq, env);
+    assert.equal(overviewRes.status, 200);
+    const overviewData = await overviewRes.json();
+    assert.equal(overviewData.ok, true);
+    assert.equal(overviewData.colleges.length, 2);
+
+    // 4. Verify in-bot settings (`admin_settings`) has Channel & AI Keys setup while bot menus do NOT expose `pf_hub`
+    const { buildWorkerAdmin, buildWorkerSettingsAdmin } = await import('../src/telegram/workerAdmin.js');
+    const { buildWorkerHome } = await import('../src/telegram/workerHome.js');
+
+    const dentDb = resolveCollegeDatabase(env, 'dentistry_ibb');
+    const homeScreen = await buildWorkerHome(dentDb, { id: 7701, first_name: 'عميد الأسنان' });
+    const homeCallbacks = homeScreen.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+    assert.ok(!homeCallbacks.includes('pf_hub'), 'pf_hub must not appear in Telegram /start menu');
+
+    const adminScreen = await buildWorkerAdmin(dentDb, { id: 7701 });
+    const adminCallbacks = adminScreen.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+    assert.ok(!adminCallbacks.includes('pf_hub'), 'pf_hub must not appear in Telegram admin menu');
+    assert.ok(adminCallbacks.includes('admin_settings'), 'admin_settings must appear in Telegram admin menu');
+
+    const settingsScreen = await buildWorkerSettingsAdmin(dentDb, { id: 7701 });
+    const settingsCallbacks = settingsScreen.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+    assert.ok(settingsCallbacks.includes('cs_archive'), 'Channel setup button must be inside bot settings');
+    assert.ok(settingsCallbacks.includes('cs_menu'), 'AI keys menu button must be inside bot settings');
+    assert.ok(settingsCallbacks.includes('cs_key_set:GEMINI_API_KEY'), 'Gemini key button must be inside bot settings');
+    assert.ok(settingsCallbacks.includes('cs_key_set:GROQ_API_KEY'), 'Groq key button must be inside bot settings');
+  } finally {
+    tgMock.restore();
+  }
+});
+

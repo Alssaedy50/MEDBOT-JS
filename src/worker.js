@@ -91,9 +91,12 @@ import {
   handleCollegeSetupText,
   handlePlatformOwnerCallback,
   handlePlatformOwnerText,
+  handlePlatformWebApi,
+  htmlResponse,
   isAuthorizedCollegeManager,
   isPlatformOwner,
   listColleges,
+  renderPlatformWebPortalHtml,
   verifyUserPlatformMembership,
 } from './platform/index.js';
 
@@ -1397,6 +1400,16 @@ async function platformOwnerWebhookResponse(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const accept = String(request.headers.get('accept') || '');
+    if (request.method === 'GET' && (url.pathname === '/dashboard' || (url.pathname === '/' && accept.includes('text/html')))) {
+      return htmlResponse(renderPlatformWebPortalHtml());
+    }
+    if (url.pathname.startsWith('/api/platform/')) {
+      if (env.DB) {
+        await ensureWorkerSchema(env.DB).catch(() => {});
+      }
+      return handlePlatformWebApi(request, env);
+    }
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) return healthResponse(env);
     if (request.method === 'GET' && url.pathname === '/telegram/status') {
       let tables = 0;

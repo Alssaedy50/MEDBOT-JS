@@ -78,7 +78,7 @@ function nodeIcon(type) {
   }[String(type ?? '').toLowerCase()] ?? '📁');
 }
 
-export async function buildWorkerAdmin(db, user, env = {}) {
+export async function buildWorkerAdmin(db, user) {
   const id = Number(user.id);
   if (!(await isAdmin(db, id))) {
     return { text: '🔒 هذه المنطقة مخصصة للمشرفين المعتمدين فقط.', reply_markup: kb(home) };
@@ -122,24 +122,7 @@ export async function buildWorkerAdmin(db, user, env = {}) {
     items.push(btn('👥 إدارة المشرفين', 'admin_admins'));
   }
 
-  const callerIsOwner = await isOwner(db, id);
-  const rawPlatformOwners = String(env?.PLATFORM_OWNER_ID || env?.ADMIN_ID || '');
-  const isPlatOwner =
-    rawPlatformOwners
-      .split(',')
-      .map((x) => Number.parseInt(x.trim(), 10))
-      .includes(id) ||
-    (callerIsOwner && String(env?.COLLEGE_ID || 'default') === 'default');
-
-  const topRows = [];
-  if (isPlatOwner) {
-    topRows.push([btn('🏛 إدارة كليات المنصة المركزية', 'pf_hub')]);
-  }
-  if (callerIsOwner || isPlatOwner) {
-    topRows.push([btn('🔑 مفاتيح الكلية والـ AI', 'cs_menu')]);
-  }
-
-  const rows = [...topRows, ...packButtons(items, 2)];
+  const rows = packButtons(items, 2);
   rows.push([btn('📊 حالة التشغيل', 'admin_runtime'), btn('🏠 الرئيسية', 'home')]);
   return {
     text: '🛠 <b>إدارة المنصة</b>\n\nاختر القسم أو الأداة التي تريد إدارتها:',
@@ -1792,16 +1775,43 @@ export async function buildWorkerSettingsAdmin(db, user) {
   const name = await getSettingVal(db, 'platform_name');
   const about = await getSettingVal(db, 'platform_about');
   const contact = await getSettingVal(db, 'contact_text');
+  const archiveRow = await get(db, "SELECT value FROM settings WHERE key='archive_channel_id'").catch(() => null);
+  const archiveVal = archiveRow?.[0] || 'غير مربوطة بعد';
+  const secretRows = await all(
+    db,
+    "SELECT key FROM settings WHERE key LIKE 'college_secret.v1.%' ORDER BY key ASC",
+  ).catch(() => []);
+  const configuredAiKeys = secretRows
+    .map((r) => String(r[0] || '').replace('college_secret.v1.', ''))
+    .filter(Boolean);
+
   return {
     text:
-      `⚙️ <b>إعدادات المنصة</b>\n\n` +
-      `🏷 <b>اسم المنصة:</b> ${esc(name)}\n\n` +
-      `ℹ️ <b>عن المنصة:</b>\n${esc(String(about).slice(0, 200))}\n\n` +
-      `📬 <b>نص التواصل:</b>\n${esc(String(contact).slice(0, 200))}`,
+      `⚙️ <b>إعدادات البوت والكلية</b>\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `🏷 <b>اسم البوت/الكلية:</b> ${esc(name)}\n` +
+      `📡 <b>قناة الأرشيف:</b> <code>${esc(archiveVal)}</code>\n` +
+      `🤖 <b>مفاتيح الذكاء الاصطناعي المفعلة:</b> ${configuredAiKeys.length ? `<code>${esc(configuredAiKeys.join(', '))}</code>` : 'لم تُضف بعد'}\n\n` +
+      `ℹ️ <b>عن البوت:</b>\n${esc(String(about).slice(0, 160))}\n\n` +
+      `📬 <b>نص التواصل:</b>\n${esc(String(contact).slice(0, 160))}`,
     reply_markup: kb([
-      [btn('✏️ تعديل اسم المنصة', 'admin_set_edit:platform_name')],
-      [btn('✏️ تعديل نبذة عن المنصة', 'admin_set_edit:platform_about')],
-      [btn('✏️ تعديل نص التواصل', 'admin_set_edit:contact_text')],
+      [
+        btn('📡 إدخال/ربط قناة البوت', 'cs_archive'),
+        btn('🔑 مفاتيح الذكاء الاصطناعي والـ AI', 'cs_menu'),
+      ],
+      [
+        btn('🔑 مفتاح Gemini AI', 'cs_key_set:GEMINI_API_KEY'),
+        btn('🔑 مفتاح Groq AI', 'cs_key_set:GROQ_API_KEY'),
+      ],
+      [
+        btn('🔑 مفتاح OpenRouter', 'cs_key_set:OPENROUTER_API_KEY'),
+        btn('🤖 مزامنة هوية البوت', 'cs_profile'),
+      ],
+      [btn('✏️ تعديل اسم البوت/الكلية', 'admin_set_edit:platform_name')],
+      [
+        btn('✏️ تعديل نبذة البوت', 'admin_set_edit:platform_about'),
+        btn('✏️ تعديل نص التواصل', 'admin_set_edit:contact_text'),
+      ],
       [btn('⬅️ لوحة الإدارة', 'admin'), btn('🏠 الرئيسية', 'home')],
     ]),
   };

@@ -9,3 +9,5 @@ export * from './registry.js';
 export * from './membershipGate.js';
 export * from './collegeSetupUi.js';
 export * from './ownerBot.js';
+export * from './webControlPlane.js';
+

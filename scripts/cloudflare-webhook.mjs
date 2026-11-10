@@ -37,8 +37,7 @@ if (action === 'set') {
   await telegram('setMyCommands', {
     commands: [
       { command: 'start', description: '🏠 القائمة الرئيسية للمنصة' },
-      { command: 'platform', description: '🏛 إدارة كليات المنصة المركزية (للمطور)' },
-      { command: 'setup', description: '🔑 إعدادات الكلية والـ AI وقناة الأرشيف (لمدير الكلية)' },
+      { command: 'setup', description: '⚙️ إعدادات البوت والقناة ومفاتيح الذكاء الاصطناعي' },
       { command: 'admin', description: '🛠 لوحة إدارة الكلية والمحتوى' },
       { command: 'search', description: '🔎 البحث الذكي في المقررات والمراجع' },
       { command: 'ask', description: '🤖 المساعد الطبي الذكي' },

@@ -65,7 +65,10 @@ function settingsScreen() {
     settingButtons.push(btn(label, `settings_edit:${key}`));
   }
 
-  const rows = [...chunkButtons(settingButtons)];
+  const rows = [
+    [btn('📡 قناة الأرشيف', 'admin_archive'), btn('🔑 مفاتيح الذكاء الاصطناعي', 'secrets_menu')],
+    ...chunkButtons(settingButtons),
+  ];
   rows.push([btn('⬅️ إدارة المنصة', 'admin')]);
   rows.push([btn('🏠 الرئيسية', 'home')]);
 
