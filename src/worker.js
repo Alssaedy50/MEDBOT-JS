@@ -435,7 +435,7 @@ async function dispatchTelegramUpdate(update, { env }) {
           const hub = await buildPlatformOwnerHub(platformDb, ctx.from, env);
           return ctx.reply(hub.text, { reply_markup: hub.reply_markup, parse_mode: 'HTML' });
         }
-        const menu = await buildWorkerHome(ctx.db, ctx.from);
+        const menu = await buildWorkerHome(ctx.db, ctx.from, env);
         return ctx.reply(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
       if (command === 'help') {
@@ -472,7 +472,7 @@ async function dispatchTelegramUpdate(update, { env }) {
           parse_mode: 'HTML',
         });
       }
-      const fallback = await buildWorkerHome(ctx.db, ctx.from);
+      const fallback = await buildWorkerHome(ctx.db, ctx.from, env);
       return ctx.reply(fallback.text, { reply_markup: fallback.reply_markup, parse_mode: 'HTML' });
     },
 
@@ -493,7 +493,7 @@ async function dispatchTelegramUpdate(update, { env }) {
             { reply_markup: check.reply_markup, parse_mode: 'HTML' },
           );
         }
-        const homeMenu = await buildWorkerHome(ctx.db, ctx.from);
+        const homeMenu = await buildWorkerHome(ctx.db, ctx.from, env);
         return ctx.editMessageText(`✅ <b>تم التحقق من اشتراكك بنجاح! أهلاً بك في المنصة.</b>\n\n${homeMenu.text}`, {
           reply_markup: homeMenu.reply_markup,
           parse_mode: 'HTML',
@@ -537,7 +537,7 @@ async function dispatchTelegramUpdate(update, { env }) {
       }
       if (ctx.data.startsWith('lang_set:')) {
         const ok = await applyWorkerLanguage(ctx.db, ctx.from.id, ctx.data.split(':')[1]);
-        const menu = await buildWorkerHome(ctx.db, ctx.from);
+        const menu = await buildWorkerHome(ctx.db, ctx.from, env);
         await ctx.answer();
         return ctx.editMessageText(ok ? menu.text : '⚠️ لغة غير مدعومة.', { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }
@@ -1086,7 +1086,8 @@ async function dispatchTelegramUpdate(update, { env }) {
         return;
       }
       if (ctx.data === 'home') {
-        const menu = await buildWorkerHome(ctx.db, ctx.from);
+        await ensureConfiguredAdmin(ctx.db, env.ADMIN_ID, ctx.from.id === Number(env.ADMIN_ID) ? ctx.from.username : null).catch(() => {});
+        const menu = await buildWorkerHome(ctx.db, ctx.from, env);
         await ctx.answer();
         return ctx.editMessageText(menu.text, { reply_markup: menu.reply_markup, parse_mode: 'HTML' });
       }

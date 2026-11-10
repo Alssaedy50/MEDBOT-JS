@@ -31,6 +31,12 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          PLATFORM_OWNER_ID: ${{ secrets.PLATFORM_OWNER_ID }}
+          PLATFORM_BOT_TOKEN: ${{ secrets.PLATFORM_BOT_TOKEN }}
+          PLATFORM_CHANNEL_ID: ${{ secrets.PLATFORM_CHANNEL_ID }}
+          PLATFORM_CHANNEL_URL: ${{ secrets.PLATFORM_CHANNEL_URL }}
+          PLATFORM_CHANNEL_TITLE: ${{ secrets.PLATFORM_CHANNEL_TITLE }}
+          PLATFORM_MASTER_KEY: ${{ secrets.PLATFORM_MASTER_KEY }}
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           MEDBOT_ARCHIVE_CHANNEL: ${{ secrets.MEDBOT_ARCHIVE_CHANNEL }}
           ARCHIVE_CHANNEL_ID: ${{ secrets.ARCHIVE_CHANNEL_ID }}
@@ -38,8 +44,4 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GOOGLE_DRIVE_ACCESS_TOKEN: ${{ secrets.GOOGLE_DRIVE_ACCESS_TOKEN }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+

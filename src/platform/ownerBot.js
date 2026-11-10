@@ -9,6 +9,7 @@
  *   - Inspect the centralized platform audit log.
  */
 
+import { isOwner } from '../db/d1/admins.js';
 import {
   COLLEGE_STATUS,
   COLLEGE_STATUS_LABELS,
@@ -59,8 +60,23 @@ export const PLATFORM_OWNER_PREFIXES = [
   'pf_del:',
 ];
 
+export async function isAuthorizedPlatformOwner(platformDb, userId, env = {}) {
+  const uid = Number(userId);
+  if (!Number.isSafeInteger(uid) || uid <= 0) return false;
+  if (isPlatformOwner(uid, env)) return true;
+  const currentCollege = String(env?.COLLEGE_ID || 'default');
+  if (currentCollege === 'default' && platformDb) {
+    try {
+      return await isOwner(platformDb, uid);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 export async function buildPlatformOwnerHub(platformDb, user, env = {}) {
-  if (!isPlatformOwner(user?.id, env)) {
+  if (!(await isAuthorizedPlatformOwner(platformDb, user?.id, env))) {
     return {
       text: '🔒 <b>غير مصرح</b>\nهذه اللوحة مخصصة لمالك ومطور المنصة المركزية فقط.',
       reply_markup: kb([[btn('🏠 الرئيسية', 'home')]]),
@@ -98,14 +114,14 @@ export async function buildPlatformOwnerHub(platformDb, user, env = {}) {
       btn('📢 قناة المنصة الإجبارية', 'pf_ch'),
       btn('📜 سجل التدقيق المركزي', 'pf_audit'),
     ],
-    [btn('🏠 الرئيسية', 'home')],
+    [btn('⬅️ لوحة الإدارة', 'admin'), btn('🏠 الرئيسية', 'home')],
   ];
 
   return { text, reply_markup: kb(rows) };
 }
 
 export async function buildPlatformCollegesList(platformDb, user, env = {}) {
-  if (!isPlatformOwner(user?.id, env)) {
+  if (!(await isAuthorizedPlatformOwner(platformDb, user?.id, env))) {
     return buildPlatformOwnerHub(platformDb, user, env);
   }
   const colleges = await listColleges(platformDb, env);
@@ -140,7 +156,7 @@ export async function buildPlatformCollegesList(platformDb, user, env = {}) {
 }
 
 export async function buildPlatformCollegeDetail(platformDb, user, collegeId, env = {}) {
-  if (!isPlatformOwner(user?.id, env)) {
+  if (!(await isAuthorizedPlatformOwner(platformDb, user?.id, env))) {
     return buildPlatformOwnerHub(platformDb, user, env);
   }
   const validation = await validateCollegeConfiguration(platformDb, env, collegeId);
@@ -211,7 +227,7 @@ export async function buildPlatformCollegeDetail(platformDb, user, collegeId, en
 }
 
 export async function buildPlatformChannelScreen(platformDb, user, env = {}) {
-  if (!isPlatformOwner(user?.id, env)) {
+  if (!(await isAuthorizedPlatformOwner(platformDb, user?.id, env))) {
     return buildPlatformOwnerHub(platformDb, user, env);
   }
   const cfg = await getPlatformChannelConfig(platformDb, env);
@@ -238,7 +254,7 @@ export async function buildPlatformChannelScreen(platformDb, user, env = {}) {
 }
 
 export async function buildPlatformAuditScreen(platformDb, user, env = {}) {
-  if (!isPlatformOwner(user?.id, env)) {
+  if (!(await isAuthorizedPlatformOwner(platformDb, user?.id, env))) {
     return buildPlatformOwnerHub(platformDb, user, env);
   }
   const logs = await listPlatformAuditLogs(platformDb, { limit: 15 });
@@ -274,7 +290,7 @@ export async function handlePlatformOwnerCallback(ctx, bot, env = {}, requestUrl
   const data = String(ctx.data ?? '');
   const platformDb = env?.PLATFORM_DB || env?.DB || ctx.db;
 
-  if (!isPlatformOwner(ctx.from?.id, env)) {
+  if (!(await isAuthorizedPlatformOwner(platformDb, ctx.from?.id, env))) {
     await ctx.answer();
     return ctx.editMessageText('🔒 هذه اللوحة مخصصة لمالك ومطور المنصة المركزية فقط.', {
       reply_markup: kb([[btn('🏠 الرئيسية', 'home')]]),
@@ -512,7 +528,7 @@ export async function handlePlatformOwnerCallback(ctx, bot, env = {}, requestUrl
 export async function handlePlatformOwnerText(ctx, bot, env = {}, requestUrl = null) {
   const platformDb = env?.PLATFORM_DB || env?.DB || ctx.db;
 
-  if (!isPlatformOwner(ctx.from?.id, env)) {
+  if (!(await isAuthorizedPlatformOwner(platformDb, ctx.from?.id, env))) {
     return false;
   }
 

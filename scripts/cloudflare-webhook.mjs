@@ -34,6 +34,17 @@ if (action === 'set') {
     secret_token: secret,
     drop_pending_updates: hadError,
   });
+  await telegram('setMyCommands', {
+    commands: [
+      { command: 'start', description: '🏠 القائمة الرئيسية للمنصة' },
+      { command: 'platform', description: '🏛 إدارة كليات المنصة المركزية (للمطور)' },
+      { command: 'setup', description: '🔑 إعدادات الكلية والـ AI وقناة الأرشيف (لمدير الكلية)' },
+      { command: 'admin', description: '🛠 لوحة إدارة الكلية والمحتوى' },
+      { command: 'search', description: '🔎 البحث الذكي في المقررات والمراجع' },
+      { command: 'ask', description: '🤖 المساعد الطبي الذكي' },
+      { command: 'contribute', description: '📤 إرسال مساهمة طلابية' },
+    ],
+  }).catch(() => null);
   console.log('Webhook set: ' + Boolean(result) + (hadError ? ' (cleared stuck pending updates after error: ' + before.last_error_message + ')' : ''));
 } else if (action === 'info') {
   const result = await telegram('getWebhookInfo');
@@ -49,3 +60,4 @@ if (action === 'set') {
   const result = await telegram('deleteWebhook', { drop_pending_updates: false });
   console.log('Webhook deleted: ' + Boolean(result));
 }
+

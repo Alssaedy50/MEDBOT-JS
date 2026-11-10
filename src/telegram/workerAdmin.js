@@ -121,19 +121,25 @@ export async function buildWorkerAdmin(db, user, env = {}) {
   if (await hasPermission(db, id, 'can_admins')) {
     items.push(btn('👥 إدارة المشرفين', 'admin_admins'));
   }
-  if (await isOwner(db, id)) {
-    items.push(btn('🔑 مفاتيح الكلية والـ AI', 'cs_menu'));
+
+  const callerIsOwner = await isOwner(db, id);
+  const rawPlatformOwners = String(env?.PLATFORM_OWNER_ID || env?.ADMIN_ID || '');
+  const isPlatOwner =
+    rawPlatformOwners
+      .split(',')
+      .map((x) => Number.parseInt(x.trim(), 10))
+      .includes(id) ||
+    (callerIsOwner && String(env?.COLLEGE_ID || 'default') === 'default');
+
+  const topRows = [];
+  if (isPlatOwner) {
+    topRows.push([btn('🏛 إدارة كليات المنصة المركزية', 'pf_hub')]);
+  }
+  if (callerIsOwner || isPlatOwner) {
+    topRows.push([btn('🔑 مفاتيح الكلية والـ AI', 'cs_menu')]);
   }
 
-  const rows = packButtons(items, 2);
-  const rawPlatformOwners = String(env?.PLATFORM_OWNER_ID || env?.ADMIN_ID || '');
-  const isPlatOwner = rawPlatformOwners
-    .split(',')
-    .map((x) => Number.parseInt(x.trim(), 10))
-    .includes(id);
-  if (isPlatOwner) {
-    rows.push([btn('🏛 إدارة كليات المنصة المركزية', 'pf_hub')]);
-  }
+  const rows = [...topRows, ...packButtons(items, 2)];
   rows.push([btn('📊 حالة التشغيل', 'admin_runtime'), btn('🏠 الرئيسية', 'home')]);
   return {
     text: '🛠 <b>إدارة المنصة</b>\n\nاختر القسم أو الأداة التي تريد إدارتها:',

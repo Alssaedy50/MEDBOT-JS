@@ -129,7 +129,19 @@ export async function showAdminPanel(ctx) {
     capabilityButtons.push(btn('📦 ملف البوت الكامل', 'bundle_confirm'));
   }
 
-  const rows = [...chunkButtons(capabilityButtons, 2, { maxLabelLength: 20 })];
+  const topRows = [];
+  let isCallerOwner = false;
+  try {
+    isCallerOwner = db.isOwner(userId);
+  } catch {
+    isCallerOwner = false;
+  }
+  if (isCallerOwner) {
+    topRows.push([btn('🏛 إدارة كليات المنصة المركزية', 'pf_hub')]);
+    topRows.push([btn('🔑 مفاتيح الكلية والـ AI', 'cs_menu')]);
+  }
+
+  const rows = [...topRows, ...chunkButtons(capabilityButtons, 2, { maxLabelLength: 20 })];
   rows.push([btn('📊 حالة التشغيل', 'admin_runtime')]);
   rows.push([btn('🏠 الرئيسية', 'home')]);
 

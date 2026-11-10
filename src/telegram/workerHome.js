@@ -17,7 +17,7 @@ const MENU = [
   ['language', 'menu_language', 'language'],
 ];
 
-const FULL_WIDTH_CALLBACKS = new Set(['resources', 'admin']);
+const FULL_WIDTH_CALLBACKS = new Set(['resources', 'admin', 'pf_hub', 'cs_menu']);
 
 function packMenuButtons(buttons) {
   const rows = [];
@@ -51,7 +51,7 @@ async function getHiddenFeatures(db) {
   return new Set(String(raw).split(',').map((x) => x.trim()).filter((x) => FEATURES.includes(x)));
 }
 
-export async function buildWorkerHome(db, user) {
+export async function buildWorkerHome(db, user, env = {}) {
   const id = Number(user?.id);
   if (!Number.isSafeInteger(id)) throw new TypeError('Invalid Telegram user id');
   await registerUser(db, id, user?.username ?? null, [user?.first_name, user?.last_name].filter(Boolean).join(' ') || null);
@@ -59,9 +59,17 @@ export async function buildWorkerHome(db, user) {
   const hidden = await getHiddenFeatures(db);
   const buttons = MENU.filter(([feature]) => !hidden.has(feature))
     .map(([, key, callback]) => ({ text: t(key, language), callback_data: callback }));
-  const admin = await get(db, 'SELECT 1 FROM admins WHERE telegram_id=? AND role IN (?,?,?)', [id, 'owner', 'admin', 'reviewer']);
-  if (admin && !hidden.has('admin_panel')) {
+  const adminRow = await get(db, 'SELECT role FROM admins WHERE telegram_id=? AND role IN (?,?,?)', [id, 'owner', 'admin', 'reviewer']);
+  if (adminRow && !hidden.has('admin_panel')) {
     buttons.push({ text: t('menu_admin', language), callback_data: 'admin' });
+    const isCollegeOwner = adminRow[0] === 'owner';
+    if (isCollegeOwner) {
+      buttons.push({ text: '🔑 إعدادات الكلية والـ AI', callback_data: 'cs_menu' });
+      const currentCollege = String(env?.COLLEGE_ID || 'default');
+      if (currentCollege === 'default') {
+        buttons.push({ text: '🏛 إدارة كليات المنصة المركزية', callback_data: 'pf_hub' });
+      }
+    }
   }
   const rows = packMenuButtons(buttons);
   const platform = await setting(db, 'platform_name');

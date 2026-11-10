@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execSync, spawnSync } from 'node:child_process';
+import { PLATFORM_CONTROL_SCHEMA_SQL } from '../src/platform/schema.js';
 
 const root = process.cwd();
 const wranglerPath = path.join(root, 'wrangler.jsonc');
@@ -52,7 +53,7 @@ function extractUuid(input) {
   return match ? match[1].toLowerCase() : '';
 }
 
-function buildWranglerConfig(d1Id, includeR2) {
+function buildWranglerConfig(d1Id) {
   const cfg = {
     $schema: 'node_modules/wrangler/config-schema.json',
     name: 'medbot-js',
@@ -67,14 +68,6 @@ function buildWranglerConfig(d1Id, includeR2) {
       },
     ],
   };
-  if (includeR2) {
-    cfg.r2_buckets = [
-      {
-        binding: 'FILES',
-        bucket_name: 'medbot-files',
-      },
-    ];
-  }
   return JSON.stringify(cfg, null, 2) + '\n';
 }
 
@@ -216,29 +209,14 @@ async function main() {
     }
   }
 
-  // 3. Check/Create R2 bucket "medbot-files" (gracefully disable R2 binding if R2 is not enabled on the account)
-  console.log('> Checking R2 bucket "medbot-files"...');
-  let r2Check = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets/medbot-files`);
-  if (!r2Check.ok) {
-    await cfApi(apiToken, `/accounts/${accountId}/r2/buckets`, {
-      method: 'POST',
-      body: { name: 'medbot-files' },
-    });
-    r2Check = await cfApi(apiToken, `/accounts/${accountId}/r2/buckets/medbot-files`);
-  }
-  const r2Available = Boolean(r2Check.ok);
-  if (!r2Available) {
-    console.log('> R2 bucket "medbot-files" is not enabled on this Cloudflare account; deploying Worker with D1 (Telegram native file_id storage).');
-  }
+  // 3. Write clean wrangler.jsonc with real D1 UUID (Cloudflare free-tier compatible, no R2 dependency)
+  fs.writeFileSync(wranglerPath, buildWranglerConfig(d1Id), 'utf8');
 
-  // 4. Write clean wrangler.jsonc with real D1 UUID
-  fs.writeFileSync(wranglerPath, buildWranglerConfig(d1Id, r2Available), 'utf8');
-
-  // 5. Generate and apply D1 schema
-  console.log('> Generating and applying D1 schema v18...');
-  execSync('node scripts/d1-apply-schema.mjs --output ./artifacts/d1-schema.sql', { stdio: 'inherit', cwd: root });
+  // 4. Generate and apply D1 schema + Multi-College Platform Control Plane schema
+  console.log('> Generating and applying D1 schema v18 + Multi-College Platform Control Plane schema...');
+  execSync('node scripts/d1-apply-schema.mjs --output ./artifacts/d1-schema.sql --force', { stdio: 'inherit', cwd: root });
   if (fs.existsSync(schemaFile)) {
-    const rawSql = fs.readFileSync(schemaFile, 'utf8');
+    const rawSql = `${fs.readFileSync(schemaFile, 'utf8')}\n\n${PLATFORM_CONTROL_SCHEMA_SQL}`;
     const remoteSql = rawSql
       .split('\n')
       .filter((line) => !/^\s*PRAGMA\b/i.test(line) && !/^\s*--/.test(line) && line.trim())
@@ -262,27 +240,15 @@ async function main() {
     } catch {}
   }
 
-  // 6. Deploy Cloudflare Worker (with automatic retry without R2 if R2 bucket is missing)
+  // 5. Deploy Cloudflare Worker
   console.log('> Deploying Cloudflare Worker...');
-  let deployRes = spawnSync('npx', ['wrangler', 'deploy'], {
+  const deployRes = spawnSync('npx', ['wrangler', 'deploy'], {
     cwd: root,
     env: cleanEnv(cfEnv),
     encoding: 'utf8',
   });
-  let deployOut = `${deployRes.stdout || ''}\n${deployRes.stderr || ''}`;
+  const deployOut = `${deployRes.stdout || ''}\n${deployRes.stderr || ''}`;
   console.log(deployOut);
-
-  if (deployRes.status !== 0 && /R2 bucket|10085/i.test(deployOut)) {
-    console.log('> Retrying Cloudflare Worker deploy without R2 bucket binding...');
-    fs.writeFileSync(wranglerPath, buildWranglerConfig(d1Id, false), 'utf8');
-    deployRes = spawnSync('npx', ['wrangler', 'deploy'], {
-      cwd: root,
-      env: cleanEnv(cfEnv),
-      encoding: 'utf8',
-    });
-    deployOut = `${deployRes.stdout || ''}\n${deployRes.stderr || ''}`;
-    console.log(deployOut);
-  }
 
   if (deployRes.status !== 0) {
     throw new Error(`Wrangler deploy failed: ${deployOut.slice(-600)}`);
@@ -294,7 +260,7 @@ async function main() {
     body: { enabled: true },
   }).catch(() => {});
 
-  // 7. Push runtime secrets to Worker
+  // 6. Push runtime secrets to Worker
   const botToken = String(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
   const explicitSecret = String(process.env.TELEGRAM_WEBHOOK_SECRET || process.env.WEBHOOK_SECRET || '').trim();
   const webhookSecret = explicitSecret || (
@@ -306,18 +272,19 @@ async function main() {
   putWorkerSecret('BOT_TOKEN', botToken, cfEnv);
   putWorkerSecret('TELEGRAM_BOT_TOKEN', botToken, cfEnv);
   putWorkerSecret('ADMIN_ID', process.env.ADMIN_ID, cfEnv);
+  putWorkerSecret('PLATFORM_OWNER_ID', process.env.PLATFORM_OWNER_ID || process.env.ADMIN_ID, cfEnv);
+  putWorkerSecret('PLATFORM_BOT_TOKEN', process.env.PLATFORM_BOT_TOKEN, cfEnv);
+  putWorkerSecret('PLATFORM_CHANNEL_ID', process.env.PLATFORM_CHANNEL_ID, cfEnv);
+  putWorkerSecret('PLATFORM_CHANNEL_URL', process.env.PLATFORM_CHANNEL_URL, cfEnv);
+  putWorkerSecret('PLATFORM_CHANNEL_TITLE', process.env.PLATFORM_CHANNEL_TITLE, cfEnv);
+  putWorkerSecret('PLATFORM_MASTER_KEY', process.env.PLATFORM_MASTER_KEY, cfEnv);
   putWorkerSecret('TELEGRAM_WEBHOOK_SECRET', webhookSecret, cfEnv);
   putWorkerSecret('MEDBOT_ARCHIVE_CHANNEL', process.env.MEDBOT_ARCHIVE_CHANNEL || process.env.ARCHIVE_CHANNEL_ID, cfEnv);
   putWorkerSecret('GEMINI_API_KEY', process.env.GEMINI_API_KEY, cfEnv);
   putWorkerSecret('GROQ_API_KEY', process.env.GROQ_API_KEY, cfEnv);
   putWorkerSecret('OPENROUTER_API_KEY', process.env.OPENROUTER_API_KEY, cfEnv);
-  putWorkerSecret('GOOGLE_DRIVE_ACCESS_TOKEN', process.env.GOOGLE_DRIVE_ACCESS_TOKEN, cfEnv);
-  putWorkerSecret('GOOGLE_REFRESH_TOKEN', process.env.GOOGLE_REFRESH_TOKEN, cfEnv);
-  putWorkerSecret('GOOGLE_CLIENT_ID', process.env.GOOGLE_CLIENT_ID, cfEnv);
-  putWorkerSecret('GOOGLE_CLIENT_SECRET', process.env.GOOGLE_CLIENT_SECRET, cfEnv);
-  putWorkerSecret('GOOGLE_DRIVE_FOLDER_ID', process.env.GOOGLE_DRIVE_FOLDER_ID, cfEnv);
 
-  // 8. Discover Worker URL and register Telegram Webhook
+  // 7. Discover Worker URL and register Telegram Webhook
   const urlMatch = deployOut.match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i);
   let workerBaseUrl = urlMatch ? urlMatch[0] : '';
   if (!workerBaseUrl) {
@@ -349,6 +316,25 @@ async function main() {
     ghaNotice('Cloudflare Deploy Success', `Worker deployed and Telegram Webhook bound to ${webhookUrl}`);
   } else {
     ghaNotice('Cloudflare Worker Deployed', `Worker URL: ${workerBaseUrl || 'unknown'} (set BOT_TOKEN to register webhook)`);
+  }
+
+  // If a separate dedicated PLATFORM_BOT_TOKEN is configured, bind its webhook to /platform/webhook
+  const platformBotToken = String(process.env.PLATFORM_BOT_TOKEN || '').trim();
+  if (platformBotToken && platformBotToken !== botToken && workerBaseUrl) {
+    const platformWebhookUrl = `${workerBaseUrl.replace(/\/telegram\/webhook$/, '')}/platform/webhook`;
+    const platformWebhookSecret = String(process.env.PLATFORM_WEBHOOK_SECRET || webhookSecret).trim();
+    console.log(`> Registering Dedicated Platform Owner Bot Webhook -> ${platformWebhookUrl}`);
+    execSync('node scripts/cloudflare-webhook.mjs set', {
+      stdio: 'inherit',
+      cwd: root,
+      env: cleanEnv({
+        BOT_TOKEN: platformBotToken,
+        TELEGRAM_BOT_TOKEN: platformBotToken,
+        WEBHOOK_URL: platformWebhookUrl,
+        TELEGRAM_WEBHOOK_SECRET: platformWebhookSecret,
+        WEBHOOK_SECRET: platformWebhookSecret,
+      }),
+    });
   }
 }
 
