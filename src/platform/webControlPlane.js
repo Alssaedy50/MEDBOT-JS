@@ -669,18 +669,23 @@ export function renderPlatformWebPortalHtml() {
           </form>
         </div>
 
-        <!-- Default College Bot Direct Token / Polling Activation -->
+        <!-- Default College Bot & Remote Cloudflare D1 Bridge -->
         <div class="border border-slate-800 bg-slate-900/40 rounded-xl p-6 space-y-4">
           <div class="border-b border-slate-800 pb-3">
-            <h2 class="text-base font-bold text-white">04. ربط أو تحديث البوت الأساسي (Default College)</h2>
+            <h2 class="text-base font-bold text-white">04. الربط من أي منصة خارجية (Cloudflare D1 Bridge & البوت الأساسي)</h2>
             <p class="text-xs text-slate-400 mt-1">
-              لتحديث توكن البوت الأساسي أو تشغيله فوراً وتحديث قائمة أوامره في تيليجرام.
+              إذا كنت تفتح هذا الموقع من منصة خارجية (مثل Cloud Run أو Render أو Hugging Face) لأن روابط Cloudflare محجوبة في منطقتك، أدخل <code>CLOUDFLARE_API_TOKEN</code> ليتحكم الموقع مباشرةً بقاعدة بيانات Cloudflare D1، أو أدخل توكن البوت الأساسي.
             </p>
           </div>
 
           <form id="connectBotForm" class="space-y-3">
             <div>
-              <label class="block text-xs font-semibold text-slate-300 mb-1">توكن البوت الأساسي (<code>BOT_TOKEN</code>)</label>
+              <label class="block text-xs font-semibold text-slate-300 mb-1">مفتاح Cloudflare API للربط عن بُعد بقاعدة D1 (<code>CLOUDFLARE_API_TOKEN</code> — اختياري)</label>
+              <input id="connectCfTokenInput" type="password" dir="ltr" placeholder="أدخله عند تشغيل الموقع خارج Cloudflare للتحكم بـ D1"
+                class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-xs text-white font-mono-num placeholder-slate-500 focus:border-emerald-400 focus:outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-300 mb-1">توكن البوت الأساسي (<code>BOT_TOKEN</code> — اختياري)</label>
               <input id="connectBotTokenInput" type="password" dir="ltr" placeholder="123456789:AAH..."
                 class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-xs text-white font-mono-num placeholder-slate-500 focus:border-emerald-400 focus:outline-none" />
             </div>
@@ -691,7 +696,7 @@ export function renderPlatformWebPortalHtml() {
             </div>
             <button type="submit" id="connectBotBtn"
               class="w-full py-2 px-4 rounded-lg bg-slate-100 hover:bg-white text-slate-950 font-bold text-xs transition whitespace-nowrap">
-              ربط وتحديث البوت الأساسي
+              حفظ الربط ومزامنة المنصة
             </button>
           </form>
         </div>
@@ -1203,38 +1208,43 @@ export function renderPlatformWebPortalHtml() {
 
     connectBotForm.addEventListener('submit', async (e) => {
       e.preventDefault();
+      const cloudflareApiToken = document.getElementById('connectCfTokenInput').value.trim();
       const botToken = document.getElementById('connectBotTokenInput').value.trim();
       const adminId = document.getElementById('connectAdminIdInput').value.trim();
-      if (!botToken) {
-        showNotice('يرجى إدخال توكن البوت الأساسي أولاً.', 'error');
+      if (!cloudflareApiToken && !botToken) {
+        showNotice('يرجى إدخال CLOUDFLARE_API_TOKEN أو BOT_TOKEN أولاً.', 'error');
         return;
       }
       const btn = document.getElementById('connectBotBtn');
       btn.disabled = true;
-      btn.textContent = 'جارٍ الاتصال بـ Telegram وتحديث البوت...';
+      btn.textContent = 'جارٍ حفظ الربط ومزامنة المنصة...';
       try {
         const res = await fetch('/api/platform/connect-bot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ botToken, adminId, startPolling: true }),
+          body: JSON.stringify({ cloudflareApiToken, botToken, adminId, startPolling: true }),
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {
-          showNotice(data.error || 'تعذر الاتصال بالبوت', 'error');
+          showNotice(data.error || 'تعذر حفظ الربط', 'error');
         } else {
-          showNotice(
-            'تم ربط وتحديث البوت الأساسي @' +
-              (data.bot?.username || '') +
-              ' بنجاح! يمكن لمدير الكلية الآن فتح (⚙️ إعدادات المنصة) داخل البوت لضبط القناة ومفاتيح الذكاء الاصطناعي.',
-          );
+          const msgParts = [];
+          if (data.cloudflareBridge?.connected) {
+            msgParts.push('تم ربط الموقع مباشرةً بقاعدة بيانات Cloudflare D1 (' + data.cloudflareBridge.databaseName + ')');
+          }
+          if (data.bot?.username) {
+            msgParts.push('تم تحديث البوت الأساسي @' + data.bot.username);
+          }
+          showNotice(msgParts.join(' · ') || 'تم حفظ إعدادات الربط بنجاح.');
+          document.getElementById('connectCfTokenInput').value = '';
           document.getElementById('connectBotTokenInput').value = '';
           await loadPlatformOverview();
         }
       } catch (err) {
-        showNotice('حدث خطأ أثناء تحديث البوت: ' + err.message, 'error');
+        showNotice('حدث خطأ أثناء حفظ الربط: ' + err.message, 'error');
       } finally {
         btn.disabled = false;
-        btn.textContent = 'ربط وتحديث البوت الأساسي';
+        btn.textContent = 'حفظ الربط ومزامنة المنصة';
       }
     });
 

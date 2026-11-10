@@ -2,17 +2,19 @@
 /**
  * Container healthcheck HTTP server & Multi-College Bot Management Platform Control Plane.
  *
- * Serves three roles:
- *   1. Container health probes (`GET /health` -> 200 JSON, `GET /` for non-HTML
- *      probes -> 200 `HEALTH_TEXT`) without ever exposing secrets.
- *   2. External Web Developer Control Plane (`GET /` with `Accept: text/html`
- *      or `GET /dashboard` and `/api/platform/*`) for creating and managing
- *      isolated college bots outside Telegram.
- *   3. Webhook gateway forwarding (`/telegram/webhook`, `/telegram/webhook/:collegeId`,
- *      `/platform/webhook`, `/platform/status`) to the unified multi-college worker.
+ * Can run on ANY hosting platform (Google Cloud Run / AI Studio, Render,
+ * Hugging Face Spaces, Railway, VPS) even in regions where `*.workers.dev` is
+ * blocked by local ISPs:
+ *   - When `CLOUDFLARE_API_TOKEN` is configured (via environment variables or the
+ *     Web Portal), `src/server.js` bridges directly to the remote Cloudflare D1
+ *     database over HTTPS (`api.cloudflare.com`) and binds Telegram webhooks to
+ *     the Cloudflare Worker URL (`https://medbot-js.<subdomain>.workers.dev`).
+ *   - Otherwise, it uses a persistent local SQLite database (`node:sqlite`).
  */
 
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import worker from './worker.js';
 import { runBot } from './telegram/bot.js';
@@ -51,9 +53,18 @@ export function healthPayload() {
 let sharedControlD1 = null;
 let sharedInitPromise = null;
 let activeRuntimeBotInfo = null;
+let activeCloudflareBridgeInfo = null;
 
+/**
+ * Create a local SQLite-backed D1 adapter (uses persistent file when `MEDBOT_CONTROL_DB_PATH` is set,
+ * or `:memory:` during ephemeral test runs).
+ */
 function createNodeSqliteD1() {
-  const sqlite = new DatabaseSync(':memory:');
+  const dbPath = String(process.env.MEDBOT_CONTROL_DB_PATH || '').trim() || ':memory:';
+  if (dbPath !== ':memory:') {
+    fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
+  }
+  const sqlite = new DatabaseSync(dbPath);
   sqlite.exec(getD1SchemaSql());
 
   function createPrepared(sql, boundParams = []) {
@@ -108,8 +119,181 @@ function createNodeSqliteD1() {
   };
 }
 
+/**
+ * Create a Remote Cloudflare D1 adapter over the official Cloudflare REST API.
+ * Allows the Web Portal to run on ANY external platform (Google Cloud Run, Render,
+ * Hugging Face Spaces, Railway) when `*.workers.dev` is blocked in the user's region,
+ * while reading/writing directly to the production Cloudflare D1 database!
+ */
+export function createCloudflareRemoteD1({ apiToken, accountId, databaseId }) {
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
+
+  async function executeQuery(sql, params = []) {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sql,
+        params: params.map((p) => (p === undefined ? null : p)),
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      const msg = data?.errors?.[0]?.message || `Cloudflare D1 HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    const firstResult = Array.isArray(data.result) ? data.result[0] : data.result;
+    return {
+      results: Array.isArray(firstResult?.results) ? firstResult.results : [],
+      meta: firstResult?.meta || { changes: 0, last_row_id: 0 },
+    };
+  }
+
+  function createPrepared(sql, boundParams = []) {
+    return {
+      bind(...params) {
+        return createPrepared(sql, params.map((p) => (p === undefined ? null : p)));
+      },
+      async raw() {
+        const { results } = await executeQuery(sql, boundParams);
+        return results.map((row) => Object.values(row));
+      },
+      async all() {
+        const { results } = await executeQuery(sql, boundParams);
+        return { results };
+      },
+      async first(colName) {
+        const { results } = await executeQuery(sql, boundParams);
+        const row = results[0] ?? null;
+        if (!row) return null;
+        return colName ? (row[colName] ?? null) : row;
+      },
+      async run() {
+        const { meta } = await executeQuery(sql, boundParams);
+        return {
+          success: true,
+          meta: {
+            changes: Number(meta.changes ?? 0),
+            last_row_id: Number(meta.last_row_id ?? 0),
+          },
+        };
+      },
+    };
+  }
+
+  return {
+    __isRemoteCloudflareD1: true,
+    prepare(sql) {
+      return createPrepared(sql);
+    },
+    async batch(statements) {
+      const out = [];
+      for (const stmt of statements) {
+        out.push(await stmt.run());
+      }
+      return out;
+    },
+    async exec(sql) {
+      await executeQuery(sql, []);
+      return { count: 1, duration: 0 };
+    },
+  };
+}
+
+/**
+ * Auto-discover Cloudflare Account ID, D1 Database UUID (`medbot`), and Worker Subdomain
+ * using just a `CLOUDFLARE_API_TOKEN`.
+ */
+async function discoverCloudflareD1Bridge({
+  apiToken,
+  accountId: rawAccountId = '',
+  databaseId: rawDatabaseId = '',
+  workerUrl: rawWorkerUrl = '',
+}) {
+  const token = String(apiToken || '').trim();
+  if (!token) throw new Error('يرجى إدخال CLOUDFLARE_API_TOKEN.');
+
+  const cfFetch = async (ep) => {
+    const r = await fetch(`https://api.cloudflare.com/client/v4${ep}`, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+    return r.json().catch(() => ({ success: false }));
+  };
+
+  let accountId = (String(rawAccountId || '').match(/([a-f0-9]{32})/i) || [])[1] || '';
+  if (!accountId) {
+    const accData = await cfFetch('/accounts?per_page=10');
+    if (accData?.success && Array.isArray(accData.result) && accData.result[0]?.id) {
+      accountId = accData.result[0].id;
+    }
+  }
+  if (!accountId) {
+    throw new Error('تعذّر اكتشاف Cloudflare Account ID من هذا التوكن. تأكد من صلاحيات التوكن.');
+  }
+
+  let databaseId =
+    (String(rawDatabaseId || '').match(
+      /([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i,
+    ) || [])[1] || '';
+  let databaseName = 'medbot';
+  if (!databaseId) {
+    const d1List = await cfFetch(`/accounts/${accountId}/d1/database`);
+    if (d1List?.success && Array.isArray(d1List.result) && d1List.result.length > 0) {
+      const found = d1List.result.find((d) => d.name === 'medbot') || d1List.result[0];
+      databaseId = found.uuid;
+      databaseName = found.name || 'medbot';
+    }
+  }
+  if (!databaseId) {
+    throw new Error('لم يتم العثور على قاعدة بيانات D1 في حساب Cloudflare هذا.');
+  }
+
+  let workerUrl = String(rawWorkerUrl || process.env.CLOUDFLARE_WORKER_URL || '').trim();
+  if (!workerUrl) {
+    const subData = await cfFetch(`/accounts/${accountId}/workers/subdomain`);
+    if (subData?.success && subData.result?.subdomain) {
+      workerUrl = `https://medbot-js.${subData.result.subdomain}.workers.dev`;
+    }
+  }
+
+  const remoteD1 = createCloudflareRemoteD1({ apiToken: token, accountId, databaseId });
+  await ensurePlatformSchema(remoteD1);
+  await ensureDefaultCollegeRegistered(remoteD1, process.env);
+
+  sharedControlD1 = remoteD1;
+  sharedInitPromise = Promise.resolve();
+  if (workerUrl) {
+    process.env.CLOUDFLARE_WORKER_URL = workerUrl;
+  }
+  activeCloudflareBridgeInfo = {
+    connected: true,
+    accountId,
+    databaseId,
+    databaseName,
+    workerUrl: workerUrl || null,
+  };
+  return activeCloudflareBridgeInfo;
+}
+
 async function getControlD1() {
   if (!sharedControlD1) {
+    const envToken = String(process.env.CLOUDFLARE_API_TOKEN || '').trim();
+    if (envToken) {
+      try {
+        await discoverCloudflareD1Bridge({
+          apiToken: envToken,
+          accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+          databaseId: process.env.CF_D1_DATABASE_ID,
+          workerUrl: process.env.CLOUDFLARE_WORKER_URL,
+        });
+        return sharedControlD1;
+      } catch (err) {
+        console.warn('[MEDBOT] Falling back to local SQLite Control Plane:', err?.message || err);
+      }
+    }
     sharedControlD1 = createNodeSqliteD1();
   }
   if (!sharedInitPromise) {
@@ -131,6 +315,19 @@ function sendJson(response, statusCode, payload) {
 }
 
 async function connectRuntimeBotHandler(body, platformDb, webhookBaseUrl) {
+  if (body.cloudflareApiToken) {
+    const bridge = await discoverCloudflareD1Bridge({
+      apiToken: body.cloudflareApiToken,
+      accountId: body.cloudflareAccountId,
+      databaseId: body.cloudflareDatabaseId,
+      workerUrl: body.cloudflareWorkerUrl,
+    });
+    return {
+      ok: true,
+      cloudflareBridge: bridge,
+    };
+  }
+
   const botToken = String(body.botToken || '').trim();
   const adminId = String(body.adminId || '').trim();
   const archiveChannel = String(body.archiveChannel || '').trim();
@@ -220,7 +417,7 @@ async function connectRuntimeBotHandler(body, platformDb, webhookBaseUrl) {
     };
   }
 
-  return { ok: true, bot: activeRuntimeBotInfo };
+  return { ok: true, bot: activeRuntimeBotInfo, cloudflareBridge: activeCloudflareBridgeInfo };
 }
 
 async function toWebRequest(request) {
