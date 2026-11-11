@@ -1,19 +1,15 @@
-/* global Request, Headers */
+/* global Request, Response, Headers */
 /**
- * Vercel Serverless Entrypoint (`/api/index.js`).
+ * Universal Vercel & Serverless Entrypoint (`/api/index.js`).
  *
- * Zero `node:sqlite` or native C++ dependencies so it runs cleanly on
- * Vercel's Serverless Node runtime (Node 18 / 20 / 22) without
- * `500 FUNCTION_INVOCATION_FAILED`.
+ * Supports ALL Vercel runtime invocation contracts seamlessly:
+ *   1. Raw Node.js `(req, res)` (`http.IncomingMessage` + `http.ServerResponse` without `.status()`)
+ *   2. Enhanced `@vercel/node` `(req, res)` (`res.status().send()`)
+ *   3. Web Standard / WinterCG `fetch(request)` (`res === undefined`, returns `new Response(...)`)
+ *   4. Named HTTP method exports (`GET`, `POST`, `PUT`, `DELETE`, `fetch`)
+ *   5. Rewritten Vercel paths (`/`, `/dashboard`, `/api`, `/api/index`, `/api/index.js`)
  *
- * Capabilities on Vercel (Free Hobby Tier):
- *   1. Connects automatically to Cloudflare D1 via `CLOUDFLARE_API_TOKEN`
- *      (or via Section 04 of the Web Portal UI) and falls back to a pure-JS
- *      in-memory store before `CLOUDFLARE_API_TOKEN` is configured.
- *   2. Serves the Developer Web Portal on `/` and `/dashboard`.
- *   3. Serves `/api/platform/*` for creating & managing college bots.
- *   4. Serves `/telegram/webhook` and `/telegram/webhook/:collegeId` so bots
- *      can also run directly on Vercel if desired.
+ * Zero `node:sqlite` or native C++ imports so it runs on Node 18, 20, 22, and Edge.
  */
 
 import worker from '../src/worker.js';
@@ -176,55 +172,135 @@ async function connectVercelRuntimeHandler(body, platformDb, webhookBaseUrl) {
   };
 }
 
-export default async function handler(req, res) {
-  try {
-    const pathname = String(req.url || '/').split('?')[0];
-    const accept = String(req.headers?.accept || '');
+function getHeader(req, name) {
+  const lower = name.toLowerCase();
+  if (!req || !req.headers) return '';
+  if (typeof req.headers.get === 'function') {
+    return String(req.headers.get(name) || req.headers.get(lower) || '');
+  }
+  const val = req.headers[lower] ?? req.headers[name];
+  if (Array.isArray(val)) return val.join(', ');
+  return typeof val === 'string' ? val : '';
+}
 
-    if (
-      req.method === 'GET' &&
-      (pathname === '/dashboard' || (pathname === '/' && accept.includes('text/html')))
-    ) {
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-store');
-      res.status(200).send(renderPlatformWebPortalHtml());
-      return;
+function resolveFullUrlAndPath(req) {
+  const rawUrl = String(req?.url || '/');
+  if (/^https?:\/\//i.test(rawUrl)) {
+    const parsed = new URL(rawUrl);
+    return { fullUrl: parsed.toString(), pathname: parsed.pathname };
+  }
+  const proto = getHeader(req, 'x-forwarded-proto') || 'https';
+  const host = getHeader(req, 'x-forwarded-host') || getHeader(req, 'host') || 'localhost';
+  const pathWithQuery = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
+  const fullUrl = `${proto}://${host}${pathWithQuery}`;
+  const pathname = pathWithQuery.split('?')[0];
+  return { fullUrl, pathname };
+}
+
+function sendUniversalResponse(res, statusCode, headersObj, bodyText) {
+  const webResponse = new Response(bodyText, {
+    status: statusCode,
+    headers: headersObj,
+  });
+
+  if (!res || (typeof res.end !== 'function' && typeof res.send !== 'function')) {
+    return webResponse;
+  }
+
+  for (const [k, v] of Object.entries(headersObj || {})) {
+    if (typeof res.setHeader === 'function') {
+      res.setHeader(k, v);
+    }
+  }
+
+  if (typeof res.status === 'function' && typeof res.send === 'function') {
+    res.status(statusCode).send(bodyText);
+    return webResponse;
+  }
+
+  res.statusCode = statusCode;
+  if (typeof res.writeHead === 'function' && !res.headersSent) {
+    res.writeHead(statusCode, headersObj);
+  }
+  if (typeof res.end === 'function') {
+    res.end(bodyText);
+  }
+  return webResponse;
+}
+
+export async function handler(req, res) {
+  try {
+    const method = String(req?.method || 'GET').toUpperCase();
+    const { fullUrl, pathname } = resolveFullUrlAndPath(req);
+    const accept = getHeader(req, 'accept');
+
+    const isPortalRoute =
+      pathname === '/dashboard' ||
+      pathname === '/api/index.js' ||
+      pathname === '/api/index' ||
+      (pathname === '/' && (accept.includes('text/html') || accept.includes('*/*') || !accept));
+
+    if (method === 'GET' && isPortalRoute) {
+      return sendUniversalResponse(
+        res,
+        200,
+        {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+        },
+        renderPlatformWebPortalHtml(),
+      );
     }
 
     const { db, workerUrl } = await resolveVercelD1();
-    const protocol = req.headers?.['x-forwarded-proto'] || 'https';
-    const host = req.headers?.['x-forwarded-host'] || req.headers?.host || 'localhost';
-    const fullUrl = `${protocol}://${host}${req.url || '/'}`;
 
     const headers = new Headers();
-    for (const [k, v] of Object.entries(req.headers || {})) {
-      if (Array.isArray(v)) headers.set(k, v.join(', '));
-      else if (typeof v === 'string') headers.set(k, v);
+    if (req?.headers) {
+      if (typeof req.headers.forEach === 'function') {
+        req.headers.forEach((v, k) => headers.set(k, v));
+      } else {
+        for (const [k, v] of Object.entries(req.headers)) {
+          if (Array.isArray(v)) headers.set(k, v.join(', '));
+          else if (typeof v === 'string') headers.set(k, v);
+        }
+      }
     }
 
     let rawBody;
-    if (!['GET', 'HEAD'].includes(String(req.method || 'GET').toUpperCase())) {
-      if (typeof req.body === 'string') {
-        rawBody = req.body;
-      } else if (Buffer.isBuffer(req.body)) {
-        rawBody = req.body.toString('utf8');
-      } else if (req.body && typeof req.body === 'object') {
-        rawBody = JSON.stringify(req.body);
+    if (!['GET', 'HEAD'].includes(method)) {
+      if (req?.body !== undefined && req?.body !== null && !(req instanceof Request)) {
+        if (typeof req.body === 'string') {
+          rawBody = req.body;
+        } else if (Buffer.isBuffer(req.body)) {
+          rawBody = req.body.toString('utf8');
+        } else if (typeof req.body === 'object') {
+          rawBody = JSON.stringify(req.body);
+        }
+      } else if (typeof req?.text === 'function') {
+        rawBody = await req.text();
+      } else if (req && typeof req[Symbol.asyncIterator] === 'function') {
+        const chunks = [];
+        for await (const chunk of req) {
+          chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        }
+        if (chunks.length > 0) {
+          rawBody = Buffer.concat(chunks).toString('utf8');
+        }
       }
     }
 
     const webReq = new Request(fullUrl, {
-      method: req.method || 'GET',
+      method,
       headers,
       body: rawBody,
     });
 
+    const parsedOrigin = new URL(fullUrl).origin;
     const env = {
       ...process.env,
       DB: db,
       PLATFORM_DB: db,
-      CLOUDFLARE_WORKER_URL:
-        workerUrl || process.env.CLOUDFLARE_WORKER_URL || `${protocol}://${host}`,
+      CLOUDFLARE_WORKER_URL: workerUrl || process.env.CLOUDFLARE_WORKER_URL || parsedOrigin,
     };
 
     const webRes = pathname.startsWith('/api/platform/')
@@ -234,13 +310,33 @@ export default async function handler(req, res) {
         })
       : await worker.fetch(webReq, env);
 
-    // If connect-bot just connected Cloudflare D1, ensure subsequent calls use cachedRemoteD1
+    const outHeaders = {};
     webRes.headers.forEach((val, key) => {
-      res.setHeader(key, val);
+      outHeaders[key] = val;
     });
     const text = await webRes.text();
-    res.status(webRes.status).send(text);
+    return sendUniversalResponse(res, webRes.status, outHeaders, text);
   } catch (err) {
-    res.status(500).json({ ok: false, error: err?.message || 'Vercel handler error' });
+    return sendUniversalResponse(
+      res,
+      500,
+      {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+      JSON.stringify({ ok: false, error: err?.message || 'Vercel handler error' }),
+    );
   }
 }
+
+handler.fetch = handler;
+
+export default handler;
+export {
+  handler as fetch,
+  handler as GET,
+  handler as POST,
+  handler as PUT,
+  handler as DELETE,
+  handler as OPTIONS,
+};

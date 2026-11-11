@@ -752,13 +752,16 @@ test('7. External Web Developer Control Plane (/dashboard & /api/platform/*) + I
   }
 });
 
-test('8. Vercel Serverless Entrypoint (/api/index.js) serves Web Portal and API without node:sqlite', async () => {
+test('8. Vercel Serverless Entrypoints (/api/index.js & /src/index.js) support all Vercel runtime contracts without node:sqlite', async () => {
   const tgMock = createTelegramMock();
   tgMock.install();
   try {
     const { default: vercelHandler } = await import('../api/index.js');
+    const { default: nodePresetHandler } = await import('../src/index.js');
+    assert.equal(vercelHandler, nodePresetHandler);
 
-    function createMockRes() {
+    // Contract A: @vercel/node enhanced res (.status().send())
+    function createVercelMockRes() {
       const headers = {};
       return {
         statusCode: 200,
@@ -775,41 +778,69 @@ test('8. Vercel Serverless Entrypoint (/api/index.js) serves Web Portal and API 
           this.body = typeof payload === 'string' ? payload : JSON.stringify(payload);
           return this;
         },
-        json(payload) {
-          this.body = JSON.stringify(payload);
-          return this;
-        },
       };
     }
 
-    // 1. Browser visit to GET / on Vercel
-    const resRoot = createMockRes();
+    const resRoot = createVercelMockRes();
     await vercelHandler(
       {
         method: 'GET',
         url: '/',
-        headers: { accept: 'text/html,application/xhtml+xml', host: 'medbot-js-lur9.vercel.app' },
+        headers: { accept: 'text/html,application/xhtml+xml', host: 'medbot-js.vercel.app' },
       },
       resRoot,
     );
     assert.equal(resRoot.statusCode, 200);
     assert.match(resRoot.body, /MEDBOT Control Plane/);
 
-    // 2. GET /api/platform/overview on Vercel (pure-JS fallback when CLOUDFLARE_API_TOKEN is not set yet)
-    const resOverview = createMockRes();
-    await vercelHandler(
+    // Contract B: Raw Node http.ServerResponse (NO .status() or .send() methods!)
+    function createRawNodeRes() {
+      const headers = {};
+      return {
+        statusCode: 200,
+        headersSent: false,
+        headers,
+        body: '',
+        setHeader(k, v) {
+          headers[k.toLowerCase()] = v;
+        },
+        writeHead(code, hdrs = {}) {
+          this.statusCode = code;
+          this.headersSent = true;
+          for (const [k, v] of Object.entries(hdrs)) {
+            headers[k.toLowerCase()] = v;
+          }
+        },
+        end(payload = '') {
+          this.body = String(payload);
+        },
+      };
+    }
+
+    const rawRes = createRawNodeRes();
+    await nodePresetHandler(
       {
         method: 'GET',
         url: '/api/platform/overview',
-        headers: { accept: 'application/json', host: 'medbot-js-lur9.vercel.app' },
+        headers: { accept: 'application/json', host: 'medbot-js.vercel.app' },
       },
-      resOverview,
+      rawRes,
     );
-    assert.equal(resOverview.statusCode, 200);
-    const overviewJson = JSON.parse(resOverview.body);
+    assert.equal(rawRes.statusCode, 200);
+    const overviewJson = JSON.parse(rawRes.body);
     assert.equal(overviewJson.ok, true);
-    assert.ok(Array.isArray(overviewJson.colleges));
     assert.ok(overviewJson.colleges.some((c) => c.college_id === 'default'));
+
+    // Contract C: Web Standard Fetch Request (res is undefined, req.url is full https:// URL)
+    const webRes = await nodePresetHandler(
+      new Request('https://medbot-js.vercel.app/dashboard', {
+        method: 'GET',
+        headers: { Accept: 'text/html' },
+      }),
+    );
+    assert.equal(webRes.status, 200);
+    const webHtml = await webRes.text();
+    assert.match(webHtml, /MEDBOT Control Plane/);
   } finally {
     tgMock.restore();
   }

@@ -1,14 +1,19 @@
 /**
- * MEDBOT entry point: `npm start` / `node src/index.js`.
+ * MEDBOT entry point: `npm start` / `node src/index.js` AND Vercel Node.js Framework Preset.
  *
- * Two independent concerns start here: the container healthcheck server (so
- * Hugging Face Spaces sees a healthy HTTP endpoint) and the Telegram long-poll
- * loop. The server is started first and is never awaited, so a bind failure or a
- * slow probe can neither delay nor block the bot.
+ * Two independent concerns start here when run as a standalone CLI/container process:
+ * the container healthcheck server (so Hugging Face Spaces / Render / Cloud Run sees a
+ * healthy HTTP endpoint) and the Telegram long-poll loop.
+ *
+ * When imported by Vercel's Node.js Framework Preset (`"main": "src/index.js"`), this
+ * module has zero side effects on import and exports the universal serverless HTTP
+ * handler (`export default vercelHandler`) so Vercel never fails with
+ * `500 FUNCTION_INVOCATION_FAILED`.
  */
 
 import 'dotenv/config';
 
+import vercelHandler from '../api/index.js';
 import { createBot, runBot } from './telegram/bot.js';
 import { startHealthServer } from './server.js';
 
@@ -57,13 +62,6 @@ export function startApp({ token: botToken = process.env.BOT_TOKEN } = {}) {
 
 /**
  * Install the last-resort process handlers.
- *
- * These are NOT a substitute for handling errors where they occur — the polling
- * loop already retries recoverable failures and every subsystem isolates its own
- * faults. They exist so that a genuinely unexpected throw is logged with a
- * non-secret message and the process shuts down *cleanly* (releasing the port and
- * the SQLite file) instead of dying in an undefined state that the host would
- * have to restart blindly.
  */
 export function installProcessHandlers() {
   let handling = false;
@@ -73,8 +71,6 @@ export function installProcessHandlers() {
     handling = true;
     console.error(`[MEDBOT] ${reason}:`, error?.message ?? error);
     process.exitCode = 1;
-    // Stop accepting probes, then let the event loop drain. A second signal or a
-    // hung handle falls back to a hard exit so the host is never left waiting.
     setTimeout(() => process.exit(1), 5000).unref();
     process.kill(process.pid, 'SIGTERM');
   };
@@ -85,9 +81,10 @@ export function installProcessHandlers() {
   );
 }
 
-// Only a real `node src/index.js` invocation boots the process and installs the
-// global handlers; importing the module (tests) must have no side effects.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only a real `node src/index.js` invocation (outside Vercel serverless) boots the
+// persistent HTTP server and polling loop; importing the module (tests or Vercel)
+// has no side effects.
+if (import.meta.url === `file://${process.argv[1]}` && !process.env.VERCEL) {
   installProcessHandlers();
   if (process.env.BOT_TOKEN) {
     startApp();
@@ -101,4 +98,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
 }
 
-export { createBot, startHealthServer };
+export default vercelHandler;
+export {
+  createBot,
+  startHealthServer,
+  vercelHandler as fetch,
+  vercelHandler as GET,
+  vercelHandler as POST,
+  vercelHandler as PUT,
+  vercelHandler as DELETE,
+  vercelHandler as OPTIONS,
+};

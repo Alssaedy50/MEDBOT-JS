@@ -21,7 +21,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import { DB_PATH_ENV_VAR, DEFAULT_DB_NAME } from '../constants.js';
 
@@ -121,21 +120,31 @@ function tune(db) {
 /**
  * A `DatabaseSync` whose statements return positional arrays.
  *
- * `node:sqlite` returns rows as objects keyed by column name by default. The
- * Python MEDBOT indexed rows positionally (`row[0]`, `row[1]`, …) and the whole
- * port relies on that shape, so every statement created through this subclass
- * is configured with `setReturnArrays(true)`.
+ * Loaded lazily via `process.getBuiltinModule('node:sqlite')` so importing
+ * this module in serverless environments without `node:sqlite` (e.g. Vercel
+ * Node 20.x) never fails at module-link time.
  */
-class PositionalDatabase extends DatabaseSync {
-  prepare(sql) {
-    const statement = super.prepare(sql);
-    statement.setReturnArrays(true);
-    return statement;
+let CachedPositionalDatabase = null;
+
+function getPositionalDatabaseClass() {
+  if (CachedPositionalDatabase) return CachedPositionalDatabase;
+  const sqliteMod = process.getBuiltinModule?.('node:sqlite');
+  if (!sqliteMod?.DatabaseSync) {
+    throw new Error('node:sqlite is not available in this Node.js runtime');
   }
+  CachedPositionalDatabase = class PositionalDatabase extends sqliteMod.DatabaseSync {
+    prepare(sql) {
+      const statement = super.prepare(sql);
+      statement.setReturnArrays(true);
+      return statement;
+    }
+  };
+  return CachedPositionalDatabase;
 }
 
 /** Open a tuned connection. Callers own it and must close it. */
 export function openDb(target = null) {
+  const PositionalDatabase = getPositionalDatabaseClass();
   const db = new PositionalDatabase(ensureDbDir(target));
   tune(db);
   return db;

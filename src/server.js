@@ -15,7 +15,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import worker from './worker.js';
 import { runBot } from './telegram/bot.js';
 import { getD1SchemaSql } from './db/d1/migrations.js';
@@ -23,6 +22,7 @@ import { normalizeChannelValue, validateChannelValue } from './archive.js';
 import { dualUploadMediaMessage } from './storage/googleDrive.js';
 import {
   createCloudflareRemoteD1,
+  createPureJsMemoryD1,
   discoverCloudflareD1Bridge,
   ensureDefaultCollegeRegistered,
   ensurePlatformSchema,
@@ -61,14 +61,18 @@ let activeCloudflareBridgeInfo = null;
 
 /**
  * Create a local SQLite-backed D1 adapter (uses persistent file when `MEDBOT_CONTROL_DB_PATH` is set,
- * or `:memory:` during ephemeral test runs).
+ * `:memory:` during ephemeral test runs, or `createPureJsMemoryD1()` on runtimes without `node:sqlite`).
  */
 function createNodeSqliteD1() {
+  const sqliteMod = process.getBuiltinModule?.('node:sqlite');
+  if (!sqliteMod?.DatabaseSync) {
+    return createPureJsMemoryD1();
+  }
   const dbPath = String(process.env.MEDBOT_CONTROL_DB_PATH || '').trim() || ':memory:';
   if (dbPath !== ':memory:') {
     fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
   }
-  const sqlite = new DatabaseSync(dbPath);
+  const sqlite = new sqliteMod.DatabaseSync(dbPath);
   sqlite.exec(getD1SchemaSql());
 
   function createPrepared(sql, boundParams = []) {
